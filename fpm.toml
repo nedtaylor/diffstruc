@@ -1,0 +1,22 @@
+name = "diffstruc"
+version = "0.1.0"
+license = "license"
+author = "Ned Thaddeus Taylor"
+maintainer = "n.t.taylor@exeter.ac.uk"
+description = "A Fortran library for automatic differentiation"
+copyright = "Copyright 2025, diffstruc contributors"
+
+[preprocess]
+[preprocess.cpp]
+suffixes = ["F90", "f90"]
+
+[library]
+source-dir="src"
+
+[dependencies]
+corestruc = { git = "https://github.com/nedtaylor/corestruc" }
+
+[fortran]
+implicit-typing = false
+implicit-external = false
+source-form = "free"

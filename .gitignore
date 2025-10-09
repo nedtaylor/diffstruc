@@ -1,0 +1,12 @@
+*~
+\#
+bin/
+obj/
+*.mod
+*.smod
+*.so
+*.txt
+build/
+doc/html
+settings.json
+.local-pre-commit-config.yaml
