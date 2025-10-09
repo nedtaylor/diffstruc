@@ -268,6 +268,29 @@ contains
 !###############################################################################
 
 
+!###############################################################################
+  pure module subroutine set_array(this, input)
+    !! Set the array
+    implicit none
+
+    ! Arguments
+    class(array_type), intent(inout) :: this
+    !! Instance of the array type
+    real(real32), dimension(..), intent(in) :: input
+    !! Input array
+
+    select rank(input)
+    rank(1)
+       this%val(:,1) = input
+    rank(2)
+       this%val(:,:) = input
+    rank default
+       return
+    end select
+  end subroutine set_array
+!###############################################################################
+
+
 !##############################################################################!
 ! * * * * * * * * * * * * * * * * * * *  * * * * * * * * * * * * * * * * * * * !
 !##############################################################################!

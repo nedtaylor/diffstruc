@@ -72,6 +72,8 @@ module diffstruc__types
      procedure :: assign => assign_array
      generic, public :: assignment(=) => assign
      !! Overloaded assignment operator
+     procedure, pass(this) :: set => set_array
+     !! Procedure for setting array
 
      procedure, pass(this) :: set_direction
      procedure, pass(this) :: grad_reverse
@@ -137,6 +139,11 @@ module diffstruc__types
        integer, dimension(:), intent(in), optional :: array_shape
        type(array_type), pointer :: result_ptr
      end function create_result_array
+
+     pure module subroutine set_array(this, input)
+       class(array_type), intent(inout) :: this
+       real(real32), dimension(..), intent(in) :: input
+     end subroutine set_array
   end interface
 
   interface
