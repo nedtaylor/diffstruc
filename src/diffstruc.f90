@@ -29,7 +29,9 @@ module diffstruc
   public :: operator(.mmul.), operator(.outer.), transpose
   public :: operator(.concat.), operator(.ltrim.), operator(.rtrim.), &
        operator(.index.), reverse_index, &
-       pack, unpack, &
-       merge
+       pack, unpack
+  public :: operator(.lt.), operator(.gt.), merge
+  public :: maxval, max
+  public :: sqrt, sign
 
 end module diffstruc
