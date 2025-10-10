@@ -14,7 +14,7 @@ module diffstruc
        pack, unpack
   use diffstruc__operations_comparison, only: operator(.lt.), operator(.gt.), merge
   use diffstruc__operations_reduction, only: maxval, max
-  use diffstruc__operations_maths, only: sqrt, sign
+  use diffstruc__operations_maths, only: sqrt, sign, sigmoid
   implicit none
 
   private
@@ -32,6 +32,6 @@ module diffstruc
        pack, unpack
   public :: operator(.lt.), operator(.gt.), merge
   public :: maxval, max
-  public :: sqrt, sign
+  public :: sqrt, sign, sigmoid
 
 end module diffstruc

@@ -8,7 +8,7 @@ module diffstruc__operations_maths
 
   private
 
-  public :: sqrt, sign
+  public :: sqrt, sign, sigmoid
 
 
   ! Operation interfaces
@@ -19,6 +19,10 @@ module diffstruc__operations_maths
 
   interface sign
      module procedure sign_array
+  end interface
+
+  interface sigmoid
+     module procedure sigmoid_array
   end interface
 
 
@@ -77,6 +81,27 @@ contains
     !    c%left_operand => array
     ! end if
   end function sign_array
+!###############################################################################
+
+
+!###############################################################################
+  function sigmoid_array(a) result(c)
+    !! Sigmoid function for autodiff arrays
+    implicit none
+    class(array_type), intent(in), target :: a
+    type(array_type), pointer :: c
+
+    c => a%create_result()
+    c%val = 1.0_real32 / (1.0_real32 + exp(-a%val))
+
+    if(a%requires_grad) then
+       c%requires_grad = .true.
+       c%is_forward = a%is_forward
+       c%is_leaf = .false.
+       c%operation = 'sigmoid'
+       c%left_operand => a
+    end if
+  end function sigmoid_array
 !###############################################################################
 
 end module diffstruc__operations_maths

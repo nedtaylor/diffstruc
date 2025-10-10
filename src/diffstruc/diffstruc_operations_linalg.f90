@@ -1,6 +1,6 @@
 module diffstruc__operations_linalg
   !! This module contains linear algebra operations for the diffstruc library.
-  use corestruc, only: real32, stop_program
+  use coreutils, only: real32, stop_program
   use diffstruc__types, only: array_type, get_partial, &
        operator(+), operator(-), operator(*), operator(/), operator(**)
   implicit none
@@ -274,6 +274,15 @@ contains
     output = transpose(upstream_grad)
 
   end function get_partial_transpose_left
+! !-------------------------------------------------------------------------------
+! !   function get_partial_transpose_right(this, upstream_grad) result(output)
+! !     class(array_type), intent(inout) :: this
+! !     type(array_type), intent(in) :: upstream_grad
+! !     type(array_type) :: output
+
+! !     output = transpose(this%left_operand)
+
+! !   end function get_partial_transpose_right
 !###############################################################################
 
 end module diffstruc__operations_linalg
