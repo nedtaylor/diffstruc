@@ -1,6 +1,6 @@
 module diffstruc
   !! This is the top-level module for the diffstruc Fortran library.
-  use corestruc, only: real32
+  use coreutils, only: real32
   use diffstruc__types, only: &
        array_type, get_partial, &
        operator(+), operator(-), operator(*), operator(/), operator(**), &

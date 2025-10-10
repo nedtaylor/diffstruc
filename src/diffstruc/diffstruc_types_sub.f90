@@ -1,6 +1,6 @@
 submodule(diffstruc__types) diffstruc__types_submodule
   !! Submodule containing implementations for derived types
-  use corestruc, only: stop_program
+  use coreutils, only: stop_program
 
 
 

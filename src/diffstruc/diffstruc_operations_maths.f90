@@ -1,6 +1,6 @@
 module diffstruc__operations_maths
   !! This module contains maths operations for the diffstruc library.
-  use corestruc, only: real32
+  use coreutils, only: real32
   use diffstruc__types, only: array_type, get_partial, &
        operator(+), operator(-), operator(*), operator(/)
   implicit none

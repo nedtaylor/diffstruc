@@ -1,6 +1,6 @@
 program test_functions
   !! Example demonstrating second-order derivative computation using your autodiff system
-  use corestruc, only: real32
+  use coreutils, only: real32
   use diffstruc
   implicit none
 

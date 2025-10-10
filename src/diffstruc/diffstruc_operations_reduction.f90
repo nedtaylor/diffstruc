@@ -1,6 +1,6 @@
 module diffstruc__operations_reduction
   !! This module contains reduction operations for the diffstruc library.
-  use corestruc, only: real32, stop_program
+  use coreutils, only: real32, stop_program
   use diffstruc__types, only: array_type, get_partial, &
        operator(+), operator(-), operator(*), operator(**)
   implicit none

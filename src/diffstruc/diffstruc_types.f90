@@ -3,7 +3,7 @@ module diffstruc__types
   !!
   !! The module provides a derived type implementation for arrays that
   !! supports automatic differentiation, including forward and reverse mode.
-  use corestruc, only: real32
+  use coreutils, only: real32
   implicit none
 
   private
