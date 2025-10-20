@@ -355,7 +355,11 @@ contains
     end if
 
     ! Recursively compute gradients
-    call reverse_mode(this, this%grad, record_graph_)
+    if(record_graph_)then
+       call reverse_mode_ptr(this, this%grad)
+    else
+       call reverse_mode(this, this%grad)
+    end if
   end subroutine grad_reverse
 !###############################################################################
 
@@ -397,6 +401,7 @@ contains
           output%val(:,:) = 1._real32
        end if
        if(allocated(output%direction)) deallocate(output%direction)
+       output%requires_grad = .false.
 
     elseif(associated(this%left_operand).or.associated(this%right_operand))then
        ! if(associated(this%grad))then
@@ -457,6 +462,7 @@ contains
        if(allocated(output%direction)) deallocate(output%direction)
        ! call output%allocate(array_shape=[this%shape, size(this%val,2)])
        output%val(:,:) = 0._real32
+       output%requires_grad = .false.
     end if
     ! write(*,*) "done operation: ", trim(this%operation)
     this%is_forward = .false.
@@ -466,12 +472,11 @@ contains
 
 
 !###############################################################################
-  module recursive subroutine reverse_mode(array, upstream_grad, record_graph)
+  module recursive subroutine reverse_mode_ptr(array, upstream_grad)
     !! Backward operation for arrays
     implicit none
     class(array_type), intent(inout) :: array
     type(array_type), pointer, intent(in) :: upstream_grad
-    logical, intent(in) :: record_graph
 
     type(array_type), pointer :: left_partial, right_partial
 
@@ -482,28 +487,27 @@ contains
        if(array%left_operand%requires_grad) then
           allocate(left_partial)
           left_partial = array%get_partial_left(upstream_grad)
-          call accumulate_gradient(array%left_operand, left_partial, record_graph)
+          call accumulate_gradient_ptr(array%left_operand, left_partial)
        end if
     end if
     if(associated(array%right_operand))then
        if(array%right_operand%requires_grad)then
           allocate(right_partial)
           right_partial = array%get_partial_right(upstream_grad)
-          call accumulate_gradient(array%right_operand, right_partial, record_graph)
+          call accumulate_gradient_ptr(array%right_operand, right_partial)
        end if
     end if
     ! write(*,*) "done operation: ", trim(this%operation)
-  end subroutine reverse_mode
+  end subroutine reverse_mode_ptr
 !###############################################################################
 
 
 !###############################################################################
-  recursive subroutine accumulate_gradient(array, grad, record_graph)
+  recursive subroutine accumulate_gradient_ptr(array, grad)
     !! Accumulate gradient for array with safe memory management
     implicit none
     type(array_type), intent(inout) :: array
     type(array_type), intent(in), pointer :: grad
-    logical, intent(in) :: record_graph
 
     integer :: s
     logical :: is_directional
@@ -532,11 +536,7 @@ contains
        end if
        array%grad%is_scalar = array%is_scalar
        array%grad%is_sample_dependent = array%is_sample_dependent
-       if(.not.array%is_scalar)then
-          array%grad%requires_grad = record_graph
-       else
-          array%grad%requires_grad = .false.
-       end if
+       array%grad%requires_grad = .not. array%is_scalar
        array%grad%is_leaf = .true.
        array%grad%grad => null()
        array%grad%owns_gradient = .false.
@@ -551,9 +551,88 @@ contains
 
     end if
 
-    !if(.not. array%is_leaf) then
     if(associated(array%left_operand).or.associated(array%right_operand))then
-       call reverse_mode(array, directional_grad, record_graph)
+       call reverse_mode_ptr(array, directional_grad)
+    end if
+  end subroutine accumulate_gradient_ptr
+!###############################################################################
+
+
+!###############################################################################
+  module recursive subroutine reverse_mode(array, upstream_grad)
+    !! Backward operation for arrays
+    implicit none
+    class(array_type), intent(inout) :: array
+    type(array_type), intent(in) :: upstream_grad
+
+    type(array_type) :: left_partial, right_partial
+
+    ! write(*,'("Performing backward operation for: ",A,T60,"id: ",I0)') &
+    !      trim(this%operation), this%id
+    array%is_forward = .false.
+    if(associated(array%left_operand))then
+       if(array%left_operand%requires_grad) then
+          left_partial = array%get_partial_left(upstream_grad)
+          call accumulate_gradient(array%left_operand, left_partial)
+       end if
+    end if
+    if(associated(array%right_operand))then
+       if(array%right_operand%requires_grad)then
+          right_partial = array%get_partial_right(upstream_grad)
+          call accumulate_gradient(array%right_operand, right_partial)
+       end if
+    end if
+    ! write(*,*) "done operation: ", trim(this%operation)
+  end subroutine reverse_mode
+!###############################################################################
+
+
+!###############################################################################
+  recursive subroutine accumulate_gradient(array, grad)
+    !! Accumulate gradient for array with safe memory management
+    implicit none
+    type(array_type), intent(inout) :: array
+    type(array_type), intent(inout) :: grad
+
+    integer :: s
+    real(real32) :: rtmp1
+
+    if(allocated(array%direction))then
+       if(size(array%direction).gt.0)then
+          do s = 1, size(grad%val, 2)
+             grad%val(:, s) = grad%val(:, s) * array%direction
+          end do
+       end if
+    end if
+
+    if(.not. associated(array%grad)) then
+       allocate(array%grad)
+       if(array%is_sample_dependent)then
+          array%grad%val = grad%val
+       else
+          rtmp1 = real(size(grad%val,2), real32)
+          allocate(array%grad%val(size(grad%val,1),1))
+          do concurrent(s = 1:size(grad%val,1))
+             array%grad%val(s,1) = sum(grad%val(s,:)) / rtmp1
+          end do
+       end if
+       array%grad%is_scalar = array%is_scalar
+       array%grad%is_sample_dependent = array%is_sample_dependent
+    else
+
+       if(array%is_sample_dependent)then
+          array%grad%val = array%grad%val + grad%val
+       else
+          rtmp1 = real(size(grad%val,2), real32)
+          do concurrent(s = 1:size(grad%val,1))
+             array%grad%val(s,1) = array%grad%val(s,1) + sum(grad%val(s,:)) / rtmp1
+          end do
+       end if
+
+    end if
+
+    if(associated(array%left_operand).or.associated(array%right_operand))then
+       call reverse_mode(array, grad)
     end if
   end subroutine accumulate_gradient
 !###############################################################################
@@ -1755,7 +1834,7 @@ contains
     integer, intent(in) :: dim
     type(array_type), pointer :: c
 
-    integer :: i, s
+    integer :: s
     real(real32) :: rtmp1
 
     ! if(size(a%shape) .ne. 1)then
@@ -1771,8 +1850,8 @@ contains
     else if(dim.eq.2)then
        c => a%create_result(array_shape = [a%shape, 1])
        rtmp1 = real(size(a%val,2), real32)
-       do concurrent(i=1:size(a%val,1))
-          c%val(i,1) = sum(a%val(i,:)) / rtmp1
+       do concurrent(s=1:size(a%val,1))
+          c%val(s,1) = sum(a%val(s,:)) / rtmp1
        end do
        c%is_sample_dependent = .false.
     else

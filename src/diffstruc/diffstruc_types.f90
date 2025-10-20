@@ -99,8 +99,8 @@ module diffstruc__types
 
      procedure, pass(this) :: print_graph
 
-     ! final :: finalise_array
-     ! !! Finaliser for array type
+    final :: finalise_array
+    !! Finaliser for array type
   end type array_type
 
 
