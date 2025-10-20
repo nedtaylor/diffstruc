@@ -535,7 +535,7 @@ contains
           ! ! mean reduction
           ! array%grad => array%grad + mean( directional_grad, dim = 2 )
           ! sum reduction
-          array%grad => sum( directional_grad%val, dim=2 )
+          array%grad => sum( directional_grad, dim = 2 )
        end if
        array%grad%is_scalar = array%is_scalar
        array%grad%is_sample_dependent = array%is_sample_dependent
@@ -601,7 +601,7 @@ contains
     type(array_type), intent(inout) :: grad
 
     integer :: s
-    real(real32) :: rtmp1
+    ! real(real32) :: rtmp1
 
     if(allocated(array%direction))then
        if(size(array%direction).gt.0)then
@@ -616,8 +616,8 @@ contains
        if(array%is_sample_dependent)then
           array%grad%val = grad%val
        else
-          rtmp1 = real(size(grad%val,2), real32)
           allocate(array%grad%val(size(grad%val,1),1))
+          ! rtmp1 = real(size(grad%val,2), real32)
           ! ! mean reduction
           ! array%grad%val(:,1) = sum(grad%val, dim=2) / rtmp1
           ! sum reduction
@@ -630,7 +630,7 @@ contains
        if(array%is_sample_dependent)then
           array%grad%val = array%grad%val + grad%val
        else
-          rtmp1 = real(size(grad%val,2), real32)
+          ! rtmp1 = real(size(grad%val,2), real32)
           ! ! mean reduction
           ! do concurrent(s = 1:size(grad%val,1))
           !    array%grad%val(s,1) = array%grad%val(s,1) + sum(grad%val(s,:)) / rtmp1
