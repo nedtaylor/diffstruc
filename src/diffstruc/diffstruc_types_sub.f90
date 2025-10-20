@@ -546,7 +546,10 @@ contains
        if(array%is_sample_dependent)then
           array%grad => array%grad + directional_grad
        else
-          array%grad => array%grad + mean( directional_grad, dim = 2 )
+          ! ! mean reduction
+          ! array%grad => array%grad + mean( directional_grad, dim = 2 )
+          ! sum reduction
+          array%grad => array%grad + sum( directional_grad%val, dim=2 )
        end if
 
     end if
@@ -624,9 +627,12 @@ contains
           array%grad%val = array%grad%val + grad%val
        else
           rtmp1 = real(size(grad%val,2), real32)
-          do concurrent(s = 1:size(grad%val,1))
-             array%grad%val(s,1) = array%grad%val(s,1) + sum(grad%val(s,:)) / rtmp1
-          end do
+          ! ! mean reduction
+          ! do concurrent(s = 1:size(grad%val,1))
+          !    array%grad%val(s,1) = array%grad%val(s,1) + sum(grad%val(s,:)) / rtmp1
+          ! end do
+          ! sum reduction
+          array%grad%val(:,1) = array%grad%val(:,1) + sum(grad%val, dim = 2)
        end if
 
     end if
