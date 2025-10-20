@@ -532,7 +532,10 @@ contains
        if(array%is_sample_dependent)then
           array%grad => directional_grad
        else
-          array%grad => mean( directional_grad, dim=2 )
+          ! ! mean reduction
+          ! array%grad => array%grad + mean( directional_grad, dim = 2 )
+          ! sum reduction
+          array%grad => sum( directional_grad%val, dim=2 )
        end if
        array%grad%is_scalar = array%is_scalar
        array%grad%is_sample_dependent = array%is_sample_dependent
@@ -615,9 +618,10 @@ contains
        else
           rtmp1 = real(size(grad%val,2), real32)
           allocate(array%grad%val(size(grad%val,1),1))
-          do concurrent(s = 1:size(grad%val,1))
-             array%grad%val(s,1) = sum(grad%val(s,:)) / rtmp1
-          end do
+          ! ! mean reduction
+          ! array%grad%val(:,1) = sum(grad%val, dim=2) / rtmp1
+          ! sum reduction
+          array%grad%val(:,1) = sum(grad%val, dim = 2)
        end if
        array%grad%is_scalar = array%is_scalar
        array%grad%is_sample_dependent = array%is_sample_dependent
