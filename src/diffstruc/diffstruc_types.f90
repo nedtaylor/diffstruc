@@ -53,6 +53,8 @@ module diffstruc__types
      type(array_type), pointer :: right_operand => null()
      !! Right operand for backward pass
      character(len=32) :: operation = 'none'
+     logical :: owns_left_operand = .false.
+     logical :: owns_right_operand = .false.
      logical :: owns_gradient = .true.
      !! Flag indicating if this array owns its gradient memory
      logical :: fix_pointer = .false.
@@ -129,7 +131,7 @@ module diffstruc__types
        real(real32), dimension(this%size) :: output
      end function flatten_array
 
-     module subroutine assign_array(this, input)
+     module recursive subroutine assign_array(this, input)
        class(array_type), intent(out), target :: this
        type(array_type), intent(in) :: input
      end subroutine assign_array

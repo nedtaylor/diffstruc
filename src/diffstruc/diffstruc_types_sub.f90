@@ -153,18 +153,34 @@ contains
     implicit none
     type(array_type), intent(inout) :: this
 
-    if (associated(this%grad) .and. this%owns_gradient) then
+    ! Deallocate all allocatable arrays
+    if(allocated(this%val)) deallocate(this%val)
+    if(allocated(this%shape)) deallocate(this%shape)
+    if(allocated(this%indices)) deallocate(this%indices)
+    if(allocated(this%adj_ja)) deallocate(this%adj_ja)
+    if(allocated(this%mask)) deallocate(this%mask)
+    if(allocated(this%direction)) deallocate(this%direction)
+    ! Nullify and deallocate pointers
+    if(associated(this%grad) .and. this%owns_gradient) then
        deallocate(this%grad)
     end if
-
-    ! Nullify pointers safely
-    if(associated(this%left_operand)) nullify(this%left_operand)
-    if(associated(this%right_operand)) nullify(this%right_operand)
-    if(associated(this%grad)) nullify(this%grad)
-
+    if(associated(this%left_operand))then
+       if(this%owns_left_operand) deallocate(this%left_operand)
+       nullify(this%left_operand)
+    end if
+    if(associated(this%right_operand))then
+       if(this%owns_right_operand) deallocate(this%right_operand)
+       nullify(this%right_operand)
+    end if
+    if(associated(this%grad))then
+       if(this%owns_gradient) deallocate(this%grad)
+       nullify(this%grad)
+    end if
     this%owns_gradient = .false.
     nullify(this%get_partial_left)
     nullify(this%get_partial_right)
+    this%allocated = .false.
+    this%size = 0
 
   end subroutine finalise_array
 !###############################################################################
@@ -192,7 +208,7 @@ contains
 
 
 !###############################################################################
-  module subroutine assign_array(this, input)
+  module recursive subroutine assign_array(this, input)
     !! Assign the array
     implicit none
 
@@ -221,6 +237,16 @@ contains
     if(allocated(input%indices)) this%indices = input%indices
     if(allocated(input%adj_ja)) this%adj_ja = input%adj_ja
     if(allocated(input%mask)) this%mask = input%mask
+    if(input%owns_left_operand.and.associated(input%left_operand))then
+       this%owns_left_operand = input%owns_left_operand
+       allocate(this%left_operand)
+       this%left_operand = input%left_operand
+    end if
+    if(input%owns_right_operand.and.associated(input%right_operand))then
+       this%owns_right_operand = input%owns_right_operand
+       allocate(this%right_operand)
+       this%right_operand = input%right_operand
+    end if
 
     if(associated(input%get_partial_left)) &
          this%get_partial_left => input%get_partial_left
@@ -260,6 +286,8 @@ contains
     result_ptr%is_forward = this%is_forward
     result_ptr%operation = 'none'
     result_ptr%owns_gradient = .false.
+    result_ptr%owns_left_operand = .false.
+    result_ptr%owns_right_operand = .false.
     result_ptr%left_operand => null()
     result_ptr%right_operand => null()
     result_ptr%get_partial_left => null()
@@ -401,7 +429,6 @@ contains
           output%val(:,:) = 1._real32
        end if
        if(allocated(output%direction)) deallocate(output%direction)
-       output%requires_grad = .false.
 
     elseif(associated(this%left_operand).or.associated(this%right_operand))then
        ! if(associated(this%grad))then
@@ -454,6 +481,8 @@ contains
        else
           call stop_program("Neither operand is a variable in forward-over-reverse")
        end if
+       output%owns_left_operand = .true.
+       output%owns_right_operand = .true.
 
        ! end if
     else
@@ -462,7 +491,6 @@ contains
        if(allocated(output%direction)) deallocate(output%direction)
        ! call output%allocate(array_shape=[this%shape, size(this%val,2)])
        output%val(:,:) = 0._real32
-       output%requires_grad = .false.
     end if
     ! write(*,*) "done operation: ", trim(this%operation)
     this%is_forward = .false.
@@ -552,7 +580,7 @@ contains
           ! ! mean reduction
           ! array%grad => array%grad + mean( directional_grad, dim = 2 )
           ! sum reduction
-          array%grad => array%grad + sum( directional_grad%val, dim=2 )
+          array%grad => array%grad + sum( directional_grad%val, dim = 2 )
        end if
 
     end if
@@ -737,24 +765,26 @@ contains
 
     if(associated(this%left_operand))then
        call this%left_operand%nullify_graph()
+       if(this%owns_left_operand) deallocate(this%left_operand)
+       nullify(this%left_operand)
     end if
-
     if(associated(this%right_operand)) then
        call this%right_operand%nullify_graph()
+       if(this%owns_right_operand) deallocate(this%right_operand)
+       nullify(this%right_operand)
     end if
-
-    if(associated(this%left_operand))then
-       this%left_operand => null()
-    end if
-    if(associated(this%right_operand))then
-       this%right_operand => null()
-    end if
-
     if(associated(this%grad))then
        call this%grad%nullify_graph()
        if(this%owns_gradient) deallocate(this%grad)
-       this%grad => null()
+       nullify(this%grad)
     end if
+    this%owns_left_operand = .false.
+    this%owns_right_operand = .false.
+    this%owns_gradient = .false.
+    nullify(this%get_partial_left)
+    nullify(this%get_partial_right)
+    this%allocated = .false.
+    this%size = 0
 
   end subroutine nullify_graph
 !###############################################################################
@@ -1022,6 +1052,8 @@ contains
       class(array_type), intent(in) :: node
       character(len=*), intent(in) :: prefix
       character(len=1024) :: new_prefix
+      character(len=3) :: ownership_char
+      ! ownership character
       integer :: node_addr
 
       node_addr = int(loc(node))
@@ -1030,17 +1062,27 @@ contains
 
       ! Print left operand
       if (associated(node%left_operand)) then
-         if (associated(node%right_operand)) then
-            new_prefix = trim(prefix) // '    ├── L: '
+         if (node%owns_left_operand) then
+            ownership_char = '(*)'
          else
-            new_prefix = trim(prefix) // '    └── L: '
+            ownership_char = ''
+         end if
+         if (associated(node%right_operand)) then
+            new_prefix = trim(prefix) // '    ├── L' // trim(ownership_char) // ': '
+         else
+            new_prefix = trim(prefix) // '    └── L' // trim(ownership_char) // ': '
          end if
          call print_tree(node%left_operand, new_prefix)
       end if
 
       ! Print right operand
       if (associated(node%right_operand)) then
-         new_prefix = trim(prefix) // '    └── R: '
+         if (node%owns_right_operand) then
+            ownership_char = '(*)'
+         else
+            ownership_char = ''
+         end if
+         new_prefix = trim(prefix) // '    └── R' // trim(ownership_char) // ': '
          call print_tree(node%right_operand, new_prefix)
       end if
     end subroutine print_tree
@@ -1914,7 +1956,7 @@ contains
     integer, intent(in) :: dim
     type(array_type), pointer :: c
 
-    integer :: i, s
+    integer :: s
 
     if(dim.eq.1)then
        c => a%create_result(array_shape=[1, size(a%val,2)])
@@ -1923,8 +1965,8 @@ contains
        end do
     else if(dim.eq.2)then
        c => a%create_result(array_shape=[a%shape, 1])
-       do concurrent(i=1:size(a%val,1))
-          c%val(i,1) = sum(a%val(i,:))
+       do concurrent(s=1:size(a%val,1))
+          c%val(s,1) = sum(a%val(s,:))
        end do
        c%is_sample_dependent = .false.
     else
@@ -1952,8 +1994,6 @@ contains
     integer, intent(in) :: new_dim_index
     integer, intent(in) :: new_dim_size
     type(array_type), pointer :: c
-
-    integer :: i, s
 
     if(size(a%shape) .ne. 1)then
        call stop_program("sum_array_output_array: only 1D arrays can be used")
@@ -2023,7 +2063,7 @@ contains
     integer, intent(in) :: ncopies
     type(array_type), pointer :: c
 
-    integer :: i, s
+    integer :: s
 
     if(size(source%shape) .ne. 1)then
        call stop_program("spread: only 1D arrays can be used")
@@ -2061,8 +2101,6 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
-
-    integer :: i, s
 
     output = unspread( &
          upstream_grad, &
@@ -2119,8 +2157,6 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
-
-    integer :: i, s
 
     output = spread( &
          upstream_grad, &
