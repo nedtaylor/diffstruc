@@ -254,6 +254,26 @@ contains
          this%get_partial_right => input%get_partial_right
 
   end subroutine assign_array
+!-------------------------------------------------------------------------------
+  module subroutine assign_and_deallocate_source(this, source, owns_left_operand, &
+       owns_right_operand)
+    !! Assign and deallocate the source array
+    implicit none
+
+    ! Arguments
+    class(array_type), intent(inout) :: this
+    !! Instance of the array type
+    type(array_type), intent(inout), pointer :: source
+    !! Source array
+    logical, intent(in), optional :: owns_left_operand, owns_right_operand
+
+    if(present(owns_left_operand)) source%owns_left_operand = owns_left_operand
+    if(present(owns_right_operand)) source%owns_right_operand = owns_right_operand
+    this = source
+    deallocate(source)
+    ! nullify(source)
+
+  end subroutine assign_and_deallocate_source
 !###############################################################################
 
 

@@ -71,6 +71,8 @@ module diffstruc__types
      !! Abstract procedure for deallocating array
      procedure, pass(this) :: flatten => flatten_array
      !! Procedure for flattening array
+     procedure, pass(this) :: assign_and_deallocate_source
+     !! Procedure for assigning and deallocating source array
      procedure :: assign => assign_array
      generic, public :: assignment(=) => assign
      !! Overloaded assignment operator
@@ -101,8 +103,8 @@ module diffstruc__types
 
      procedure, pass(this) :: print_graph
 
-    final :: finalise_array
-    !! Finaliser for array type
+     final :: finalise_array
+     !! Finaliser for array type
   end type array_type
 
 
@@ -130,6 +132,14 @@ module diffstruc__types
        class(array_type), intent(in) :: this
        real(real32), dimension(this%size) :: output
      end function flatten_array
+
+     module subroutine assign_and_deallocate_source(this, source, &
+          owns_left_operand, owns_right_operand &
+     )
+       class(array_type), intent(inout) :: this
+       type(array_type), intent(inout), pointer :: source
+       logical, intent(in), optional :: owns_left_operand, owns_right_operand
+     end subroutine assign_and_deallocate_source
 
      module recursive subroutine assign_array(this, input)
        class(array_type), intent(out), target :: this
