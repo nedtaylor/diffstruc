@@ -44,8 +44,6 @@ module diffstruc__types
      !! Mask for operation
      logical :: requires_grad = .false.
      !! Flag indicating if gradients should be computed
-     logical :: is_leaf = .true.
-     !! Flag indicating if this is a leaf node (parameter)
      type(array_type), pointer :: grad => null()
      !! Gradient array (same type as value)
      type(array_type), pointer :: left_operand => null()

@@ -34,7 +34,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'tanh'
        c%left_operand => a
     end if
@@ -72,7 +71,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'tanh_reverse'
        c%left_operand => a
     end if

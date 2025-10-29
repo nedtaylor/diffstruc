@@ -43,7 +43,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'sin'
        c%left_operand => a
     end if
@@ -76,7 +75,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'cos'
        c%left_operand => a
     end if
@@ -108,7 +106,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'tan'
        c%left_operand => a
     end if

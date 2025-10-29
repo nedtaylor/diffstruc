@@ -46,7 +46,6 @@ contains
     if(a%requires_grad .or. b%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
-       c%is_leaf = .false.
        c%operation = 'matmul'
        c%left_operand => a
        c%right_operand => b
@@ -74,7 +73,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'matmul_scalar'
        c%left_operand => a
     end if
@@ -82,7 +80,6 @@ contains
     b_array%is_sample_dependent = .false.
     b_array%shape = shape(b)
     b_array%requires_grad = .false.
-    b_array%is_leaf = .false.
     call b_array%allocate(array_shape=[size(b,1), size(b,2), 1])
     do i = 1, size(b,2)
        b_array%val((i-1)*size(b,1)+1:i*size(b,1), 1) = b(:,i)
@@ -112,7 +109,6 @@ contains
     if(b%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = b%is_forward
-       c%is_leaf = .false.
        c%operation = 'matmul_scalar'
        c%right_operand => b
     end if
@@ -120,7 +116,6 @@ contains
     a_array%is_sample_dependent = .false.
     a_array%shape = shape(a)
     a_array%requires_grad = .false.
-    a_array%is_leaf = .false.
     call a_array%allocate(array_shape=[size(a,1), size(a,2), 1])
     do i = 1, size(a,2)
        a_array%val((i-1)*size(a,1)+1:i*size(a,1), 1) = a(:,i)
@@ -211,7 +206,6 @@ contains
     if(a%requires_grad .or. b%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
-       c%is_leaf = .false.
        c%operation = 'outer_product'
        c%left_operand => a
        c%right_operand => b
@@ -248,7 +242,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'transpose'
        c%left_operand => a
     end if

@@ -228,7 +228,6 @@ contains
     if(allocated(input%shape)) this%shape = input%shape
     if(allocated(input%val)) this%val = input%val
     this%requires_grad = input%requires_grad
-    this%is_leaf = input%is_leaf
     if(associated(input%grad)) this%grad => input%grad
     if(associated(input%left_operand)) this%left_operand => input%left_operand
     if(associated(input%right_operand)) this%right_operand => input%right_operand
@@ -300,7 +299,6 @@ contains
 
     ! Initialize autodiff fields
     result_ptr%requires_grad = .false.
-    result_ptr%is_leaf = .true.
     result_ptr%is_scalar = this%is_scalar
     result_ptr%is_sample_dependent = this%is_sample_dependent
     result_ptr%is_forward = this%is_forward
@@ -356,7 +354,6 @@ contains
 
     itmp = 0
     output => forward_over_reverse(this, variable, itmp)
-    this%is_leaf = .false.
     this%requires_grad = .true.
 
   end function grad_forward
@@ -387,7 +384,6 @@ contains
        call this%grad%allocate(array_shape=[size(this%val,1), size(this%val,2)])
        this%grad%is_sample_dependent = this%is_sample_dependent
        this%grad%requires_grad = record_graph_
-       this%grad%is_leaf = .true.
        this%grad%operation = 'none'
        this%grad%left_operand => null()
        this%grad%right_operand => null()
@@ -459,7 +455,7 @@ contains
           if(associated(this%get_partial_left))then
              is_left_a_variable = .true.
              !if(associated(this%left_operand%grad))then
-             !    left_deriv = this%left_operand%grad
+             !   left_deriv => this%left_operand%grad
              !else
              left_deriv_tmp => &
                   forward_over_reverse(this%left_operand, variable, itmp)
@@ -481,7 +477,7 @@ contains
           if(associated(this%get_partial_right))then
              is_right_a_variable = .true.
              !if(associated(this%right_operand%grad))then
-             !  right_deriv = this%right_operand%grad
+             !   right_deriv => this%right_operand%grad
              !else
              right_deriv_tmp => &
                   forward_over_reverse(this%right_operand, variable, itmp)
@@ -529,7 +525,7 @@ contains
     type(array_type), pointer :: left_partial, right_partial
 
     ! write(*,'("Performing backward operation for: ",A,T60,"id: ",I0)') &
-    !      trim(this%operation), this%id
+    !      trim(array%operation), array%id
     array%is_forward = .false.
     if(associated(array%left_operand))then
        if(array%left_operand%requires_grad) then
@@ -545,7 +541,7 @@ contains
           call accumulate_gradient_ptr(array%right_operand, right_partial)
        end if
     end if
-    ! write(*,*) "done operation: ", trim(this%operation)
+    ! write(*,*) "done operation: ", trim(array%operation)
   end subroutine reverse_mode_ptr
 !###############################################################################
 
@@ -588,7 +584,6 @@ contains
        array%grad%is_scalar = array%is_scalar
        array%grad%is_sample_dependent = array%is_sample_dependent
        array%grad%requires_grad = .not. array%is_scalar
-       array%grad%is_leaf = .true.
        array%grad%grad => null()
        array%grad%owns_gradient = .false.
        array%owns_gradient = .true.
@@ -622,7 +617,7 @@ contains
     type(array_type) :: left_partial, right_partial
 
     ! write(*,'("Performing backward operation for: ",A,T60,"id: ",I0)') &
-    !      trim(this%operation), this%id
+    !      trim(array%operation), array%id
     array%is_forward = .false.
     if(associated(array%left_operand))then
        if(array%left_operand%requires_grad) then
@@ -1011,7 +1006,6 @@ contains
     class(array_type), intent(inout) :: this
 
     this%requires_grad = .false.
-    this%is_leaf = .true.
     this%operation = 'none'
     this%left_operand => null()
     this%right_operand => null()
@@ -1074,11 +1068,11 @@ contains
       character(len=1024) :: new_prefix
       character(len=3) :: ownership_char
       ! ownership character
-      integer :: node_addr
+      character(len=20) :: node_addr
 
-      node_addr = int(loc(node))
+      write(node_addr, '(I0)') loc(node)
       print *, trim(prefix) // '└── [' // trim(node%operation) // &
-           '] @' // trim(adjustl(itoa(node_addr)))
+           '] @' // trim(adjustl(node_addr))
 
       ! Print left operand
       if (associated(node%left_operand)) then
@@ -1106,12 +1100,6 @@ contains
          call print_tree(node%right_operand, new_prefix)
       end if
     end subroutine print_tree
-
-    function itoa(i) result(str)
-      integer, intent(in) :: i
-      character(len=20) :: str
-      write(str, '(I0)') i
-    end function itoa
 
   end subroutine print_graph
 !###############################################################################
@@ -1147,7 +1135,6 @@ contains
     if(a%requires_grad .or. b%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
-       c%is_leaf = .false.
        c%operation = 'add'
        c%left_operand => a
        c%right_operand => b
@@ -1168,7 +1155,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'add'
        c%left_operand => a
     end if
@@ -1202,7 +1188,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'add'
        c%left_operand => a
     end if
@@ -1232,7 +1217,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'add'
        c%left_operand => a
     end if
@@ -1275,7 +1259,6 @@ contains
     if(a%requires_grad .or. b%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
-       c%is_leaf = .false.
        c%operation = 'subtract'
        c%left_operand => a
        c%right_operand => b
@@ -1300,7 +1283,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'subtract_scalar'
        c%left_operand => a
     end if
@@ -1320,7 +1302,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'subtract_scalar'
        c%left_operand => a
     end if
@@ -1340,7 +1321,6 @@ contains
     if(b%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = b%is_forward
-       c%is_leaf = .false.
        c%operation = 'subtract_scalar'
        c%left_operand => b
     end if
@@ -1359,7 +1339,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'negate'
        c%left_operand => a
     end if
@@ -1415,7 +1394,6 @@ contains
     if(a%requires_grad .or. b%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
-       c%is_leaf = .false.
        c%operation = 'multiply'
        c%left_operand => a
        c%right_operand => b
@@ -1437,17 +1415,16 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'multiply_scalar'
        c%left_operand => a
     end if
     allocate(b_array)
     b_array%is_scalar = .true.
     b_array%requires_grad = .false.
-    b_array%is_leaf = .false.
     call b_array%allocate(array_shape=[1, 1])
     b_array%val(1, 1) = scalar
     c%right_operand => b_array
+    c%owns_right_operand = .true.
   end function multiply_scalar
 !-------------------------------------------------------------------------------
   module function scalar_multiply(scalar, a) result(c)
@@ -1481,7 +1458,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'multiply_logical'
        c%left_operand => a
     end if
@@ -1549,7 +1525,6 @@ contains
     if(a%requires_grad .or. b%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
-       c%is_leaf = .false.
        c%operation = 'divide'
        c%left_operand => a
        c%right_operand => b
@@ -1572,7 +1547,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'divide_scalar'
        c%left_operand => a
     end if
@@ -1580,10 +1554,10 @@ contains
     b_array%is_scalar = .true.
     b_array%is_sample_dependent = .false.
     b_array%requires_grad = .false.
-    b_array%is_leaf = .false.
     call b_array%allocate(array_shape=[1, 1])
     b_array%val(1, 1) = scalar
     c%right_operand => b_array
+    c%owns_right_operand = .true.
   end function divide_scalar
 !-------------------------------------------------------------------------------
   module function scalar_divide(scalar, a) result(c)
@@ -1602,7 +1576,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'scalar_divide'
        c%right_operand => a
     end if
@@ -1610,10 +1583,10 @@ contains
     b_array%is_scalar = .true.
     b_array%is_sample_dependent = .false.
     b_array%requires_grad = .false.
-    b_array%is_leaf = .false.
     call b_array%allocate(array_shape=[1, 1])
     b_array%val(1, 1) = scalar
     c%left_operand => b_array
+    c%owns_left_operand = .true.
   end function scalar_divide
 !-------------------------------------------------------------------------------
   module function divide_real1d(a, b) result(c)
@@ -1636,17 +1609,16 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'divide_real1d'
        c%left_operand => a
     end if
     allocate(b_array)
     b_array%is_sample_dependent = .false.
     b_array%requires_grad = .false.
-    b_array%is_leaf = .false.
     call b_array%allocate(array_shape=[1, size(b)])
     b_array%val(1,:) = b
     c%right_operand => b_array
+    c%owns_right_operand = .true.
   end function divide_real1d
 !-------------------------------------------------------------------------------
   function get_partial_divide_left(this, upstream_grad) result(output)
@@ -1699,7 +1671,6 @@ contains
     if(a%requires_grad .or. b%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
-       c%is_leaf = .false.
        c%operation = 'power'
        c%left_operand => a
        c%right_operand => b
@@ -1721,7 +1692,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'power_scalar'
        c%left_operand => a
     end if
@@ -1729,10 +1699,10 @@ contains
     b_array%is_scalar = .true.
     b_array%is_sample_dependent = .false.
     b_array%requires_grad = .false.
-    b_array%is_leaf = .false.
     call b_array%allocate(array_shape=[1, 1])
     b_array%val(1, 1) = scalar
     c%right_operand => b_array
+    c%owns_right_operand = .true.
 
   end function power_real_scalar
 !-------------------------------------------------------------------------------
@@ -1760,7 +1730,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'scalar_power'
        c%right_operand => a
     end if
@@ -1768,10 +1737,10 @@ contains
     b_array%is_scalar = .true.
     b_array%is_sample_dependent = .false.
     b_array%requires_grad = .false.
-    b_array%is_leaf = .false.
     call b_array%allocate(array_shape=[1, 1])
     b_array%val(1, 1) = scalar
     c%left_operand => b_array
+    c%owns_left_operand = .true.
 
   end function scalar_power
 !-------------------------------------------------------------------------------
@@ -1842,7 +1811,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'exp'
        c%left_operand => a
     end if
@@ -1874,7 +1842,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'log'
        c%left_operand => a
     end if
@@ -1935,7 +1902,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'mean_array'
        c%left_operand => a
     end if
@@ -1999,7 +1965,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'sum_array'
        c%left_operand => a
     end if
@@ -2036,7 +2001,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'sum_array_output_array'
        c%left_operand => a
     end if
@@ -2110,7 +2074,6 @@ contains
     if(source%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = source%is_forward
-       c%is_leaf = .false.
        c%operation = 'spread'
        c%left_operand => source
     end if
@@ -2166,7 +2129,6 @@ contains
     if(source%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = source%is_forward
-       c%is_leaf = .false.
        c%operation = 'unspread'
        c%left_operand => source
     end if

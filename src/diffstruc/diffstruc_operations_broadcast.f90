@@ -70,7 +70,6 @@ contains
     if(a%requires_grad .or. b%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
-       c%is_leaf = .false.
        c%operation = 'concat'
        c%left_operand => a
        c%right_operand => b
@@ -118,7 +117,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'ltrim'
        c%left_operand => a
     end if
@@ -145,7 +143,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'rtrim'
        c%left_operand => a
     end if
@@ -174,7 +171,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'index'
        c%left_operand => a
     end if
@@ -226,7 +222,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'index'
        c%left_operand => a
     end if
@@ -265,7 +260,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'pack'
        c%left_operand => a
     end if
@@ -317,7 +311,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'unpack'
        c%left_operand => a
     end if

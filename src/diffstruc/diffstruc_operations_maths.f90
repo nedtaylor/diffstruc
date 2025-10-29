@@ -42,7 +42,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'sqrt'
        c%left_operand => a
     end if
@@ -76,7 +75,6 @@ contains
 
     ! if(array%requires_grad) then
     !    c%requires_grad = .true.
-    !    c%is_leaf = .false.
     !    c%operation = 'sign'
     !    c%left_operand => array
     ! end if
@@ -97,7 +95,6 @@ contains
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%is_leaf = .false.
        c%operation = 'sigmoid'
        c%left_operand => a
     end if

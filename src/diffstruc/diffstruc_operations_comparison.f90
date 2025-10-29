@@ -90,7 +90,6 @@ contains
     if(tsource%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = tsource%is_forward
-       c%is_leaf = .false.
        c%operation = 'merge'
        c%left_operand => tsource
     end if
@@ -141,7 +140,6 @@ contains
     if(tsource%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = tsource%is_forward
-       c%is_leaf = .false.
        c%operation = 'merge'
        c%left_operand => tsource
     end if
