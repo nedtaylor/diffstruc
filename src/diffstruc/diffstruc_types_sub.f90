@@ -325,13 +325,20 @@ contains
     real(real32), dimension(..), intent(in) :: input
     !! Input array
 
+    if( any(shape(input).ne.[this%shape, size(this%val,2)]) ) then
+       return
+    end if
     select rank(input)
     rank(1)
        this%val(:,1) = input
     rank(2)
        this%val(:,:) = input
-    rank default
-       return
+    rank(3)
+       this%val(:,:) = reshape(input, shape(this%val))
+    rank(4)
+       this%val(:,:) = reshape(input, shape(this%val))
+    rank(5)
+       this%val(:,:) = reshape(input, shape(this%val))
     end select
   end subroutine set_array
 !###############################################################################
