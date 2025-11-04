@@ -75,14 +75,12 @@ contains
     allocate(c)
     call c%allocate(array_shape=[size(tsource%val,1), size(tsource%val,2)])
     ! merge 1D array by using shape to swap dimensions
-    do concurrent(s=1:size(tsource%val,2))
-       do concurrent(i=1:size(tsource%val,1), j=1:size(tsource%val,2))
-          if(mask(i,j)) then
-             c%val(i,j) = tsource%val(i,j)
-          else
-             c%val(i,j) = fsource
-          end if
-       end do
+    do concurrent(i=1:size(tsource%val,1), j=1:size(tsource%val,2))
+       if(mask(i,j)) then
+          c%val(i,j) = tsource%val(i,j)
+       else
+          c%val(i,j) = fsource
+       end if
     end do
     c%mask = mask
 
