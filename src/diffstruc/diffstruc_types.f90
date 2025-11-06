@@ -69,6 +69,8 @@ module diffstruc__types
      !! Abstract procedure for deallocating array
      procedure, pass(this) :: flatten => flatten_array
      !! Procedure for flattening array
+     procedure, pass(this) :: assign_shallow
+     !! Procedure for shallow assignment of array
      procedure, pass(this) :: assign_and_deallocate_source
      !! Procedure for assigning and deallocating source array
      procedure :: assign => assign_array
@@ -132,6 +134,11 @@ module diffstruc__types
        class(array_type), intent(in) :: this
        real(real32), dimension(this%size) :: output
      end function flatten_array
+
+     module subroutine assign_shallow(this, source)
+       class(array_type), intent(inout) :: this
+       class(array_type), intent(in), target :: source
+     end subroutine assign_shallow
 
      module subroutine assign_and_deallocate_source(this, source, &
           owns_left_operand, owns_right_operand &

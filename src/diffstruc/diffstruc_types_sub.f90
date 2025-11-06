@@ -254,6 +254,44 @@ contains
 
   end subroutine assign_array
 !-------------------------------------------------------------------------------
+  module subroutine assign_shallow(this, source)
+    !! Assign the array
+    implicit none
+
+    ! Arguments
+    class(array_type), intent(inout) :: this
+    !! Instance of the array type
+    class(array_type), intent(in), target :: source
+    !! source array
+
+    this%id = source%id
+    this%rank = source%rank
+    this%size = source%size
+    this%is_sample_dependent = source%is_sample_dependent
+    this%is_forward = source%is_forward
+    this%is_scalar = source%is_scalar
+    this%allocated = source%allocated
+    if(allocated(source%shape)) this%shape = source%shape
+    if(allocated(source%val)) this%val = source%val
+    this%requires_grad = source%requires_grad
+    if(associated(source%grad)) this%grad => source%grad
+    if(associated(source%left_operand)) this%left_operand => source%left_operand
+    if(associated(source%right_operand)) this%right_operand => source%right_operand
+    this%operation = source%operation
+    this%owns_gradient = .false.  ! Dont copy gradient ownership
+    if(allocated(source%indices)) this%indices = source%indices
+    if(allocated(source%adj_ja)) this%adj_ja = source%adj_ja
+    if(allocated(source%mask)) this%mask = source%mask
+    this%owns_left_operand = source%owns_left_operand
+    this%owns_right_operand = source%owns_right_operand
+
+    if(associated(source%get_partial_left)) &
+         this%get_partial_left => source%get_partial_left
+    if(associated(source%get_partial_right)) &
+         this%get_partial_right => source%get_partial_right
+
+  end subroutine assign_shallow
+!-------------------------------------------------------------------------------
   module subroutine assign_and_deallocate_source(this, source, owns_left_operand, &
        owns_right_operand)
     !! Assign and deallocate the source array
