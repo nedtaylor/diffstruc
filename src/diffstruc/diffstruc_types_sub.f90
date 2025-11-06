@@ -732,6 +732,7 @@ contains
        allocate(array%grad)
        if(array%is_sample_dependent)then
           array%grad%val = grad%val
+          array%grad%shape = [ grad%shape, size(array%grad%val,2) ]
        else
           allocate(array%grad%val(size(grad%val,1),1))
           ! rtmp1 = real(size(grad%val,2), real32)
@@ -739,6 +740,7 @@ contains
           ! array%grad%val(:,1) = sum(grad%val, dim=2) / rtmp1
           ! sum reduction
           array%grad%val(:,1) = sum(grad%val, dim = 2)
+          array%grad%shape = [ grad%shape, 1 ]
        end if
        array%grad%is_scalar = array%is_scalar
        array%grad%is_sample_dependent = array%is_sample_dependent
