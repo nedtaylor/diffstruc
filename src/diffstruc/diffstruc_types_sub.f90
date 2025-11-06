@@ -367,7 +367,7 @@ contains
        output = this%val
     rank default
        if(size(this%shape,1) + 1 .ne.rank(output)) then
-          write(rank_str,*) rank(output)
+          write(rank_str,'(I0)') rank(output)
           call print_warning( &
                "Output data rank mismatch, expected rank "//trim(adjustl(rank_str)) &
           )
@@ -455,7 +455,7 @@ contains
     if(.not. associated(this%grad)) then
        allocate(this%grad)
        ! Safely initialize gradient without copying computation graph
-       call this%grad%allocate(array_shape=[size(this%val,1), size(this%val,2)])
+       call this%grad%allocate(array_shape=[this%shape, size(this%val,2)])
        this%grad%is_sample_dependent = this%is_sample_dependent
        this%grad%requires_grad = record_graph_
        this%grad%operation = 'none'
@@ -732,7 +732,7 @@ contains
        allocate(array%grad)
        if(array%is_sample_dependent)then
           array%grad%val = grad%val
-          array%grad%shape = [ grad%shape, size(array%grad%val,2) ]
+          array%grad%shape = grad%shape
        else
           allocate(array%grad%val(size(grad%val,1),1))
           ! rtmp1 = real(size(grad%val,2), real32)
@@ -740,7 +740,7 @@ contains
           ! array%grad%val(:,1) = sum(grad%val, dim=2) / rtmp1
           ! sum reduction
           array%grad%val(:,1) = sum(grad%val, dim = 2)
-          array%grad%shape = [ grad%shape, 1 ]
+          array%grad%shape = grad%shape
        end if
        array%grad%is_scalar = array%is_scalar
        array%grad%is_sample_dependent = array%is_sample_dependent
