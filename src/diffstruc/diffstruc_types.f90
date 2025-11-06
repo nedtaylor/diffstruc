@@ -76,6 +76,8 @@ module diffstruc__types
      !! Overloaded assignment operator
      procedure, pass(this) :: set => set_array
      !! Procedure for setting array
+     procedure, pass(this) :: extract => extract_array
+     !! Procedure for extracting array as a standard real array
 
      procedure, pass(this) :: set_direction
      procedure, pass(this) :: grad_reverse
@@ -154,6 +156,11 @@ module diffstruc__types
        class(array_type), intent(inout) :: this
        real(real32), dimension(..), intent(in) :: input
      end subroutine set_array
+
+     module subroutine extract_array(this, output)
+       class(array_type), intent(in) :: this
+       real(real32), dimension(..), allocatable, intent(out) :: output
+     end subroutine extract_array
   end interface
 
   interface

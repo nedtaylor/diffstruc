@@ -1,6 +1,6 @@
 submodule(diffstruc__types) diffstruc__types_submodule
   !! Submodule containing implementations for derived types
-  use coreutils, only: stop_program
+  use coreutils, only: stop_program, print_warning
 
 
 
@@ -341,6 +341,73 @@ contains
        this%val(:,:) = reshape(input, shape(this%val))
     end select
   end subroutine set_array
+!###############################################################################
+
+
+!###############################################################################
+  module subroutine extract_array(this, output)
+    !! Extract the array
+    implicit none
+
+    ! Arguments
+    class(array_type), intent(in) :: this
+    !! Instance of the array type
+    real(real32), dimension(..), allocatable, intent(out) :: output
+    !! Output array
+
+    ! Local variables
+    character(len=10) :: rank_str
+    !! String for rank
+
+
+    select rank(output)
+    rank(1)
+       output = reshape(this%val, [ product(this%shape) * size(this%val,2) ])
+    rank(2)
+       output = this%val
+    rank default
+       if(size(this%shape,1) + 1 .ne.rank(output)) then
+          write(rank_str,*) rank(output)
+          call print_warning( &
+               "Output data rank mismatch, expected rank "//trim(adjustl(rank_str)) &
+          )
+          return
+       end if
+       select rank(output)
+       rank(3)
+          output = reshape( &
+               this%val, &
+               [ &
+                    this%shape(1), &
+                    this%shape(2), &
+                    size(this%val,2) &
+               ] &
+          )
+       rank(4)
+          output = reshape( &
+               this%val, &
+               [ &
+                    this%shape(1), &
+                    this%shape(2), &
+                    this%shape(3), &
+                    size(this%val,2) &
+               ] &
+          )
+       rank(5)
+          output = reshape( &
+               this%val, &
+               [ &
+                    this%shape(1), &
+                    this%shape(2), &
+                    this%shape(3), &
+                    this%shape(4), &
+                    size(this%val,2) &
+               ] &
+          )
+       end select
+    end select
+
+  end subroutine extract_array
 !###############################################################################
 
 
