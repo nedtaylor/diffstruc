@@ -50,6 +50,7 @@ contains
     ! derivative of tanh(x) is (1 - tanh(x)^2)
     ptr => upstream_grad * (1._real32 - this ** 2._real32)
     ptr%owns_right_operand = .true.
+    ptr%right_operand%owns_right_operand = .true.
     call output%assign_and_deallocate_source(ptr)
     ! output = upstream_grad * tanh_reverse_array( this )
   end function get_partial_tanh

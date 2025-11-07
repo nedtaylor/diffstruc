@@ -13,7 +13,9 @@ module diffstruc__types
   public :: operator(+), operator(-), operator(*), operator(/), operator(**)
   public :: sum, mean, spread, unspread, exp, log
 
-
+  type array_ptr
+  type(array_type), pointer :: p => null()
+  end type array_ptr
 !-------------------------------------------------------------------------------
 ! Automatic differentiation derived type
 !-------------------------------------------------------------------------------
@@ -92,6 +94,7 @@ module diffstruc__types
      procedure, pass(this) :: zero_all_grads
      !! Zero the gradients
      procedure, pass(this) :: reset_graph
+     procedure, pass(this) :: duplicate_graph_safe
      procedure, pass(this) :: duplicate_graph
      procedure, pass(this) :: nullify_graph
      !   procedure, pass(this) :: duplicate_graph_ptrs
@@ -220,6 +223,11 @@ module diffstruc__types
      module subroutine duplicate_graph(this)
        class(array_type), intent(inout) :: this
      end subroutine duplicate_graph
+
+     module function duplicate_graph_safe(this) result(output_ptr)
+       class(array_type), intent(inout) :: this
+       type(array_type), pointer :: output_ptr
+     end function duplicate_graph_safe
   end interface
 
   interface
