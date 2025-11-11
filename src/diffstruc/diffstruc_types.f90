@@ -195,9 +195,10 @@ module diffstruc__types
        class(array_type), intent(inout) :: this
      end subroutine reset_graph
 
-     module subroutine nullify_graph(this)
+     module subroutine nullify_graph(this, ignore_ownership)
        !! Nullify graph by tracking visited nodes to avoid infinite recursion
-       class(array_type), intent(inout) :: this
+       class(array_type), intent(inout), target :: this
+       logical, intent(in), optional :: ignore_ownership
      end subroutine nullify_graph
 
      module subroutine zero_grad(this)

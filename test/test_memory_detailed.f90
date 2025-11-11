@@ -5,9 +5,13 @@ program test_memory_detailed
   implicit none
 
   type(array_type) :: x, y, f
-  type(array_type), pointer :: temp
+  type(array_type), pointer :: temp, xgrad, xgradgrad
   integer :: i, n_iterations
+  logical :: do_forward, do_second_order
 
+
+  do_forward = .false.
+  do_second_order = .false.
   n_iterations = 10000
   x%is_temporary = .false.
   y%is_temporary = .false.
@@ -65,16 +69,39 @@ program test_memory_detailed
   do i = 1, n_iterations
      ! Use pointer and explicitly deallocate
      !allocate(temp)
-     !write(*,*) "loc temp before assignment", loc(temp)
      temp => x**2 + y * x + exp(x * 0.01_real32)
-     !write(*,*) "loc temp after assignment", loc(temp)
      temp%is_temporary = .false.
-     call temp%grad_reverse(record_graph=.true., reset_graph=.true.)
+     temp%id = 15
+     if(do_forward)then
+        xgrad => temp%grad_forward(x)
+        xgrad%is_temporary = .false.
+        if(do_second_order)then
+           xgradgrad => xgrad%grad_forward(x)
+           xgradgrad%is_temporary = .false.
+        end if
+     else
+        call temp%grad_reverse(record_graph=.true., reset_graph=.true.)
+     end if
 
      ! Explicit cleanup of temp (THIS IS KEY TO AVOIDING LEAKS)
      call temp%nullify_graph()
      call temp%deallocate()
+     if(do_forward)then
+        call xgrad%nullify_graph()
+        call xgrad%deallocate()
+        if(do_second_order)then
+           call xgradgrad%nullify_graph()
+           call xgradgrad%deallocate()
+        end if
+     end if
+
      deallocate(temp)
+     if(do_forward)then
+        deallocate(xgrad)
+        if(do_second_order)then
+           deallocate(xgradgrad)
+        end if
+     end if
 
      if (mod(i, 10) == 0) then
         write(*,'(A,I0)') "  Iteration ", i
