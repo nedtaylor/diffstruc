@@ -49,10 +49,7 @@ contains
 
     ! derivative of tanh(x) is (1 - tanh(x)^2)
     ptr => upstream_grad * (1._real32 - this ** 2._real32)
-    ptr%owns_right_operand = .true.
-    ptr%right_operand%owns_right_operand = .true.
     call output%assign_and_deallocate_source(ptr)
-    ! output = upstream_grad * tanh_reverse_array( this )
   end function get_partial_tanh
 !###############################################################################
 
@@ -83,11 +80,9 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
-    type(array_type), pointer :: left, ptr
+    type(array_type), pointer :: ptr
 
-    left => -2._real32 * this%left_operand
-    ptr => left * this
-    ptr%owns_left_operand = .true.
+    ptr => upstream_grad * (-2._real32 * this%left_operand) * this
     call output%assign_and_deallocate_source(ptr)
 
   end function get_partial_tanh_reverse

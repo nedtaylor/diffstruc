@@ -58,6 +58,7 @@ module diffstruc__types
      logical :: owns_gradient = .true.
      !! Flag indicating if this array owns its gradient memory
      logical :: fix_pointer = .false.
+     logical :: is_temporary = .true.
 
      real(real32), dimension(:), allocatable :: direction
 
@@ -103,7 +104,7 @@ module diffstruc__types
      !! Detach from computation graph
      procedure, pass(this) :: set_requires_grad
      !! Set requires_grad flag
-     procedure :: create_result => create_result_array
+     procedure, pass(this) :: create_result => create_result_array
      !! Helper to safely create result arrays
 
      procedure, pass(this) :: print_graph

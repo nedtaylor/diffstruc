@@ -119,29 +119,58 @@ contains
 
     keep_shape_ = .false.
     if(present(keep_shape)) keep_shape_ = keep_shape
-    if(.not.keep_shape_) this%shape = 0
+
+    ! write(*,*) "deallocating array loc: ", loc(this), this%is_temporary
+    ! Deallocate owned operands first to prevent memory leaks
+    if(associated(this%left_operand))then
+       if(this%owns_left_operand) then
+          if(this%left_operand%allocated) then
+             call this%left_operand%deallocate()
+          end if
+          deallocate(this%left_operand)
+       end if
+       nullify(this%left_operand)
+    end if
+
+    if(associated(this%right_operand))then
+       if(this%owns_right_operand) then
+          if(this%right_operand%allocated) then
+             call this%right_operand%deallocate()
+          end if
+          deallocate(this%right_operand)
+       end if
+       nullify(this%right_operand)
+    end if
+
+    ! Clean up gradients
+    if(associated(this%grad) .and. this%owns_gradient) then
+       if(this%grad%allocated) then
+          call this%grad%deallocate()
+       end if
+       deallocate(this%grad)
+    end if
+    nullify(this%grad)
+
+    ! Deallocate all allocatable arrays
     if(allocated(this%val)) deallocate(this%val)
     if(allocated(this%indices)) deallocate(this%indices)
     if(allocated(this%adj_ja)) deallocate(this%adj_ja)
     if(allocated(this%mask)) deallocate(this%mask)
-
-    ! Clean up gradients
-    if(associated(this%grad) .and. this%owns_gradient) then
-       call this%grad%deallocate()
-       deallocate(this%grad)
+    if(allocated(this%direction)) deallocate(this%direction)
+    if(.not.keep_shape_) then
+       if(allocated(this%shape)) deallocate(this%shape)
     end if
-    this%grad => null()
+
+    ! Reset ownership flags and nullify procedure pointers
     this%owns_gradient = .false.
-
-    ! Nullify computation graph pointers
-    this%left_operand => null()
-    this%right_operand => null()
-
-    this%get_partial_left => null()
-    this%get_partial_right => null()
+    this%owns_left_operand = .false.
+    this%owns_right_operand = .false.
+    nullify(this%get_partial_left)
+    nullify(this%get_partial_right)
 
     this%allocated = .false.
     this%size = 0
+    ! write(*,*) "deallocated array loc: ", loc(this)
 
   end subroutine deallocate_array
 !###############################################################################
@@ -153,7 +182,35 @@ contains
     implicit none
     type(array_type), intent(inout) :: this
 
-    !  write(*,*) "finalising array loc: ", loc(this)
+    ! write(*,*) "finalising array loc: ", loc(this), this%is_temporary, this%operation
+
+    ! First deallocate owned pointers (operands and gradient) to prevent leaks
+    if(.not.this%is_temporary)then
+       if(associated(this%left_operand))then
+          if(this%owns_left_operand) then
+             !call this%left_operand%deallocate()
+             deallocate(this%left_operand)
+          end if
+          nullify(this%left_operand)
+       end if
+
+       if(associated(this%right_operand))then
+          if(this%owns_right_operand) then
+             !call this%right_operand%deallocate()
+             deallocate(this%right_operand)
+          end if
+          nullify(this%right_operand)
+       end if
+
+       if(associated(this%grad))then
+          if(this%owns_gradient) then
+             !call this%grad%deallocate()
+             deallocate(this%grad)
+          end if
+          nullify(this%grad)
+       end if
+    end if
+
     ! Deallocate all allocatable arrays
     if(allocated(this%val)) deallocate(this%val)
     if(allocated(this%shape)) deallocate(this%shape)
@@ -161,26 +218,17 @@ contains
     if(allocated(this%adj_ja)) deallocate(this%adj_ja)
     if(allocated(this%mask)) deallocate(this%mask)
     if(allocated(this%direction)) deallocate(this%direction)
-    ! Nullify and deallocate pointers
-    if(associated(this%left_operand))then
-       if(this%owns_left_operand) deallocate(this%left_operand)
-       nullify(this%left_operand)
-    end if
-    if(associated(this%right_operand))then
-       if(this%owns_right_operand) deallocate(this%right_operand)
-       nullify(this%right_operand)
-    end if
-    if(associated(this%grad))then
-       if(this%owns_gradient) deallocate(this%grad)
-       nullify(this%grad)
-    end if
+
+    ! Reset ownership flags and nullify procedure pointers
     this%owns_gradient = .false.
     this%owns_left_operand = .false.
     this%owns_right_operand = .false.
     nullify(this%get_partial_left)
     nullify(this%get_partial_right)
     this%allocated = .false.
+    this%is_temporary = .true.
     this%size = 0
+    ! write(*,*) "finalised array loc: ", loc(this)
 
   end subroutine finalise_array
 !###############################################################################
@@ -232,20 +280,15 @@ contains
     if(associated(input%left_operand)) this%left_operand => input%left_operand
     if(associated(input%right_operand)) this%right_operand => input%right_operand
     this%operation = input%operation
-    this%owns_gradient = .false.  ! Dont copy gradient ownership
+
+    ! Transfer ownership flags - this is critical to prevent memory leaks
+    this%owns_gradient = input%owns_gradient
+    this%owns_left_operand = input%owns_left_operand
+    this%owns_right_operand = input%owns_right_operand
+
     if(allocated(input%indices)) this%indices = input%indices
     if(allocated(input%adj_ja)) this%adj_ja = input%adj_ja
     if(allocated(input%mask)) this%mask = input%mask
-    if(input%owns_left_operand.and.associated(input%left_operand))then
-       this%owns_left_operand = input%owns_left_operand
-       allocate(this%left_operand)
-       this%left_operand = input%left_operand
-    end if
-    if(input%owns_right_operand.and.associated(input%right_operand))then
-       this%owns_right_operand = input%owns_right_operand
-       allocate(this%right_operand)
-       this%right_operand = input%right_operand
-    end if
 
     if(associated(input%get_partial_left)) &
          this%get_partial_left => input%get_partial_left
@@ -348,6 +391,7 @@ contains
     result_ptr%right_operand => null()
     result_ptr%get_partial_left => null()
     result_ptr%get_partial_right => null()
+    result_ptr%is_temporary = .true.
   end function create_result_array
 !###############################################################################
 
@@ -508,6 +552,7 @@ contains
        call this%grad%zero_grad()
        ! Set gradient to ones for starting node
        this%grad%val = 1.0_real32
+       this%grad%is_temporary = this%is_temporary
     end if
 
     ! Recursively compute gradients
@@ -748,16 +793,18 @@ contains
     if(associated(array%left_operand))then
        if(array%left_operand%requires_grad) then
           left_partial = array%get_partial_left(upstream_grad)
+          left_partial%is_temporary = .false.
           call accumulate_gradient(array%left_operand, left_partial)
        end if
     end if
     if(associated(array%right_operand))then
        if(array%right_operand%requires_grad)then
           right_partial = array%get_partial_right(upstream_grad)
+          right_partial%is_temporary = .false.
           call accumulate_gradient(array%right_operand, right_partial)
        end if
     end if
-    ! write(*,*) "done operation: ", trim(this%operation)
+    ! write(*,*) "done operation: ", trim(array%operation)
   end subroutine reverse_mode
 !###############################################################################
 
@@ -770,8 +817,8 @@ contains
     type(array_type), intent(inout) :: grad
 
     integer :: s
-    ! real(real32) :: rtmp1
 
+    ! Apply direction if specified (in-place to avoid copy)
     if(allocated(array%direction))then
        if(size(array%direction).gt.0)then
           do s = 1, size(grad%val, 2)
@@ -781,24 +828,23 @@ contains
     end if
 
     if(.not. associated(array%grad)) then
+       ! First gradient accumulation - allocate and set
        allocate(array%grad)
        if(array%is_sample_dependent)then
+          call array%grad%allocate(array_shape=[grad%shape,size(grad%val,2)])
           array%grad%val = grad%val
-          array%grad%shape = grad%shape
        else
-          allocate(array%grad%val(size(grad%val,1),1))
-          ! rtmp1 = real(size(grad%val,2), real32)
-          ! ! mean reduction
-          ! array%grad%val(:,1) = sum(grad%val, dim=2) / rtmp1
-          ! sum reduction
+          call array%grad%allocate(array_shape=[grad%shape,1])
           array%grad%val(:,1) = sum(grad%val, dim = 2)
-          array%grad%shape = grad%shape
        end if
        array%grad%is_scalar = array%is_scalar
        array%grad%is_sample_dependent = array%is_sample_dependent
-       !array%owns_gradient = .true.
+       array%grad%requires_grad = .false.
+       array%grad%owns_gradient = .false.
+       array%owns_gradient = .true.
+       array%grad%is_temporary = array%is_temporary
     else
-
+       ! Accumulate to existing gradient (in-place)
        if(array%is_sample_dependent)then
           array%grad%val = array%grad%val + grad%val
        else
@@ -810,11 +856,16 @@ contains
           ! sum reduction
           array%grad%val(:,1) = array%grad%val(:,1) + sum(grad%val, dim = 2)
        end if
-
     end if
 
     if(associated(array%left_operand).or.associated(array%right_operand))then
        call reverse_mode(array, grad)
+    end if
+    if(array%grad%is_temporary) then
+       call array%grad%deallocate()
+       deallocate(array%grad)
+       nullify(array%grad)
+       array%owns_gradient = .false.
     end if
   end subroutine accumulate_gradient
 !###############################################################################
@@ -913,21 +964,32 @@ contains
     if(associated(this%left_operand))then
        call this%left_operand%nullify_graph()
        if(.not.this%left_operand%fix_pointer)then
-          if(this%owns_left_operand) deallocate(this%left_operand)
+          if(this%owns_left_operand) then
+             call this%left_operand%deallocate()
+             deallocate(this%left_operand)
+          end if
        end if
        nullify(this%left_operand)
     end if
+
     if(associated(this%right_operand)) then
        call this%right_operand%nullify_graph()
        if(.not.this%right_operand%fix_pointer)then
-          if(this%owns_right_operand) deallocate(this%right_operand)
+          if(this%owns_right_operand) then
+             call this%right_operand%deallocate()
+             deallocate(this%right_operand)
+          end if
        end if
        nullify(this%right_operand)
     end if
+
     if(associated(this%grad))then
        call this%grad%nullify_graph()
        if(.not.this%grad%fix_pointer)then
-          if(this%owns_gradient) deallocate(this%grad)
+          if(this%owns_gradient) then
+             call this%grad%deallocate()
+             deallocate(this%grad)
+          end if
        end if
        nullify(this%grad)
     end if
@@ -1448,6 +1510,8 @@ contains
        c%operation = 'add'
        c%left_operand => a
        c%right_operand => b
+       c%owns_left_operand = a%is_temporary
+       c%owns_right_operand = b%is_temporary
     end if
   end function add_arrays
 !-------------------------------------------------------------------------------
@@ -1707,6 +1771,8 @@ contains
        c%operation = 'multiply'
        c%left_operand => a
        c%right_operand => b
+       c%owns_left_operand = a%is_temporary
+       c%owns_right_operand = b%is_temporary
     end if
   end function multiply_arrays
 !-------------------------------------------------------------------------------
@@ -1727,6 +1793,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'multiply_scalar'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
     allocate(b_array)
     b_array%is_scalar = .true.
@@ -1770,6 +1837,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'multiply_logical'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
 
   end function multiply_logical
@@ -1780,12 +1848,14 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
     if(this%right_operand%is_scalar)then
-       output = upstream_grad * this%right_operand%val(1,1)
+       ptr => upstream_grad * this%right_operand%val(1,1)
     else
-       output = upstream_grad * this%right_operand
+       ptr => upstream_grad * this%right_operand
     end if
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_multiply_left
 !-------------------------------------------------------------------------------
   function get_partial_multiply_right(this, upstream_grad) result(output)
@@ -1794,12 +1864,14 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
     if(this%left_operand%is_scalar)then
-       output = upstream_grad * this%left_operand%val(1,1)
+       ptr => upstream_grad * this%left_operand%val(1,1)
     else
-       output = upstream_grad * this%left_operand
+       ptr => upstream_grad * this%left_operand
     end if
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_multiply_right
 !###############################################################################
 
@@ -1838,6 +1910,8 @@ contains
        c%operation = 'divide'
        c%left_operand => a
        c%right_operand => b
+       c%owns_left_operand = a%is_temporary
+       c%owns_right_operand = b%is_temporary
     end if
   end function divide_arrays
 !-------------------------------------------------------------------------------
@@ -1859,6 +1933,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'divide_scalar'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
     allocate(b_array)
     b_array%is_scalar = .true.
@@ -1888,6 +1963,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'scalar_divide'
        c%right_operand => a
+       c%owns_right_operand = a%is_temporary
     end if
     allocate(b_array)
     b_array%is_scalar = .true.
@@ -1951,17 +2027,15 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
-    type(array_type), pointer :: grad, div
 
-    allocate(grad)
-    allocate(div)
+    ! Use direct computation without allocating intermediate pointers
     if(this%left_operand%is_scalar)then
-       grad = -upstream_grad * this%left_operand%val(1,1)
+       output = (-upstream_grad * this%left_operand%val(1,1)) / &
+            (this%right_operand * this%right_operand)
     else
-       grad = -upstream_grad * this%left_operand
+       output = (-upstream_grad * this%left_operand) / &
+            (this%right_operand * this%right_operand)
     end if
-    div = this%right_operand * this%right_operand
-    output = grad / div
   end function get_partial_divide_right
 !###############################################################################
 
@@ -1984,6 +2058,8 @@ contains
        c%operation = 'power'
        c%left_operand => a
        c%right_operand => b
+       c%owns_left_operand = a%is_temporary
+       c%owns_right_operand = b%is_temporary
     end if
   end function power_arrays
 !-------------------------------------------------------------------------------
@@ -2004,6 +2080,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'power_scalar'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
     allocate(b_array)
     b_array%is_scalar = .true.
@@ -2042,6 +2119,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'scalar_power'
        c%right_operand => a
+       c%owns_right_operand = a%is_temporary
     end if
     allocate(b_array)
     b_array%is_scalar = .true.
@@ -2069,42 +2147,23 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
-
-    type(array_type), pointer :: ptr1, ptr2, ptr3
+    type(array_type), pointer :: ptr
 
     if(all(abs(this%right_operand%val - 1._real32).lt.1.E-6_real32)) then
        output = upstream_grad
        return
     elseif(all(abs(this%right_operand%val - 2._real32).lt.1.E-6_real32)) then
-       !  output = upstream_grad * 2._real32 * this%left_operand
-       ptr1 => 2._real32 * this%left_operand
-       ptr2 => upstream_grad * ptr1
-       ptr2%owns_right_operand = .true.
-       call output%assign_and_deallocate_source(ptr2)
-       return
-    end if
-    !  if(this%right_operand%is_scalar)then
-    !     output = upstream_grad * this%right_operand%val(1,1) * &
-    !          this%left_operand ** ( this%right_operand%val(1,1) - 1.0_real32 )
-    !  else
-    !     output = upstream_grad * this%right_operand * &
-    !          this%left_operand ** ( this%right_operand - 1.0_real32 )
-    !  end if
-    if(this%right_operand%is_scalar)then
-       ptr1 => this%left_operand ** ( this%right_operand%val(1,1) - 1.0_real32 )
-       ptr2 => upstream_grad * this%right_operand%val(1,1)
-       ptr3 => ptr2 * ptr1
-       ptr3%owns_left_operand = .true.
-       ptr3%owns_right_operand = .true.
-       call output%assign_and_deallocate_source(ptr3)
+       ptr => upstream_grad * this%left_operand * 2._real32
     else
-       ptr1 => this%left_operand ** ( this%right_operand - 1.0_real32 )
-       ptr2 => upstream_grad * this%right_operand
-       ptr3 => ptr2 * ptr1
-       ptr3%owns_left_operand = .true.
-       ptr3%owns_right_operand = .true.
-       call output%assign_and_deallocate_source(ptr3)
+       if(this%right_operand%is_scalar)then
+          ptr => upstream_grad * this%right_operand%val(1,1) * &
+               this%left_operand ** ( this%right_operand%val(1,1) - 1.0_real32 )
+       else
+          ptr => upstream_grad * this%right_operand * &
+               this%left_operand ** ( this%right_operand - 1.0_real32 )
+       end if
     end if
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_power_base
 !-------------------------------------------------------------------------------
   function get_partial_power_exponent(this, upstream_grad) result(output)
@@ -2113,12 +2172,14 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
     if(this%left_operand%is_scalar)then
-       output = upstream_grad * log(this%left_operand%val(1,1)) * this
+       ptr => upstream_grad * log(this%left_operand%val(1,1)) * this
     else
-       output = upstream_grad * log(this%left_operand) * this
+       ptr => upstream_grad * log(this%left_operand) * this
     end if
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_power_exponent
 !###############################################################################
 
@@ -2144,6 +2205,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'exp'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function exp_array
 !-------------------------------------------------------------------------------
@@ -2153,8 +2215,10 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
-    output = upstream_grad * this
+    ptr => upstream_grad * exp(this%left_operand)
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_exp
 !###############################################################################
 
@@ -2175,6 +2239,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'log'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function log_array
 !-------------------------------------------------------------------------------
@@ -2183,9 +2248,10 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
-    output = upstream_grad / this%left_operand
-
+    ptr => upstream_grad / this%left_operand
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_log
 !###############################################################################
 
@@ -2266,6 +2332,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'mean_array'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
 
   end function mean_array
@@ -2277,35 +2344,20 @@ contains
     type(array_type) :: output
 
     real(real32) :: rtmp1
-    type(array_type), pointer :: ptr1, ptr2
 
     ! Calculate the number of elements that were averaged
     rtmp1 = real(size(this%left_operand%val, this%indices(1)), real32)
 
     if(this%is_forward)then
-       ptr1 => sum(upstream_grad, dim = this%indices(1))
-       ptr2 => ptr1 / rtmp1
-       ptr2%owns_left_operand = .true.
-       call output%assign_and_deallocate_source(ptr2)
-       !output = sum( upstream_grad, dim = this%indices(1) ) / rtmp1
+       output = sum( upstream_grad, dim = this%indices(1) ) / rtmp1
     else
-       ptr1 => upstream_grad / rtmp1
-       ptr1%owns_left_operand = .true.
-       ptr2 => spread( &
-            ptr1, &
+       output = spread( &
+            upstream_grad / rtmp1, &
             dim=this%indices(1), &
             index=this%indices(2), &
             ncopies= size(this%left_operand%val, this%indices(1)) &
        )
-       call output%assign_and_deallocate_source(ptr2)
-       !output = spread( &
-       !     upstream_grad / rtmp1, &
-       !     dim=this%indices(1), &
-       !     index=this%indices(2), &
-       !     ncopies= size(this%left_operand%val, this%indices(1)) &
-       !)
     end if
-
   end function get_partial_mean
 !###############################################################################
 
@@ -2343,6 +2395,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'sum_array'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
 
   end function sum_array
@@ -2379,6 +2432,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'sum_array_output_array'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
     c%indices = [dim, new_dim_index]
   end function sum_array_output_array
@@ -2395,7 +2449,6 @@ contains
          index=this%indices(2), &
          ncopies= size(this%left_operand%val, this%indices(1)) &
     )
-
   end function get_partial_sum_reverse
 !-------------------------------------------------------------------------------
   function get_partial_sum_forward(this, upstream_grad) result(output)
@@ -2408,7 +2461,6 @@ contains
          upstream_grad, &
          dim = this%indices(1) &
     )
-
   end function get_partial_sum_forward
 !###############################################################################
 
@@ -2452,6 +2504,7 @@ contains
        c%is_forward = source%is_forward
        c%operation = 'spread'
        c%left_operand => source
+       c%owns_left_operand = source%is_temporary
     end if
   end function spread_array
 !-------------------------------------------------------------------------------
@@ -2467,7 +2520,6 @@ contains
          this%adj_ja(1,1), &
          this%adj_ja(2,1) &
     )
-
   end function get_partial_spread
 !###############################################################################
 
@@ -2507,6 +2559,7 @@ contains
        c%is_forward = source%is_forward
        c%operation = 'unspread'
        c%left_operand => source
+       c%owns_left_operand = source%is_temporary
     end if
   end function unspread_array
 !-------------------------------------------------------------------------------
@@ -2522,7 +2575,6 @@ contains
          this%adj_ja(1,1), &
          this%adj_ja(2,1) &
     )
-
   end function get_partial_unspread
 !###############################################################################
 

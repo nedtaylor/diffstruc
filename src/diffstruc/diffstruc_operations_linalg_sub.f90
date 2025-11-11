@@ -138,14 +138,12 @@ contains
           ptr => upstream_grad .mmul. this%right_operand
        else
           ptr => upstream_grad .mmul. transpose(this%right_operand)
-          ptr%owns_right_operand = .true.
        end if
     elseif(size(upstream_grad%shape).eq.2)then
        if(this%is_forward)then
           ptr => upstream_grad .mmul. this%right_operand
        else
           ptr => transpose(upstream_grad) .mmul. this%right_operand
-          ptr%owns_left_operand = .true.
        end if
     else
        ptr => upstream_grad .outer. this%right_operand
@@ -168,14 +166,12 @@ contains
           ptr => this%left_operand .mmul. upstream_grad
        else
           ptr => transpose(this%left_operand) .mmul. upstream_grad
-          ptr%owns_left_operand = .true.
        end if
     elseif(size(upstream_grad%shape).eq.2)then
        if(this%is_forward)then
           ptr => this%left_operand .mmul. upstream_grad
        else
           ptr => this%left_operand .mmul. transpose(upstream_grad)
-          ptr%owns_right_operand = .true.
        end if
     else
        ptr => this%left_operand .outer. upstream_grad
