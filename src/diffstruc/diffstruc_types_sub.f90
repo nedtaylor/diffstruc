@@ -482,7 +482,7 @@ contains
 
     logical :: record_graph_
 
-    record_graph_ = .false.
+    record_graph_ = .true.
     if(present(record_graph)) record_graph_ = record_graph
     if(present(reset_graph))then
        if(reset_graph) call this%reset_graph()
@@ -825,8 +825,9 @@ contains
        call reverse_mode(array, grad)
     end if
     if(array%grad%is_temporary)then
+       call array%grad%nullify_graph()
        call array%grad%deallocate()
-       call array%nullify_graph()
+       deallocate(array%grad)
        array%owns_gradient = .false.
     end if
   end subroutine accumulate_gradient
