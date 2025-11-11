@@ -57,6 +57,8 @@ program test_memory_detailed
   call y%allocate(array_shape=[1000, 100])
   x%val = 1.0_real32
   y%val = 2.0_real32
+  x%id = 12
+  y%id = 13
   call x%set_requires_grad(.true.)
   call y%set_requires_grad(.true.)
 
@@ -67,16 +69,12 @@ program test_memory_detailed
      temp => x**2 + y * x + exp(x * 0.01_real32)
      !write(*,*) "loc temp after assignment", loc(temp)
      temp%is_temporary = .false.
-     call temp%grad_reverse(record_graph=.false., reset_graph=.true.)
+     call temp%grad_reverse(record_graph=.true., reset_graph=.true.)
 
      ! Explicit cleanup of temp (THIS IS KEY TO AVOIDING LEAKS)
+     call temp%nullify_graph()
      call temp%deallocate()
-     if(associated(x%grad)) call x%grad%deallocate()
-     if(associated(y%grad)) call y%grad%deallocate()
      deallocate(temp)
-     nullify(temp)
-     deallocate(x%grad)
-     deallocate(y%grad)
 
      if (mod(i, 10) == 0) then
         write(*,'(A,I0)') "  Iteration ", i

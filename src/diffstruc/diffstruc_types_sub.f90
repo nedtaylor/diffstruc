@@ -120,37 +120,6 @@ contains
     keep_shape_ = .false.
     if(present(keep_shape)) keep_shape_ = keep_shape
 
-    ! write(*,*) "deallocating array loc: ", loc(this), this%is_temporary
-    ! Deallocate owned operands first to prevent memory leaks
-    if(associated(this%left_operand))then
-       if(this%owns_left_operand) then
-          if(this%left_operand%allocated) then
-             call this%left_operand%deallocate()
-          end if
-          deallocate(this%left_operand)
-       end if
-       nullify(this%left_operand)
-    end if
-
-    if(associated(this%right_operand))then
-       if(this%owns_right_operand) then
-          if(this%right_operand%allocated) then
-             call this%right_operand%deallocate()
-          end if
-          deallocate(this%right_operand)
-       end if
-       nullify(this%right_operand)
-    end if
-
-    ! Clean up gradients
-    if(associated(this%grad) .and. this%owns_gradient) then
-       if(this%grad%allocated) then
-          call this%grad%deallocate()
-       end if
-       deallocate(this%grad)
-    end if
-    nullify(this%grad)
-
     ! Deallocate all allocatable arrays
     if(allocated(this%val)) deallocate(this%val)
     if(allocated(this%indices)) deallocate(this%indices)
@@ -160,13 +129,6 @@ contains
     if(.not.keep_shape_) then
        if(allocated(this%shape)) deallocate(this%shape)
     end if
-
-    ! Reset ownership flags and nullify procedure pointers
-    this%owns_gradient = .false.
-    this%owns_left_operand = .false.
-    this%owns_right_operand = .false.
-    nullify(this%get_partial_left)
-    nullify(this%get_partial_right)
 
     this%allocated = .false.
     this%size = 0
@@ -378,7 +340,7 @@ contains
        end if
     end if
 
-    ! Initialize autodiff fields
+    ! Initialise autodiff fields
     result_ptr%requires_grad = .false.
     result_ptr%is_scalar = this%is_scalar
     result_ptr%is_sample_dependent = this%is_sample_dependent
@@ -533,10 +495,10 @@ contains
     end if
     call zero_all_fixed_pointer_grads(this)
 
-    ! Initialize gradient if not allocated
+    ! Initialise gradient if not allocated
     if(.not. associated(this%grad)) then
        allocate(this%grad)
-       ! Safely initialize gradient without copying computation graph
+       ! Safely initialise gradient without copying computation graph
        call this%grad%allocate(array_shape=[this%shape, size(this%val,2)])
        this%grad%is_sample_dependent = this%is_sample_dependent
        this%grad%requires_grad = record_graph_
@@ -702,6 +664,7 @@ contains
        if(array%left_operand%requires_grad) then
           allocate(left_partial)
           left_partial = array%get_partial_left(upstream_grad)
+          left_partial%is_temporary = .true.
           call accumulate_gradient_ptr(array%left_operand, left_partial)
        end if
     end if
@@ -709,6 +672,7 @@ contains
        if(array%right_operand%requires_grad)then
           allocate(right_partial)
           right_partial = array%get_partial_right(upstream_grad)
+          right_partial%is_temporary = .true.
           call accumulate_gradient_ptr(array%right_operand, right_partial)
        end if
     end if
@@ -758,8 +722,10 @@ contains
        array%grad%grad => null()
        array%grad%owns_gradient = .false.
        array%owns_gradient = .true.
+       array%grad%is_temporary = array%is_temporary
     else
 
+       array%grad%is_temporary = .true.
        if(array%is_sample_dependent)then
           array%grad => array%grad + directional_grad
        else
@@ -768,6 +734,7 @@ contains
           ! sum reduction
           array%grad => array%grad + sum( directional_grad%val, dim = 2 )
        end if
+       array%grad%is_temporary = array%is_temporary
 
     end if
 
@@ -863,8 +830,7 @@ contains
     end if
     if(array%grad%is_temporary) then
        call array%grad%deallocate()
-       deallocate(array%grad)
-       nullify(array%grad)
+       call array%nullify_graph()
        array%owns_gradient = .false.
     end if
   end subroutine accumulate_gradient
@@ -953,53 +919,216 @@ contains
 
 
 !###############################################################################
-  module recursive subroutine nullify_graph(this)
-    !! Reset the gradient graph of this array
+  recursive subroutine nullify_graph_recursive(this, visited_map, dealloc_list)
+    !! Recursive helper that tracks visited nodes to avoid infinite loops
+    !! Instead of deallocating immediately, collect nodes to deallocate in a second pass
     implicit none
-    class(array_type), intent(inout) :: this
+    class(array_type), intent(inout), target :: this
+    type(array_ptr), allocatable :: visited_map(:), dealloc_list(:)
+    integer :: idx, i, n
+    logical :: already_listed
 
-    !write(*,*) "Nullifying graph for array loc: ", loc(this)
-    !  write(*,*) "owns left operand: ", this%owns_left_operand
-    !  write(*,*) "owns right operand: ", this%owns_right_operand
+    ! Check if we've already visited this node
+    if (allocated(visited_map)) then
+       n = size(visited_map)
+       do i = 1, n
+          if (associated(visited_map(i)%p, this)) then
+             ! Already processed this node, return immediately
+             return
+          end if
+       end do
+    end if
+
+    ! Mark this node as visited by adding to map
+    if (.not. allocated(visited_map)) then
+       allocate(visited_map(16))
+    end if
+    n = size(visited_map)
+    do i = 1, n
+       if (.not. associated(visited_map(i)%p)) then
+          visited_map(i)%p => this
+          exit
+       end if
+       if (i == n) then
+          ! Need to grow the array
+          visited_map = [ visited_map, array_ptr() ]
+          visited_map(n+1)%p => this
+          exit
+       end if
+    end do
+
+    ! Now process children recursively first
+    ! ... this node is not reprocessed due to visited check
     if(associated(this%left_operand))then
-       call this%left_operand%nullify_graph()
-       if(.not.this%left_operand%fix_pointer)then
-          if(this%owns_left_operand) then
-             call this%left_operand%deallocate()
-             deallocate(this%left_operand)
+       call nullify_graph_recursive(this%left_operand, visited_map, dealloc_list)
+    end if
+
+    if(associated(this%right_operand))then
+       call nullify_graph_recursive(this%right_operand, visited_map, dealloc_list)
+    end if
+
+    if(associated(this%grad))then
+       call nullify_graph_recursive(this%grad, visited_map, dealloc_list)
+    end if
+
+    ! After recursion, collect nodes that need deallocation
+    ! Only add to dealloc list if we own it and it's not a fixed pointer
+    ! Also check if it's already in the list to avoid double-free
+    if(associated(this%left_operand))then
+       if(.not.this%left_operand%fix_pointer .and. this%owns_left_operand)then
+          ! Check if already in deallocation list
+          already_listed = .false.
+          if (allocated(dealloc_list)) then
+             do i = 1, size(dealloc_list)
+                if (associated(dealloc_list(i)%p, this%left_operand)) then
+                   already_listed = .true.
+                   exit
+                end if
+             end do
+          end if
+
+          if (.not. already_listed) then
+             ! Add to deallocation list
+             if (.not. allocated(dealloc_list)) then
+                allocate(dealloc_list(16))
+             end if
+             n = size(dealloc_list)
+             do i = 1, n
+                if (.not. associated(dealloc_list(i)%p)) then
+                   dealloc_list(i)%p => this%left_operand
+                   exit
+                end if
+                if (i == n) then
+                   dealloc_list = [ dealloc_list, array_ptr() ]
+                   dealloc_list(n+1)%p => this%left_operand
+                   exit
+                end if
+             end do
           end if
        end if
        nullify(this%left_operand)
     end if
 
-    if(associated(this%right_operand)) then
-       call this%right_operand%nullify_graph()
-       if(.not.this%right_operand%fix_pointer)then
-          if(this%owns_right_operand) then
-             call this%right_operand%deallocate()
-             deallocate(this%right_operand)
+    if(associated(this%right_operand))then
+       if(.not.this%right_operand%fix_pointer .and. this%owns_right_operand)then
+          ! Check if already in deallocation list
+          already_listed = .false.
+          if (allocated(dealloc_list)) then
+             do i = 1, size(dealloc_list)
+                if (associated(dealloc_list(i)%p, this%right_operand)) then
+                   already_listed = .true.
+                   exit
+                end if
+             end do
+          end if
+
+          if (.not. already_listed) then
+             ! Add to deallocation list
+             if (.not. allocated(dealloc_list)) then
+                allocate(dealloc_list(16))
+             end if
+             n = size(dealloc_list)
+             do i = 1, n
+                if (.not. associated(dealloc_list(i)%p)) then
+                   dealloc_list(i)%p => this%right_operand
+                   exit
+                end if
+                if (i == n) then
+                   dealloc_list = [ dealloc_list, array_ptr() ]
+                   dealloc_list(n+1)%p => this%right_operand
+                   exit
+                end if
+             end do
           end if
        end if
        nullify(this%right_operand)
     end if
 
     if(associated(this%grad))then
-       call this%grad%nullify_graph()
-       if(.not.this%grad%fix_pointer)then
-          if(this%owns_gradient) then
-             call this%grad%deallocate()
-             deallocate(this%grad)
+       if(.not.this%grad%fix_pointer .and. this%owns_gradient)then
+          ! Check if already in deallocation list
+          already_listed = .false.
+          if (allocated(dealloc_list)) then
+             do i = 1, size(dealloc_list)
+                if (associated(dealloc_list(i)%p, this%grad)) then
+                   already_listed = .true.
+                   exit
+                end if
+             end do
+          end if
+
+          if (.not. already_listed) then
+             ! Add to deallocation list
+             if (.not. allocated(dealloc_list)) then
+                allocate(dealloc_list(16))
+             end if
+             n = size(dealloc_list)
+             do i = 1, n
+                if (.not. associated(dealloc_list(i)%p)) then
+                   dealloc_list(i)%p => this%grad
+                   exit
+                end if
+                if (i == n) then
+                   dealloc_list = [ dealloc_list, array_ptr() ]
+                   dealloc_list(n+1)%p => this%grad
+                   exit
+                end if
+             end do
           end if
        end if
        nullify(this%grad)
     end if
+
+    ! Reset ownership and procedure pointers
     this%owns_left_operand = .false.
     this%owns_right_operand = .false.
     this%owns_gradient = .false.
     nullify(this%get_partial_left)
     nullify(this%get_partial_right)
-    this%allocated = .false.
-    this%size = 0
+
+  end subroutine nullify_graph_recursive
+!###############################################################################
+
+
+!###############################################################################
+  module subroutine nullify_graph(this)
+    !! Nullify graph by tracking visited nodes to avoid infinite recursion
+    implicit none
+    class(array_type), intent(inout) :: this
+    type(array_ptr), allocatable :: visited_map(:), dealloc_list(:)
+    type(array_type), pointer :: node_to_dealloc
+    integer :: i, n
+
+    ! Initialise and run the recursive cleanup with tracking
+    ! This will traverse the graph, nullify pointers, and collect nodes to deallocate
+    call nullify_graph_recursive(this, visited_map, dealloc_list)
+
+    ! Now deallocate all collected nodes in a second pass
+    ! This avoids issues with deallocating while traversing
+    if (allocated(dealloc_list)) then
+       n = size(dealloc_list)
+       do i = 1, n
+          if (associated(dealloc_list(i)%p)) then
+             node_to_dealloc => dealloc_list(i)%p
+             if (node_to_dealloc%allocated) then
+                call node_to_dealloc%deallocate()
+             end if
+             deallocate(node_to_dealloc)
+             nullify(dealloc_list(i)%p)
+          end if
+       end do
+       deallocate(dealloc_list)
+    end if
+
+    ! Clean up the visited map (just nullify pointers, don't deallocate the nodes!)
+    if (allocated(visited_map)) then
+       do i = 1, size(visited_map)
+          if (associated(visited_map(i)%p)) then
+             nullify(visited_map(i)%p)
+          end if
+       end do
+       deallocate(visited_map)
+    end if
 
   end subroutine nullify_graph
 !###############################################################################

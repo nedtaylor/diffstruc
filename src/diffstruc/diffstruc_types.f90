@@ -195,8 +195,8 @@ module diffstruc__types
        class(array_type), intent(inout) :: this
      end subroutine reset_graph
 
-     module recursive subroutine nullify_graph(this)
-       !! Nullify the gradients of this array
+     module subroutine nullify_graph(this)
+       !! Nullify graph by tracking visited nodes to avoid infinite recursion
        class(array_type), intent(inout) :: this
      end subroutine nullify_graph
 
