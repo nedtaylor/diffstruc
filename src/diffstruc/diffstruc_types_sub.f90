@@ -909,8 +909,6 @@ contains
     end if
 
     ! Reset ownership flags
-    ! this%owns_left_operand = .false.
-    ! this%owns_right_operand = .false.
     this%owns_gradient = .false.
 
   end subroutine reset_graph
@@ -918,7 +916,9 @@ contains
 
 
 !###############################################################################
-  recursive subroutine nullify_graph_recursive(this, visited_map, dealloc_list, ignore_ownership)
+  recursive subroutine nullify_graph_recursive(this, visited_map, dealloc_list, &
+       ignore_ownership &
+  )
     !! Recursive helper that tracks visited nodes to avoid infinite loops
     !! Instead of deallocating immediately, collect nodes to deallocate in a second pass
     implicit none
@@ -962,23 +962,35 @@ contains
     if(ignore_ownership)then
        ! Ignore ownership flags during traversal
        if(associated(this%left_operand))then
-          call nullify_graph_recursive(this%left_operand, visited_map, dealloc_list, ignore_ownership)
+          call nullify_graph_recursive( &
+               this%left_operand, visited_map, dealloc_list, ignore_ownership &
+          )
        end if
        if(associated(this%right_operand))then
-          call nullify_graph_recursive(this%right_operand, visited_map, dealloc_list, ignore_ownership)
+          call nullify_graph_recursive( &
+               this%right_operand, visited_map, dealloc_list, ignore_ownership &
+          )
        end if
        if(associated(this%grad))then
-          call nullify_graph_recursive(this%grad, visited_map, dealloc_list, ignore_ownership)
+          call nullify_graph_recursive( &
+               this%grad, visited_map, dealloc_list, ignore_ownership &
+          )
        end if
     else
        if(associated(this%left_operand).and.this%owns_left_operand)then
-          call nullify_graph_recursive(this%left_operand, visited_map, dealloc_list, ignore_ownership)
+          call nullify_graph_recursive( &
+               this%left_operand, visited_map, dealloc_list, ignore_ownership &
+          )
        end if
        if(associated(this%right_operand).and.this%owns_right_operand)then
-          call nullify_graph_recursive(this%right_operand, visited_map, dealloc_list, ignore_ownership)
+          call nullify_graph_recursive( &
+               this%right_operand, visited_map, dealloc_list, ignore_ownership &
+          )
        end if
        if(associated(this%grad).and.this%owns_gradient)then
-          call nullify_graph_recursive(this%grad, visited_map, dealloc_list, ignore_ownership)
+          call nullify_graph_recursive( &
+               this%grad, visited_map, dealloc_list, ignore_ownership &
+          )
        end if
     end if
 
