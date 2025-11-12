@@ -1,18 +1,11 @@
 submodule(diffstruc__types) diffstruc__types_submodule
   !! Submodule containing implementations for derived types
   use coreutils, only: stop_program, print_warning
+  use diffstruc__global, only: max_recursion_depth, default_map_capacity
 
 
 
 contains
-!###############################################################################
-!###############################################################################
-
-
-!##############################################################################!
-! * * * * * * * * * * * * * * * * * * *  * * * * * * * * * * * * * * * * * * * !
-!##############################################################################!
-
 
 !###############################################################################
   module subroutine allocate_array(this, array_shape, source)
@@ -461,10 +454,10 @@ contains
     type(array_type), intent(in) :: variable
     type(array_type), pointer :: output
 
-    integer :: itmp
+    integer :: depth
 
-    itmp = 0
-    output => forward_over_reverse(this, variable, itmp)
+    depth = 0
+    output => forward_over_reverse(this, variable, depth)
     output%is_forward = .true.
     this%requires_grad = .true.
 
@@ -513,9 +506,9 @@ contains
 
     ! Recursively compute gradients
     if(record_graph_)then
-       call reverse_mode_ptr(this, this%grad)
+       call reverse_mode_ptr(this, this%grad, 0)
     else
-       call reverse_mode(this, this%grad)
+       call reverse_mode(this, this%grad, 0)
     end if
   end subroutine grad_reverse
 !###############################################################################
@@ -527,11 +520,11 @@ contains
 
 
 !###############################################################################
-  recursive function forward_over_reverse(this, variable, itmp) result(output)
+  recursive function forward_over_reverse(this, variable, depth) result(output)
     implicit none
     type(array_type), intent(inout) :: this
     type(array_type), intent(in) :: variable
-    integer :: itmp
+    integer, intent(inout) :: depth
     type(array_type), pointer :: output
 
     integer :: s
@@ -540,9 +533,9 @@ contains
     type(array_type), pointer :: left_deriv, right_deriv
     logical :: is_forward_local
 
-    itmp = itmp + 1
-    if(itmp.gt.500)then
-       write(0,*) "MAX RECURSION DEPTH REACHED", itmp
+    depth = depth + 1
+    if(depth.gt.max_recursion_depth)then
+       write(0,*) "MAX RECURSION DEPTH REACHED", depth
        return
     end if
     is_forward_local = this%is_forward
@@ -573,7 +566,7 @@ contains
              !   left_deriv => this%left_operand%grad
              !else
              left_deriv_tmp => &
-                  forward_over_reverse(this%left_operand, variable, itmp)
+                  forward_over_reverse(this%left_operand, variable, depth)
              ! call left_deriv_tmp%set_requires_grad(.false.)
              if(trim(this%operation).eq.'add')then
                 left_deriv => left_deriv_tmp
@@ -603,7 +596,7 @@ contains
              !   right_deriv => this%right_operand%grad
              !else
              right_deriv_tmp => &
-                  forward_over_reverse(this%right_operand, variable, itmp)
+                  forward_over_reverse(this%right_operand, variable, depth)
              ! call right_deriv_tmp%set_requires_grad(.false.)
              if(trim(this%operation).eq.'add')then
                 right_deriv => right_deriv_tmp
@@ -645,23 +638,28 @@ contains
 
 
 !###############################################################################
-  module recursive subroutine reverse_mode_ptr(array, upstream_grad)
+  module recursive subroutine reverse_mode_ptr(array, upstream_grad, depth)
     !! Backward operation for arrays
     implicit none
     class(array_type), intent(inout) :: array
     type(array_type), pointer, intent(in) :: upstream_grad
+    integer, intent(in) :: depth
 
     type(array_type), pointer :: left_partial, right_partial
 
     ! write(*,'("Performing backward operation for: ",A,T60,"id: ",I0)') &
     !      trim(array%operation), array%id
+    if(depth.gt.max_recursion_depth)then
+       write(0,*) "MAX RECURSION DEPTH REACHED IN REVERSE MODE", depth
+       return
+    end if
     array%is_forward = .false.
     if(associated(array%left_operand))then
        if(array%left_operand%requires_grad)then
           allocate(left_partial)
           left_partial = array%get_partial_left(upstream_grad)
           left_partial%is_temporary = .true.
-          call accumulate_gradient_ptr(array%left_operand, left_partial)
+          call accumulate_gradient_ptr(array%left_operand, left_partial, depth)
        end if
     end if
     if(associated(array%right_operand))then
@@ -669,7 +667,7 @@ contains
           allocate(right_partial)
           right_partial = array%get_partial_right(upstream_grad)
           right_partial%is_temporary = .true.
-          call accumulate_gradient_ptr(array%right_operand, right_partial)
+          call accumulate_gradient_ptr(array%right_operand, right_partial, depth)
        end if
     end if
     ! write(*,*) "done operation: ", trim(array%operation)
@@ -678,11 +676,12 @@ contains
 
 
 !###############################################################################
-  recursive subroutine accumulate_gradient_ptr(array, grad)
+  recursive subroutine accumulate_gradient_ptr(array, grad, depth)
     !! Accumulate gradient for array with safe memory management
     implicit none
     type(array_type), intent(inout) :: array
     type(array_type), intent(in), pointer :: grad
+    integer, intent(in) :: depth
 
     integer :: s
     logical :: is_directional
@@ -735,36 +734,41 @@ contains
     end if
 
     if(associated(array%left_operand).or.associated(array%right_operand))then
-       call reverse_mode_ptr(array, directional_grad)
+       call reverse_mode_ptr(array, directional_grad, depth+1)
     end if
   end subroutine accumulate_gradient_ptr
 !###############################################################################
 
 
 !###############################################################################
-  module recursive subroutine reverse_mode(array, upstream_grad)
+  module recursive subroutine reverse_mode(array, upstream_grad, depth)
     !! Backward operation for arrays
     implicit none
     class(array_type), intent(inout) :: array
     type(array_type), intent(in) :: upstream_grad
+    integer, intent(in) :: depth
 
     type(array_type) :: left_partial, right_partial
 
     ! write(*,'("Performing backward operation for: ",A,T60,"id: ",I0)') &
     !      trim(array%operation), array%id
+    if(depth.gt.max_recursion_depth)then
+       write(0,*) "MAX RECURSION DEPTH REACHED IN REVERSE MODE", depth
+       return
+    end if
     array%is_forward = .false.
     if(associated(array%left_operand))then
        if(array%left_operand%requires_grad)then
           left_partial = array%get_partial_left(upstream_grad)
           left_partial%is_temporary = .false.
-          call accumulate_gradient(array%left_operand, left_partial)
+          call accumulate_gradient(array%left_operand, left_partial, depth)
        end if
     end if
     if(associated(array%right_operand))then
        if(array%right_operand%requires_grad)then
           right_partial = array%get_partial_right(upstream_grad)
           right_partial%is_temporary = .false.
-          call accumulate_gradient(array%right_operand, right_partial)
+          call accumulate_gradient(array%right_operand, right_partial, depth)
        end if
     end if
     ! write(*,*) "done operation: ", trim(array%operation)
@@ -773,11 +777,12 @@ contains
 
 
 !###############################################################################
-  recursive subroutine accumulate_gradient(array, grad)
+  recursive subroutine accumulate_gradient(array, grad, depth)
     !! Accumulate gradient for array with safe memory management
     implicit none
     type(array_type), intent(inout) :: array
     type(array_type), intent(inout) :: grad
+    integer, intent(in) :: depth
 
     integer :: s
 
@@ -822,7 +827,7 @@ contains
     end if
 
     if(associated(array%left_operand).or.associated(array%right_operand))then
-       call reverse_mode(array, grad)
+       call reverse_mode(array, grad, depth+1)
     end if
     if(array%grad%is_temporary)then
        call array%grad%nullify_graph()
@@ -942,7 +947,7 @@ contains
 
     ! Mark this node as visited by adding to map
     if(.not. allocated(visited_map))then
-       allocate(visited_map(16))
+       allocate(visited_map(default_map_capacity))
     end if
     n = size(visited_map)
     do i = 1, n
@@ -1014,7 +1019,7 @@ contains
           if(.not. already_listed)then
              ! Add to deallocation list
              if(.not. allocated(dealloc_list))then
-                allocate(dealloc_list(16))
+                allocate(dealloc_list(default_map_capacity))
              end if
              n = size(dealloc_list)
              left_loop: do i = 1, n
@@ -1049,7 +1054,7 @@ contains
           if(.not. already_listed)then
              ! Add to deallocation list
              if(.not. allocated(dealloc_list))then
-                allocate(dealloc_list(16))
+                allocate(dealloc_list(default_map_capacity))
              end if
              n = size(dealloc_list)
              right_loop: do i = 1, n
@@ -1084,7 +1089,7 @@ contains
           if(.not. already_listed)then
              ! Add to deallocation list
              if(.not. allocated(dealloc_list))then
-                allocate(dealloc_list(16))
+                allocate(dealloc_list(default_map_capacity))
              end if
              n = size(dealloc_list)
              grad_loop: do i = 1, n
@@ -1168,18 +1173,20 @@ contains
 ! * * * * * * * * * * * * * * * * * * *  * * * * * * * * * * * * * * * * * * * !
 !##############################################################################!
 
-  ! Append-find map implemented with parallel arrays of pointer components.
+
+!###############################################################################
   subroutine map_init(src_map, dst_map, capacity)
+    ! Append-find map implemented with parallel arrays of pointer components.
     implicit none
     type(array_ptr), allocatable :: src_map(:), dst_map(:)
     integer, intent(in), optional :: capacity
     integer :: cap
-    cap = 16
+    cap = default_map_capacity
     if(present(capacity)) cap = capacity
     allocate(src_map(cap))
     allocate(dst_map(cap))
   end subroutine map_init
-
+!-------------------------------------------------------------------------------
   subroutine map_free(src_map, dst_map)
     implicit none
     type(array_ptr), allocatable :: src_map(:), dst_map(:)
@@ -1201,7 +1208,7 @@ contains
        deallocate(dst_map)
     end if
   end subroutine map_free
-
+!-------------------------------------------------------------------------------
   function map_find(src_map, dst_map, target) result(idx)
     implicit none
     type(array_ptr), allocatable :: src_map(:), dst_map(:)
@@ -1218,14 +1225,14 @@ contains
        end if
     end do
   end function map_find
-
+!-------------------------------------------------------------------------------
   subroutine map_add(src_map, dst_map, src_ptr, dst_ptr)
     implicit none
     type(array_ptr), allocatable :: src_map(:), dst_map(:)
     type(array_type), pointer, intent(in) :: src_ptr, dst_ptr
     integer :: n, i, newcap
     if(.not. allocated(src_map))then
-       call map_init(src_map, dst_map, 16)
+       call map_init(src_map, dst_map, default_map_capacity)
     end if
     n = size(src_map)
     ! find first null slot
@@ -1243,8 +1250,11 @@ contains
     src_map(n+1)%p => src_ptr
     dst_map(n+1)%p => dst_ptr
   end subroutine map_add
+!###############################################################################
 
-  recursive function duplicate_pointer_safe(input_ptr, src_map, dst_map, owns_self) &
+
+!###############################################################################
+  recursive function duplicate_pointer(input_ptr, src_map, dst_map, owns_self) &
        result(output_ptr)
     implicit none
     type(array_type), target :: input_ptr
@@ -1254,15 +1264,9 @@ contains
     integer :: idx
     logical :: tmp_logical
 
-    !  ! fast return if NULL
-    !  if(.not. associated(input_ptr))then
-    !     output_ptr => null()
-    !     return
-    !  end if
-
     owns_self = .false.
     idx = map_find(src_map, dst_map, input_ptr)
-    if(idx /= 0)then
+    if(idx .ne. 0)then
        output_ptr => dst_map(idx)%p
        return
     elseif(input_ptr%fix_pointer)then
@@ -1283,27 +1287,30 @@ contains
 
     ! Now recursively duplicate children (use pointer assignment to map results)
     if(associated(input_ptr%left_operand))then
-       output_ptr%left_operand => duplicate_pointer_safe( &
+       output_ptr%left_operand => duplicate_pointer( &
             input_ptr%left_operand, src_map, dst_map, tmp_logical &
        )
        output_ptr%owns_left_operand = tmp_logical
     end if
     if(associated(input_ptr%right_operand))then
-       output_ptr%right_operand => duplicate_pointer_safe( &
+       output_ptr%right_operand => duplicate_pointer( &
             input_ptr%right_operand, src_map, dst_map, tmp_logical &
        )
        output_ptr%owns_right_operand = tmp_logical
     end if
     if(associated(input_ptr%grad))then
-       output_ptr%grad => duplicate_pointer_safe(&
+       output_ptr%grad => duplicate_pointer(&
             input_ptr%grad, src_map, dst_map, tmp_logical &
        )
        output_ptr%owns_gradient = .true.
     end if
 
-  end function duplicate_pointer_safe
+  end function duplicate_pointer
+!###############################################################################
 
-  module function duplicate_graph_safe(this) result(output_ptr)
+
+!###############################################################################
+  module function duplicate_graph(this) result(output_ptr)
     implicit none
     class(array_type), intent(inout) :: this
     type(array_ptr), allocatable :: src_map(:), dst_map(:)
@@ -1311,166 +1318,11 @@ contains
     logical :: tmp_logical
 
     call map_init(src_map, dst_map, 64)
-    output_ptr => duplicate_pointer_safe(this, src_map, dst_map, tmp_logical)
+    output_ptr => duplicate_pointer(this, src_map, dst_map, tmp_logical)
 
     ! Tear down bookkeeping arrays (do not deallocate duplicated nodes here!)
     call map_free(src_map, dst_map)
-  end function duplicate_graph_safe
-
-!###############################################################################
-  module subroutine duplicate_graph(this)
-    !! Duplicate the computation graph of this array
-    use iso_c_binding
-    implicit none
-    class(array_type), intent(inout) :: this
-
-    type(c_ptr), dimension(:,:), allocatable :: pointer_map
-
-    select type(this)
-    type is(array_type)
-       call add_pointer_mapping(this, pointer_map)
-       call duplicate_graph_ptrs(this, pointer_map)
-    class default
-       call stop_program('Unsupported type for duplicate_graph. &
-            &Currently only supports array_type')
-       return
-    end select
-    if(allocated(pointer_map)) deallocate(pointer_map)
-
-  end subroutine duplicate_graph
-!###############################################################################
-
-
-!###############################################################################
-  subroutine add_pointer_mapping(array, pointer_map)
-    !! Add a pointer mapping for the given array to the pointer map
-    use iso_c_binding
-    implicit none
-    type(array_type), intent(in), target :: array
-    type(c_ptr), dimension(:,:), allocatable, intent(inout) :: pointer_map
-    type(c_ptr), dimension(:,:), allocatable :: pointer_map_store
-
-    if(.not. allocated(pointer_map))then
-       allocate(pointer_map(2, 1))
-       pointer_map(:, 1) = [ c_loc(array), c_loc(array) ]
-    else
-       pointer_map_store = pointer_map
-       deallocate(pointer_map)
-       allocate(pointer_map(2, size(pointer_map_store, dim=2) + 1))
-       pointer_map(:,1:size(pointer_map_store, dim=2)) = pointer_map_store
-       pointer_map(:,size(pointer_map_store, dim=2)+1) = &
-            [ c_loc(array), c_loc(array) ]
-       deallocate(pointer_map_store)
-    end if
-  end subroutine add_pointer_mapping
-!###############################################################################
-
-
-!###############################################################################
-  recursive subroutine duplicate_graph_ptrs(array, pointer_map)
-    !! Duplicate the computation graph of this array
-    use iso_c_binding
-    implicit none
-    type(array_type), intent(inout) :: array
-    type(c_ptr), dimension(:,:), allocatable, intent(inout) :: pointer_map
-
-    left_if: if(associated(array%left_operand))then
-       if(check_already_handled_in_duplicate(array%left_operand, pointer_map)) &
-            exit left_if
-       if(array%left_operand%fix_pointer)then
-          call add_pointer_mapping(array%left_operand, pointer_map)
-       else
-          array%left_operand => duplicate_pointer(array%left_operand, pointer_map)
-       end if
-    end if left_if
-
-    right_if: if(associated(array%right_operand))then
-       if(check_already_handled_in_duplicate(array%right_operand, pointer_map)) &
-            exit right_if
-       if(array%right_operand%fix_pointer)then
-          call add_pointer_mapping(array%right_operand, pointer_map)
-       else
-          array%right_operand => duplicate_pointer(array%right_operand, pointer_map)
-       end if
-    end if right_if
-
-    grad_if: if(associated(array%grad))then
-       if(check_already_handled_in_duplicate(array%grad, pointer_map)) exit grad_if
-       if(array%grad%fix_pointer)then
-          call add_pointer_mapping(array%grad, pointer_map)
-       else
-          array%grad => duplicate_pointer(array%grad, pointer_map)
-       end if
-    end if grad_if
-
-  end subroutine duplicate_graph_ptrs
-!###############################################################################
-
-
-!###############################################################################
-  function check_already_handled_in_duplicate(array, pointer_map) result(is_handled)
-    use iso_c_binding
-    implicit none
-    type(array_type), intent(in), target :: array
-    type(c_ptr), dimension(:,:), allocatable, intent(in) :: pointer_map
-    logical :: is_handled
-    integer :: i, n
-
-    is_handled = .false.
-    if(allocated(pointer_map))then
-       n = size(pointer_map, dim=2)
-       do i = 1, n
-          if( c_associated( c_loc(array), pointer_map(2,i) ) )then
-             is_handled = .true.
-             return
-          end if
-       end do
-    end if
-  end function check_already_handled_in_duplicate
-!###############################################################################
-
-
-!###############################################################################
-  recursive function duplicate_pointer(input_ptr, pointer_map) result(output_ptr)
-    use iso_c_binding
-    implicit none
-    type(array_type), pointer :: input_ptr
-    type(c_ptr), dimension(:,:), allocatable, intent(inout) :: pointer_map
-    type(array_type), pointer :: output_ptr
-    integer :: i, n
-    type(c_ptr), dimension(:,:), allocatable :: pointer_map_store
-
-    if(allocated(pointer_map))then
-       n = size(pointer_map, dim=2)
-       do i = 1, n
-          if( c_associated( c_loc(input_ptr), pointer_map(1,i) ) )then
-             call c_f_pointer( pointer_map(2,i), output_ptr )
-             return
-          end if
-       end do
-    end if
-
-    call duplicate_graph_ptrs(input_ptr, pointer_map)
-    ! Not found, so duplicate and add to list
-    allocate(output_ptr)
-    !  output_ptr = input_ptr
-    call output_ptr%assign_shallow(input_ptr)
-    ! output_ptr%fix_pointer = .true.
-
-    if(.not. allocated(pointer_map))then
-       allocate(pointer_map(2,1))
-       pointer_map(:,1) = [ c_loc(input_ptr), c_loc(output_ptr) ]
-    else
-       pointer_map_store = pointer_map
-       deallocate(pointer_map)
-       allocate(pointer_map(2, size(pointer_map_store, dim=2) + 1))
-       pointer_map(:,1:size(pointer_map_store, dim=2)) = pointer_map_store
-       pointer_map(:,size(pointer_map_store, dim=2)+1) = &
-            [ c_loc(input_ptr), c_loc(output_ptr) ]
-       deallocate(pointer_map_store)
-    end if
-
-  end function duplicate_pointer
+  end function duplicate_graph
 !###############################################################################
 
 

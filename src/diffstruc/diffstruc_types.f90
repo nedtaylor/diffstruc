@@ -95,10 +95,8 @@ module diffstruc__types
      procedure, pass(this) :: zero_all_grads
      !! Zero the gradients
      procedure, pass(this) :: reset_graph
-     procedure, pass(this) :: duplicate_graph_safe
      procedure, pass(this) :: duplicate_graph
      procedure, pass(this) :: nullify_graph
-     !   procedure, pass(this) :: duplicate_graph_ptrs
      procedure, pass(this) :: get_ptr_from_id
      procedure, pass(this) :: detach
      !! Detach from computation graph
@@ -222,14 +220,10 @@ module diffstruc__types
   end interface
 
   interface
-     module subroutine duplicate_graph(this)
-       class(array_type), intent(inout) :: this
-     end subroutine duplicate_graph
-
-     module function duplicate_graph_safe(this) result(output_ptr)
+     module function duplicate_graph(this) result(output_ptr)
        class(array_type), intent(inout) :: this
        type(array_type), pointer :: output_ptr
-     end function duplicate_graph_safe
+     end function duplicate_graph
   end interface
 
   interface
