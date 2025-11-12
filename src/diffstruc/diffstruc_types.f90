@@ -13,7 +13,9 @@ module diffstruc__types
   public :: operator(+), operator(-), operator(*), operator(/), operator(**)
   public :: sum, mean, spread, unspread, exp, log
 
-
+  type array_ptr
+  type(array_type), pointer :: p => null()
+  end type array_ptr
 !-------------------------------------------------------------------------------
 ! Automatic differentiation derived type
 !-------------------------------------------------------------------------------
@@ -56,6 +58,7 @@ module diffstruc__types
      logical :: owns_gradient = .true.
      !! Flag indicating if this array owns its gradient memory
      logical :: fix_pointer = .false.
+     logical :: is_temporary = .true.
 
      real(real32), dimension(:), allocatable :: direction
 
@@ -94,13 +97,12 @@ module diffstruc__types
      procedure, pass(this) :: reset_graph
      procedure, pass(this) :: duplicate_graph
      procedure, pass(this) :: nullify_graph
-     !   procedure, pass(this) :: duplicate_graph_ptrs
      procedure, pass(this) :: get_ptr_from_id
      procedure, pass(this) :: detach
      !! Detach from computation graph
      procedure, pass(this) :: set_requires_grad
      !! Set requires_grad flag
-     procedure :: create_result => create_result_array
+     procedure, pass(this) :: create_result => create_result_array
      !! Helper to safely create result arrays
 
      procedure, pass(this) :: print_graph
@@ -191,9 +193,10 @@ module diffstruc__types
        class(array_type), intent(inout) :: this
      end subroutine reset_graph
 
-     module recursive subroutine nullify_graph(this)
-       !! Nullify the gradients of this array
-       class(array_type), intent(inout) :: this
+     module subroutine nullify_graph(this, ignore_ownership)
+       !! Nullify graph by tracking visited nodes to avoid infinite recursion
+       class(array_type), intent(inout), target :: this
+       logical, intent(in), optional :: ignore_ownership
      end subroutine nullify_graph
 
      module subroutine zero_grad(this)
@@ -217,9 +220,10 @@ module diffstruc__types
   end interface
 
   interface
-     module subroutine duplicate_graph(this)
+     module function duplicate_graph(this) result(output_ptr)
        class(array_type), intent(inout) :: this
-     end subroutine duplicate_graph
+       type(array_type), pointer :: output_ptr
+     end function duplicate_graph
   end interface
 
   interface

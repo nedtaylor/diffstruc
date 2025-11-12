@@ -1,6 +1,7 @@
 module diffstruc
   !! This is the top-level module for the diffstruc Fortran library.
   use coreutils, only: real32
+  use diffstruc__global, only: max_recursion_depth, default_map_capacity
   use diffstruc__types, only: &
        array_type, get_partial, &
        operator(+), operator(-), operator(*), operator(/), operator(**), &
@@ -20,6 +21,7 @@ module diffstruc
   private
 
   public :: real32
+  public :: max_recursion_depth, default_map_capacity
   public :: array_type, get_partial
 
   public :: operator(+), operator(-), operator(*), operator(/), operator(**)

@@ -35,7 +35,6 @@ contains
     class(array_type), intent(in), target :: a
     type(array_type), pointer :: c
 
-    !  allocate(c)
     c => a%create_result()
     c%val = sin(a%val)
 
@@ -45,6 +44,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'sin'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function sin_array
 !-------------------------------------------------------------------------------
@@ -53,9 +53,14 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    logical :: left_is_temporary_local
+    type(array_type), pointer :: ptr
 
-    output = upstream_grad * cos( this%left_operand )
-
+    left_is_temporary_local = this%left_operand%is_temporary
+    this%left_operand%is_temporary = .false.
+    ptr => upstream_grad * cos( this%left_operand )
+    this%left_operand%is_temporary = left_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_sin
 !###############################################################################
 
@@ -67,7 +72,6 @@ contains
     class(array_type), intent(in), target :: a
     type(array_type), pointer :: c
 
-    !  allocate(c)
     c => a%create_result()
     c%val = cos(a%val)
 
@@ -77,6 +81,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'cos'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function cos_array
 !-------------------------------------------------------------------------------
@@ -85,9 +90,14 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    logical :: left_is_temporary_local
+    type(array_type), pointer :: ptr
 
-    output = -upstream_grad * sin( this%left_operand )
-
+    left_is_temporary_local = this%left_operand%is_temporary
+    this%left_operand%is_temporary = .false.
+    ptr => -upstream_grad * sin( this%left_operand )
+    this%left_operand%is_temporary = left_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_cos
 !###############################################################################
 
@@ -108,6 +118,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'tan'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function tan_array
 !-------------------------------------------------------------------------------
@@ -116,9 +127,14 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    logical :: left_is_temporary_local
+    type(array_type), pointer :: ptr
 
-    output = upstream_grad / ( cos( this%left_operand ) ** 2._real32 )
-
+    left_is_temporary_local = this%left_operand%is_temporary
+    this%left_operand%is_temporary = .false.
+    ptr => upstream_grad / ( cos( this%left_operand ) ** 2._real32 )
+    this%left_operand%is_temporary = left_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_tan
 !###############################################################################
 

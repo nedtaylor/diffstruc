@@ -1,18 +1,11 @@
 submodule(diffstruc__types) diffstruc__types_submodule
   !! Submodule containing implementations for derived types
   use coreutils, only: stop_program, print_warning
+  use diffstruc__global, only: max_recursion_depth, default_map_capacity
 
 
 
 contains
-!###############################################################################
-!###############################################################################
-
-
-!##############################################################################!
-! * * * * * * * * * * * * * * * * * * *  * * * * * * * * * * * * * * * * * * * !
-!##############################################################################!
-
 
 !###############################################################################
   module subroutine allocate_array(this, array_shape, source)
@@ -119,29 +112,20 @@ contains
 
     keep_shape_ = .false.
     if(present(keep_shape)) keep_shape_ = keep_shape
-    if(.not.keep_shape_) this%shape = 0
+
+    ! Deallocate all allocatable arrays
     if(allocated(this%val)) deallocate(this%val)
     if(allocated(this%indices)) deallocate(this%indices)
     if(allocated(this%adj_ja)) deallocate(this%adj_ja)
     if(allocated(this%mask)) deallocate(this%mask)
-
-    ! Clean up gradients
-    if(associated(this%grad) .and. this%owns_gradient) then
-       call this%grad%deallocate()
-       deallocate(this%grad)
+    if(allocated(this%direction)) deallocate(this%direction)
+    if(.not.keep_shape_)then
+       if(allocated(this%shape)) deallocate(this%shape)
     end if
-    this%grad => null()
-    this%owns_gradient = .false.
-
-    ! Nullify computation graph pointers
-    this%left_operand => null()
-    this%right_operand => null()
-
-    this%get_partial_left => null()
-    this%get_partial_right => null()
 
     this%allocated = .false.
     this%size = 0
+    ! write(*,*) "deallocated array loc: ", loc(this)
 
   end subroutine deallocate_array
 !###############################################################################
@@ -153,34 +137,46 @@ contains
     implicit none
     type(array_type), intent(inout) :: this
 
+    ! write(*,*) "finalising array loc: ", loc(this), this%is_temporary, this%operation
+
+    ! First deallocate owned pointers (operands and gradient) to prevent leaks
+    if(.not.this%is_temporary)then
+       if(associated(this%left_operand))then
+          if(this%owns_left_operand)then
+             !call this%left_operand%deallocate()
+             deallocate(this%left_operand)
+          end if
+          nullify(this%left_operand)
+       end if
+
+       if(associated(this%right_operand))then
+          if(this%owns_right_operand)then
+             !call this%right_operand%deallocate()
+             deallocate(this%right_operand)
+          end if
+          nullify(this%right_operand)
+       end if
+
+       if(associated(this%grad))then
+          if(this%owns_gradient)then
+             !call this%grad%deallocate()
+             deallocate(this%grad)
+          end if
+          nullify(this%grad)
+       end if
+    end if
+
     ! Deallocate all allocatable arrays
-    if(allocated(this%val)) deallocate(this%val)
-    if(allocated(this%shape)) deallocate(this%shape)
-    if(allocated(this%indices)) deallocate(this%indices)
-    if(allocated(this%adj_ja)) deallocate(this%adj_ja)
-    if(allocated(this%mask)) deallocate(this%mask)
-    if(allocated(this%direction)) deallocate(this%direction)
-    ! Nullify and deallocate pointers
-    if(associated(this%grad) .and. this%owns_gradient) then
-       deallocate(this%grad)
-    end if
-    if(associated(this%left_operand))then
-       if(this%owns_left_operand) deallocate(this%left_operand)
-       nullify(this%left_operand)
-    end if
-    if(associated(this%right_operand))then
-       if(this%owns_right_operand) deallocate(this%right_operand)
-       nullify(this%right_operand)
-    end if
-    if(associated(this%grad))then
-       if(this%owns_gradient) deallocate(this%grad)
-       nullify(this%grad)
-    end if
+    call this%deallocate()
+
+    ! Reset ownership flags and nullify procedure pointers
     this%owns_gradient = .false.
+    this%owns_left_operand = .false.
+    this%owns_right_operand = .false.
     nullify(this%get_partial_left)
     nullify(this%get_partial_right)
-    this%allocated = .false.
-    this%size = 0
+    this%is_temporary = .true.
+    ! write(*,*) "finalised array loc: ", loc(this)
 
   end subroutine finalise_array
 !###############################################################################
@@ -232,20 +228,15 @@ contains
     if(associated(input%left_operand)) this%left_operand => input%left_operand
     if(associated(input%right_operand)) this%right_operand => input%right_operand
     this%operation = input%operation
-    this%owns_gradient = .false.  ! Dont copy gradient ownership
+
+    ! Transfer ownership flags - this is critical to prevent memory leaks
+    this%owns_gradient = input%owns_gradient
+    this%owns_left_operand = input%owns_left_operand
+    this%owns_right_operand = input%owns_right_operand
+
     if(allocated(input%indices)) this%indices = input%indices
     if(allocated(input%adj_ja)) this%adj_ja = input%adj_ja
     if(allocated(input%mask)) this%mask = input%mask
-    if(input%owns_left_operand.and.associated(input%left_operand))then
-       this%owns_left_operand = input%owns_left_operand
-       allocate(this%left_operand)
-       this%left_operand = input%left_operand
-    end if
-    if(input%owns_right_operand.and.associated(input%right_operand))then
-       this%owns_right_operand = input%owns_right_operand
-       allocate(this%right_operand)
-       this%right_operand = input%right_operand
-    end if
 
     if(associated(input%get_partial_left)) &
          this%get_partial_left => input%get_partial_left
@@ -324,7 +315,7 @@ contains
 
     allocate(result_ptr)
 
-    if(present(array_shape)) then
+    if(present(array_shape))then
        call result_ptr%allocate(array_shape=array_shape)
     else
        if(allocated(this%shape))then
@@ -335,7 +326,7 @@ contains
        end if
     end if
 
-    ! Initialize autodiff fields
+    ! Initialise autodiff fields
     result_ptr%requires_grad = .false.
     result_ptr%is_scalar = this%is_scalar
     result_ptr%is_sample_dependent = this%is_sample_dependent
@@ -348,6 +339,7 @@ contains
     result_ptr%right_operand => null()
     result_ptr%get_partial_left => null()
     result_ptr%get_partial_right => null()
+    result_ptr%is_temporary = .true.
   end function create_result_array
 !###############################################################################
 
@@ -363,7 +355,7 @@ contains
     real(real32), dimension(..), intent(in) :: input
     !! Input array
 
-    if( any(shape(input).ne.[this%shape, size(this%val,2)]) ) then
+    if( any(shape(input).ne.[this%shape, size(this%val,2)]) )then
        return
     end if
     select rank(input)
@@ -404,7 +396,7 @@ contains
     rank(2)
        output = this%val
     rank default
-       if(size(this%shape,1) + 1 .ne.rank(output)) then
+       if(size(this%shape,1) + 1 .ne.rank(output))then
           write(rank_str,'(I0)') rank(output)
           call print_warning( &
                "Output data rank mismatch, expected rank "//trim(adjustl(rank_str)) &
@@ -462,10 +454,11 @@ contains
     type(array_type), intent(in) :: variable
     type(array_type), pointer :: output
 
-    integer :: itmp
+    integer :: depth
 
-    itmp = 0
-    output => forward_over_reverse(this, variable, itmp)
+    depth = 0
+    output => forward_over_reverse(this, variable, depth)
+    output%is_forward = .true.
     this%requires_grad = .true.
 
   end function grad_forward
@@ -482,17 +475,17 @@ contains
 
     logical :: record_graph_
 
-    record_graph_ = .false.
+    record_graph_ = .true.
     if(present(record_graph)) record_graph_ = record_graph
     if(present(reset_graph))then
        if(reset_graph) call this%reset_graph()
     end if
     call zero_all_fixed_pointer_grads(this)
 
-    ! Initialize gradient if not allocated
-    if(.not. associated(this%grad)) then
+    ! Initialise gradient if not allocated
+    if(.not. associated(this%grad))then
        allocate(this%grad)
-       ! Safely initialize gradient without copying computation graph
+       ! Safely initialise gradient without copying computation graph
        call this%grad%allocate(array_shape=[this%shape, size(this%val,2)])
        this%grad%is_sample_dependent = this%is_sample_dependent
        this%grad%requires_grad = record_graph_
@@ -508,13 +501,14 @@ contains
        call this%grad%zero_grad()
        ! Set gradient to ones for starting node
        this%grad%val = 1.0_real32
+       this%grad%is_temporary = this%is_temporary
     end if
 
     ! Recursively compute gradients
     if(record_graph_)then
-       call reverse_mode_ptr(this, this%grad)
+       call reverse_mode_ptr(this, this%grad, 0)
     else
-       call reverse_mode(this, this%grad)
+       call reverse_mode(this, this%grad, 0)
     end if
   end subroutine grad_reverse
 !###############################################################################
@@ -526,23 +520,25 @@ contains
 
 
 !###############################################################################
-  recursive function forward_over_reverse(this, variable, itmp) result(output)
+  recursive function forward_over_reverse(this, variable, depth) result(output)
     implicit none
     type(array_type), intent(inout) :: this
     type(array_type), intent(in) :: variable
-    integer :: itmp
+    integer, intent(inout) :: depth
     type(array_type), pointer :: output
 
     integer :: s
     logical :: is_right_a_variable, is_left_a_variable
     type(array_type), pointer :: left_deriv_tmp, right_deriv_tmp
     type(array_type), pointer :: left_deriv, right_deriv
+    logical :: is_forward_local
 
-    itmp = itmp + 1
-    if(itmp.gt.500)then
-       write(0,*) "MAX RECURSION DEPTH REACHED", itmp
+    depth = depth + 1
+    if(depth.gt.max_recursion_depth)then
+       write(0,*) "MAX RECURSION DEPTH REACHED", depth
        return
     end if
+    is_forward_local = this%is_forward
     this%is_forward = .true.
     ! write(*,*) "Performing forward-over-reverse operation for: ", trim(this%operation)
     if(loc(this).eq.loc(variable))then
@@ -563,39 +559,53 @@ contains
        !    output = this%grad
        ! else
        is_left_a_variable = .false.
-       if(associated(this%left_operand)) then
+       if(associated(this%left_operand))then
           if(associated(this%get_partial_left))then
              is_left_a_variable = .true.
              !if(associated(this%left_operand%grad))then
              !   left_deriv => this%left_operand%grad
              !else
              left_deriv_tmp => &
-                  forward_over_reverse(this%left_operand, variable, itmp)
+                  forward_over_reverse(this%left_operand, variable, depth)
              ! call left_deriv_tmp%set_requires_grad(.false.)
-             allocate(left_deriv)
-             if( associated(this%get_partial_right) .and. &
-                  .not.associated(this%right_operand) &
-             )then
-                left_deriv = this%get_partial_right(left_deriv_tmp)
+             if(trim(this%operation).eq.'add')then
+                left_deriv => left_deriv_tmp
              else
-                left_deriv = this%get_partial_left(left_deriv_tmp)
+                allocate(left_deriv)
+                if( associated(this%get_partial_right) .and. &
+                     .not.associated(this%right_operand) &
+                )then
+                   left_deriv = this%get_partial_right(left_deriv_tmp)
+                else
+                   left_deriv = this%get_partial_left(left_deriv_tmp)
+                end if
              end if
-             !end if
+             !write(*,*) "left owns l", left_deriv_tmp%owns_left_operand
+             !write(*,*) "left owns r", left_deriv_tmp%owns_right_operand
+             !  left_deriv%owns_left_operand = .true.
+             !  left_deriv%owns_right_operand = .true.
+             ! end if
           end if
        end if
 
        is_right_a_variable = .false.
-       if(associated(this%right_operand)) then
+       if(associated(this%right_operand))then
           if(associated(this%get_partial_right))then
              is_right_a_variable = .true.
              !if(associated(this%right_operand%grad))then
              !   right_deriv => this%right_operand%grad
              !else
              right_deriv_tmp => &
-                  forward_over_reverse(this%right_operand, variable, itmp)
+                  forward_over_reverse(this%right_operand, variable, depth)
              ! call right_deriv_tmp%set_requires_grad(.false.)
-             allocate(right_deriv)
-             right_deriv = this%get_partial_right(right_deriv_tmp)
+             if(trim(this%operation).eq.'add')then
+                right_deriv => right_deriv_tmp
+             else
+                allocate(right_deriv)
+                right_deriv = this%get_partial_right(right_deriv_tmp)
+             end if
+             !  right_deriv%owns_left_operand = .true.
+             !  right_deriv%owns_right_operand = .true.
              !end if
           end if
        end if
@@ -604,13 +614,11 @@ contains
           output => left_deriv + right_deriv
        elseif(is_left_a_variable)then
           output => left_deriv
-       elseif(is_right_a_variable) then
+       elseif(is_right_a_variable)then
           output => right_deriv
        else
           call stop_program("Neither operand is a variable in forward-over-reverse")
        end if
-       output%owns_left_operand = .true.
-       output%owns_right_operand = .true.
 
        ! end if
     else
@@ -620,37 +628,46 @@ contains
        ! call output%allocate(array_shape=[this%shape, size(this%val,2)])
        output%val(:,:) = 0._real32
     end if
+    this%is_forward = is_forward_local
+    output%is_forward = .true.
+    output%is_temporary = .true.
     ! write(*,*) "done operation: ", trim(this%operation)
-    this%is_forward = .false.
 
   end function forward_over_reverse
 !###############################################################################
 
 
 !###############################################################################
-  module recursive subroutine reverse_mode_ptr(array, upstream_grad)
+  module recursive subroutine reverse_mode_ptr(array, upstream_grad, depth)
     !! Backward operation for arrays
     implicit none
     class(array_type), intent(inout) :: array
     type(array_type), pointer, intent(in) :: upstream_grad
+    integer, intent(in) :: depth
 
     type(array_type), pointer :: left_partial, right_partial
 
     ! write(*,'("Performing backward operation for: ",A,T60,"id: ",I0)') &
     !      trim(array%operation), array%id
+    if(depth.gt.max_recursion_depth)then
+       write(0,*) "MAX RECURSION DEPTH REACHED IN REVERSE MODE", depth
+       return
+    end if
     array%is_forward = .false.
     if(associated(array%left_operand))then
-       if(array%left_operand%requires_grad) then
+       if(array%left_operand%requires_grad)then
           allocate(left_partial)
           left_partial = array%get_partial_left(upstream_grad)
-          call accumulate_gradient_ptr(array%left_operand, left_partial)
+          left_partial%is_temporary = .true.
+          call accumulate_gradient_ptr(array%left_operand, left_partial, depth)
        end if
     end if
     if(associated(array%right_operand))then
        if(array%right_operand%requires_grad)then
           allocate(right_partial)
           right_partial = array%get_partial_right(upstream_grad)
-          call accumulate_gradient_ptr(array%right_operand, right_partial)
+          right_partial%is_temporary = .true.
+          call accumulate_gradient_ptr(array%right_operand, right_partial, depth)
        end if
     end if
     ! write(*,*) "done operation: ", trim(array%operation)
@@ -659,11 +676,12 @@ contains
 
 
 !###############################################################################
-  recursive subroutine accumulate_gradient_ptr(array, grad)
+  recursive subroutine accumulate_gradient_ptr(array, grad, depth)
     !! Accumulate gradient for array with safe memory management
     implicit none
     type(array_type), intent(inout) :: array
     type(array_type), intent(in), pointer :: grad
+    integer, intent(in) :: depth
 
     integer :: s
     logical :: is_directional
@@ -684,7 +702,7 @@ contains
        directional_grad => grad
     end if
 
-    if(.not. associated(array%grad)) then
+    if(.not. associated(array%grad))then
        if(array%is_sample_dependent)then
           array%grad => directional_grad
        else
@@ -699,8 +717,10 @@ contains
        array%grad%grad => null()
        array%grad%owns_gradient = .false.
        array%owns_gradient = .true.
+       array%grad%is_temporary = array%is_temporary
     else
 
+       array%grad%is_temporary = .true.
        if(array%is_sample_dependent)then
           array%grad => array%grad + directional_grad
        else
@@ -709,55 +729,64 @@ contains
           ! sum reduction
           array%grad => array%grad + sum( directional_grad%val, dim = 2 )
        end if
+       array%grad%is_temporary = array%is_temporary
 
     end if
 
     if(associated(array%left_operand).or.associated(array%right_operand))then
-       call reverse_mode_ptr(array, directional_grad)
+       call reverse_mode_ptr(array, directional_grad, depth+1)
     end if
   end subroutine accumulate_gradient_ptr
 !###############################################################################
 
 
 !###############################################################################
-  module recursive subroutine reverse_mode(array, upstream_grad)
+  module recursive subroutine reverse_mode(array, upstream_grad, depth)
     !! Backward operation for arrays
     implicit none
     class(array_type), intent(inout) :: array
     type(array_type), intent(in) :: upstream_grad
+    integer, intent(in) :: depth
 
     type(array_type) :: left_partial, right_partial
 
     ! write(*,'("Performing backward operation for: ",A,T60,"id: ",I0)') &
     !      trim(array%operation), array%id
+    if(depth.gt.max_recursion_depth)then
+       write(0,*) "MAX RECURSION DEPTH REACHED IN REVERSE MODE", depth
+       return
+    end if
     array%is_forward = .false.
     if(associated(array%left_operand))then
-       if(array%left_operand%requires_grad) then
+       if(array%left_operand%requires_grad)then
           left_partial = array%get_partial_left(upstream_grad)
-          call accumulate_gradient(array%left_operand, left_partial)
+          left_partial%is_temporary = .false.
+          call accumulate_gradient(array%left_operand, left_partial, depth)
        end if
     end if
     if(associated(array%right_operand))then
        if(array%right_operand%requires_grad)then
           right_partial = array%get_partial_right(upstream_grad)
-          call accumulate_gradient(array%right_operand, right_partial)
+          right_partial%is_temporary = .false.
+          call accumulate_gradient(array%right_operand, right_partial, depth)
        end if
     end if
-    ! write(*,*) "done operation: ", trim(this%operation)
+    ! write(*,*) "done operation: ", trim(array%operation)
   end subroutine reverse_mode
 !###############################################################################
 
 
 !###############################################################################
-  recursive subroutine accumulate_gradient(array, grad)
+  recursive subroutine accumulate_gradient(array, grad, depth)
     !! Accumulate gradient for array with safe memory management
     implicit none
     type(array_type), intent(inout) :: array
     type(array_type), intent(inout) :: grad
+    integer, intent(in) :: depth
 
     integer :: s
-    ! real(real32) :: rtmp1
 
+    ! Apply direction if specified (in-place to avoid copy)
     if(allocated(array%direction))then
        if(size(array%direction).gt.0)then
           do s = 1, size(grad%val, 2)
@@ -766,24 +795,24 @@ contains
        end if
     end if
 
-    if(.not. associated(array%grad)) then
+    if(.not. associated(array%grad))then
+       ! First gradient accumulation - allocate and set
        allocate(array%grad)
        if(array%is_sample_dependent)then
+          call array%grad%allocate(array_shape=[grad%shape,size(grad%val,2)])
           array%grad%val = grad%val
-          array%grad%shape = grad%shape
        else
-          allocate(array%grad%val(size(grad%val,1),1))
-          ! rtmp1 = real(size(grad%val,2), real32)
-          ! ! mean reduction
-          ! array%grad%val(:,1) = sum(grad%val, dim=2) / rtmp1
-          ! sum reduction
+          call array%grad%allocate(array_shape=[grad%shape,1])
           array%grad%val(:,1) = sum(grad%val, dim = 2)
-          array%grad%shape = grad%shape
        end if
        array%grad%is_scalar = array%is_scalar
        array%grad%is_sample_dependent = array%is_sample_dependent
+       array%grad%requires_grad = .false.
+       array%grad%owns_gradient = .false.
+       array%owns_gradient = .true.
+       array%grad%is_temporary = array%is_temporary
     else
-
+       ! Accumulate to existing gradient (in-place)
        if(array%is_sample_dependent)then
           array%grad%val = array%grad%val + grad%val
        else
@@ -795,11 +824,16 @@ contains
           ! sum reduction
           array%grad%val(:,1) = array%grad%val(:,1) + sum(grad%val, dim = 2)
        end if
-
     end if
 
     if(associated(array%left_operand).or.associated(array%right_operand))then
-       call reverse_mode(array, grad)
+       call reverse_mode(array, grad, depth+1)
+    end if
+    if(array%grad%is_temporary)then
+       call array%grad%nullify_graph()
+       call array%grad%deallocate()
+       deallocate(array%grad)
+       array%owns_gradient = .false.
     end if
   end subroutine accumulate_gradient
 !###############################################################################
@@ -816,7 +850,7 @@ contains
     implicit none
     class(array_type), intent(inout) :: this
 
-    if(associated(this%grad)) then
+    if(associated(this%grad))then
        if(allocated(this%grad%val)) this%grad%val = 0.0_real32
     end if
   end subroutine zero_grad
@@ -832,10 +866,10 @@ contains
     if(associated(this%left_operand))then
        call this%left_operand%zero_all_grads()
     end if
-    if(associated(this%right_operand)) then
+    if(associated(this%right_operand))then
        call this%right_operand%zero_all_grads()
     end if
-    if(associated(this%grad)) then
+    if(associated(this%grad))then
        if(allocated(this%grad%val)) this%grad%val = 0.0_real32
     end if
   end subroutine zero_all_grads
@@ -851,10 +885,10 @@ contains
     if(associated(this%left_operand))then
        call zero_all_fixed_pointer_grads(this%left_operand)
     end if
-    if(associated(this%right_operand)) then
+    if(associated(this%right_operand))then
        call zero_all_fixed_pointer_grads(this%right_operand)
     end if
-    if(this%fix_pointer.and.associated(this%grad)) then
+    if(this%fix_pointer.and.associated(this%grad))then
        if(allocated(this%grad%val)) this%grad%val = 0.0_real32
     end if
   end subroutine zero_all_fixed_pointer_grads
@@ -869,12 +903,10 @@ contains
 
     if(associated(this%left_operand))then
        call this%left_operand%reset_graph()
-       call this%left_operand%zero_grad()
     end if
 
-    if(associated(this%right_operand)) then
+    if(associated(this%right_operand))then
        call this%right_operand%reset_graph()
-       call this%right_operand%zero_grad()
     end if
 
     call this%zero_grad()
@@ -882,40 +914,10 @@ contains
        this%grad => null()
     end if
 
-  end subroutine reset_graph
-!###############################################################################
-
-
-!###############################################################################
-  module recursive subroutine nullify_graph(this)
-    !! Reset the gradient graph of this array
-    implicit none
-    class(array_type), intent(inout) :: this
-
-    if(associated(this%left_operand))then
-       call this%left_operand%nullify_graph()
-       if(this%owns_left_operand) deallocate(this%left_operand)
-       nullify(this%left_operand)
-    end if
-    if(associated(this%right_operand)) then
-       call this%right_operand%nullify_graph()
-       if(this%owns_right_operand) deallocate(this%right_operand)
-       nullify(this%right_operand)
-    end if
-    if(associated(this%grad))then
-       call this%grad%nullify_graph()
-       if(this%owns_gradient) deallocate(this%grad)
-       nullify(this%grad)
-    end if
-    this%owns_left_operand = .false.
-    this%owns_right_operand = .false.
+    ! Reset ownership flags
     this%owns_gradient = .false.
-    nullify(this%get_partial_left)
-    nullify(this%get_partial_right)
-    this%allocated = .false.
-    this%size = 0
 
-  end subroutine nullify_graph
+  end subroutine reset_graph
 !###############################################################################
 
 
@@ -925,156 +927,306 @@ contains
 
 
 !###############################################################################
-  module subroutine duplicate_graph(this)
-    !! Duplicate the computation graph of this array
-    use iso_c_binding
-    implicit none
-    class(array_type), intent(inout) :: this
-
-    type(c_ptr), dimension(:,:), allocatable :: pointer_map
-
-    select type(this)
-    type is(array_type)
-       call add_pointer_mapping(this, pointer_map)
-       call duplicate_graph_ptrs(this, pointer_map)
-    class default
-       call stop_program('Unsupported type for duplicate_graph. &
-            &Currently only supports array_type')
-       return
-    end select
-    if(allocated(pointer_map)) deallocate(pointer_map)
-
-  end subroutine duplicate_graph
+! Map helper functions for graph traversal
 !###############################################################################
-
-
-!###############################################################################
-  subroutine add_pointer_mapping(array, pointer_map)
-    !! Add a pointer mapping for the given array to the pointer map
-    use iso_c_binding
+  subroutine double_map_add(src_map, dst_map, src_ptr, dst_ptr)
+    !! Add pointer pair to double-array map (grow if needed)
     implicit none
-    type(array_type), intent(in), target :: array
-    type(c_ptr), dimension(:,:), allocatable, intent(inout) :: pointer_map
-    type(c_ptr), dimension(:,:), allocatable :: pointer_map_store
+    type(array_ptr), allocatable :: src_map(:), dst_map(:)
+    type(array_type), pointer, intent(in) :: src_ptr, dst_ptr
+    integer :: n, i, newcap
+    if(.not. allocated(src_map)) allocate(src_map(default_map_capacity))
+    if(.not. allocated(dst_map)) allocate(dst_map(default_map_capacity))
+    n = size(src_map)
+    ! find first null slot
+    do i = 1, n
+       if(.not. associated(src_map(i)%p))then
+          src_map(i)%p => src_ptr
+          dst_map(i)%p => dst_ptr
+          return
+       end if
+    end do
+    ! no slot -> grow (double capacity)
+    src_map = [ src_map, array_ptr() ]
+    dst_map = [ dst_map, array_ptr() ]
+    ! store at next free
+    src_map(n+1)%p => src_ptr
+    dst_map(n+1)%p => dst_ptr
+  end subroutine double_map_add
+!-------------------------------------------------------------------------------
+  subroutine single_map_add(map, ptr)
+    !! Add pointer to single-array map (grow if needed)
+    implicit none
+    type(array_ptr), allocatable :: map(:)
+    type(array_type), pointer, intent(in) :: ptr
+    integer :: n, i
 
-    if(.not. allocated(pointer_map)) then
-       allocate(pointer_map(2, 1))
-       pointer_map(:, 1) = [ c_loc(array), c_loc(array) ]
-    else
-       pointer_map_store = pointer_map
-       deallocate(pointer_map)
-       allocate(pointer_map(2, size(pointer_map_store, dim=2) + 1))
-       pointer_map(:,1:size(pointer_map_store, dim=2)) = pointer_map_store
-       pointer_map(:,size(pointer_map_store, dim=2)+1) = &
-            [ c_loc(array), c_loc(array) ]
-       deallocate(pointer_map_store)
+    if(.not. allocated(map))then
+       allocate(map(default_map_capacity))
     end if
-  end subroutine add_pointer_mapping
-!###############################################################################
-
-
-!###############################################################################
-  recursive subroutine duplicate_graph_ptrs(array, pointer_map)
-    !! Duplicate the computation graph of this array
-    use iso_c_binding
+    n = size(map)
+    ! find first null slot
+    do i = 1, n
+       if(.not. associated(map(i)%p))then
+          map(i)%p => ptr
+          return
+       end if
+    end do
+    ! no slot -> grow
+    map = [ map, array_ptr() ]
+    map(n+1)%p => ptr
+  end subroutine single_map_add
+!-------------------------------------------------------------------------------
+  function map_find(map, target) result(idx)
+    !! Check if target pointer exists in single-array map
     implicit none
-    type(array_type), intent(inout) :: array
-    type(c_ptr), dimension(:,:), allocatable, intent(inout) :: pointer_map
+    type(array_ptr), allocatable :: map(:)
+    type(array_type), pointer, intent(in) :: target
+    integer :: idx, n, i
 
-    left_if: if(associated(array%left_operand))then
-       if(check_already_handled_in_duplicate(array%left_operand, pointer_map)) return
-       if(array%left_operand%fix_pointer)then
-          call add_pointer_mapping(array%left_operand, pointer_map)
-       else
-          array%left_operand => duplicate_pointer(array%left_operand, pointer_map)
+    idx = 0
+    if(.not. allocated(map)) return
+    n = size(map)
+    do i = 1, n
+       if(associated(map(i)%p, target))then
+          idx = i
+          return
        end if
-    end if left_if
-
-    right_if: if(associated(array%right_operand)) then
-       if(check_already_handled_in_duplicate(array%right_operand, pointer_map)) return
-       if(array%right_operand%fix_pointer)then
-          call add_pointer_mapping(array%right_operand, pointer_map)
-       else
-          array%right_operand => duplicate_pointer(array%right_operand, pointer_map)
-       end if
-    end if right_if
-
-    grad_if: if(associated(array%grad)) then
-       if(check_already_handled_in_duplicate(array%grad, pointer_map)) return
-       if(array%grad%fix_pointer)then
-          call add_pointer_mapping(array%grad, pointer_map)
-       else
-          array%grad => duplicate_pointer(array%grad, pointer_map)
-       end if
-    end if grad_if
-
-  end subroutine duplicate_graph_ptrs
-!###############################################################################
-
-
-!###############################################################################
-  function check_already_handled_in_duplicate(array, pointer_map) result(is_handled)
-    use iso_c_binding
+    end do
+  end function map_find
+!-------------------------------------------------------------------------------
+  subroutine map_free(map)
+    !! Free array map (nullify pointers and deallocate array)
     implicit none
-    type(array_type), intent(in), target :: array
-    type(c_ptr), dimension(:,:), allocatable, intent(in) :: pointer_map
-    logical :: is_handled
-    integer :: i, n
+    type(array_ptr), allocatable :: map(:)
+    integer :: i
 
-    is_handled = .false.
-    if(allocated(pointer_map)) then
-       n = size(pointer_map, dim=2)
-       do i = 1, n
-          if( c_associated( c_loc(array), pointer_map(2,i) ) ) then
-             is_handled = .true.
-             return
+    if(allocated(map))then
+       do i = 1, size(map)
+          if(associated(map(i)%p))then
+             nullify(map(i)%p)
           end if
        end do
+       deallocate(map)
     end if
-  end function check_already_handled_in_duplicate
+  end subroutine map_free
 !###############################################################################
 
 
 !###############################################################################
-  recursive function duplicate_pointer(input_ptr, pointer_map) result(output_ptr)
-    use iso_c_binding
+  recursive subroutine nullify_graph_recursive(this, visited_map, dealloc_list, &
+       ignore_ownership &
+  )
+    !! Recursive helper that tracks visited nodes to avoid infinite loops
+    !! Instead of deallocating immediately, collect nodes to deallocate in a second pass
     implicit none
-    type(array_type), pointer :: input_ptr
-    type(c_ptr), dimension(:,:), allocatable, intent(inout) :: pointer_map
+    class(array_type), intent(inout), target :: this
+    type(array_ptr), allocatable, intent(inout) :: visited_map(:), dealloc_list(:)
+    logical, intent(in) :: ignore_ownership
+    integer :: idx
+
+    ! Check if we've already visited this node
+    idx = map_find(visited_map, this)
+    if(idx .ne. 0) return  ! Already processed, avoid infinite loop
+
+    ! Mark this node as visited by adding to map BEFORE recursing
+    call single_map_add(visited_map, this)
+
+    ! Now process children recursively first
+    ! ... this node is not reprocessed due to visited check
+    if(ignore_ownership)then
+       ! Ignore ownership flags during traversal
+       if(associated(this%left_operand))then
+          call nullify_graph_recursive( &
+               this%left_operand, visited_map, dealloc_list, ignore_ownership &
+          )
+       end if
+       if(associated(this%right_operand))then
+          call nullify_graph_recursive( &
+               this%right_operand, visited_map, dealloc_list, ignore_ownership &
+          )
+       end if
+       if(associated(this%grad))then
+          call nullify_graph_recursive( &
+               this%grad, visited_map, dealloc_list, ignore_ownership &
+          )
+       end if
+    else
+       if(associated(this%left_operand).and.this%owns_left_operand)then
+          call nullify_graph_recursive( &
+               this%left_operand, visited_map, dealloc_list, ignore_ownership &
+          )
+       end if
+       if(associated(this%right_operand).and.this%owns_right_operand)then
+          call nullify_graph_recursive( &
+               this%right_operand, visited_map, dealloc_list, ignore_ownership &
+          )
+       end if
+       if(associated(this%grad).and.this%owns_gradient)then
+          call nullify_graph_recursive( &
+               this%grad, visited_map, dealloc_list, ignore_ownership &
+          )
+       end if
+    end if
+
+    ! After recursion, collect nodes that need deallocation
+    ! Only add to dealloc list if we own it and it's not a fixed pointer
+    ! Check if already in list to avoid double-free
+    if(associated(this%left_operand))then
+       if(.not.this%left_operand%fix_pointer .and. this%owns_left_operand)then
+          idx = map_find(dealloc_list, this%left_operand)
+          if(idx .eq. 0)then  ! Not already listed
+             call single_map_add(dealloc_list, this%left_operand)
+          end if
+       end if
+       nullify(this%left_operand)
+    end if
+
+    if(associated(this%right_operand))then
+       if(.not.this%right_operand%fix_pointer .and. this%owns_right_operand)then
+          idx = map_find(dealloc_list, this%right_operand)
+          if(idx .eq. 0)then  ! Not already listed
+             call single_map_add(dealloc_list, this%right_operand)
+          end if
+       end if
+       nullify(this%right_operand)
+    end if
+
+    if(associated(this%grad))then
+       if(.not.this%grad%fix_pointer .and. this%owns_gradient)then
+          idx = map_find(dealloc_list, this%grad)
+          if(idx .eq. 0)then  ! Not already listed
+             call single_map_add(dealloc_list, this%grad)
+          end if
+       end if
+       nullify(this%grad)
+    end if
+
+    ! Reset ownership and procedure pointers
+    this%owns_left_operand = .false.
+    this%owns_right_operand = .false.
+    this%owns_gradient = .false.
+    nullify(this%get_partial_left)
+    nullify(this%get_partial_right)
+
+  end subroutine nullify_graph_recursive
+!###############################################################################
+
+
+!###############################################################################
+  module subroutine nullify_graph(this, ignore_ownership)
+    !! Nullify graph by tracking visited nodes to avoid infinite recursion
+    implicit none
+    class(array_type), intent(inout), target :: this
+    logical, intent(in), optional :: ignore_ownership
+    type(array_ptr), allocatable :: visited_map(:), dealloc_list(:)
+    type(array_type), pointer :: node_to_dealloc
+    integer :: i, n
+    logical :: ignore_ownership_
+
+    ignore_ownership_ = .not.this%is_forward
+    if(present(ignore_ownership)) ignore_ownership_ = ignore_ownership
+
+    ! Initialise and run the recursive cleanup with tracking
+    ! This will traverse the graph, nullify pointers, and collect nodes to deallocate
+    call nullify_graph_recursive(this, visited_map, dealloc_list, ignore_ownership_)
+
+    ! Now deallocate all collected nodes in a second pass
+    ! This avoids issues with deallocating while traversing
+    if(allocated(dealloc_list))then
+       n = size(dealloc_list)
+       do i = 1, n
+          if(associated(dealloc_list(i)%p))then
+             node_to_dealloc => dealloc_list(i)%p
+             if(node_to_dealloc%allocated)then
+                call node_to_dealloc%deallocate()
+             end if
+             node_to_dealloc%is_temporary = .true.
+             deallocate(node_to_dealloc)
+             nullify(dealloc_list(i)%p)
+          end if
+       end do
+       deallocate(dealloc_list)
+    end if
+
+    ! Clean up the map
+    call map_free(visited_map)
+
+  end subroutine nullify_graph
+!###############################################################################
+
+
+!###############################################################################
+  recursive function duplicate_pointer(input_ptr, src_map, dst_map, owns_self) &
+       result(output_ptr)
+    implicit none
+    type(array_type), target :: input_ptr
+    type(array_ptr), allocatable :: src_map(:), dst_map(:)
     type(array_type), pointer :: output_ptr
-    integer :: i, n
-    type(c_ptr), dimension(:,:), allocatable :: pointer_map_store
+    logical, intent(out):: owns_self
+    integer :: idx
+    logical :: tmp_logical
 
-    if(allocated(pointer_map))then
-       n = size(pointer_map, dim=2)
-       do i = 1, n
-          if( c_associated( c_loc(input_ptr), pointer_map(1,i) ) ) then
-             call c_f_pointer( pointer_map(2,i), output_ptr )
-             return
-          end if
-       end do
+    owns_self = .false.
+    idx = map_find(src_map, input_ptr)
+    if(idx .ne. 0)then
+       output_ptr => dst_map(idx)%p
+       return
+    elseif(input_ptr%fix_pointer)then
+       ! If pointer is fixed, do not duplicate; just return original
+       output_ptr => input_ptr
+       return
     end if
 
-    call duplicate_graph_ptrs(input_ptr, pointer_map)
-    ! Not found, so duplicate and add to list
+    ! Create duplicate node (caller may want ownership policies)
     allocate(output_ptr)
-    output_ptr = input_ptr
-    ! output_ptr%fix_pointer = .true.
+    call output_ptr%assign_shallow(input_ptr)
+    ! Mark that output_ptr is a duplicate (so callers can deallocate later)
+    !output_ptr%owns_self = .true.     ! <-- add this flag to array_type if helpful
+    owns_self = .true.
 
-    if(.not. allocated(pointer_map)) then
-       allocate(pointer_map(2,1))
-       pointer_map(:,1) = [ c_loc(input_ptr), c_loc(output_ptr) ]
-    else
-       pointer_map_store = pointer_map
-       deallocate(pointer_map)
-       allocate(pointer_map(2, size(pointer_map_store, dim=2) + 1))
-       pointer_map(:,1:size(pointer_map_store, dim=2)) = pointer_map_store
-       pointer_map(:,size(pointer_map_store, dim=2)+1) = &
-            [ c_loc(input_ptr), c_loc(output_ptr) ]
-       deallocate(pointer_map_store)
+    ! Add to map BEFORE recursing to handle cycles / shared nodes
+    call double_map_add(src_map, dst_map, input_ptr, output_ptr)
+
+    ! Now recursively duplicate children (use pointer assignment to map results)
+    if(associated(input_ptr%left_operand))then
+       output_ptr%left_operand => duplicate_pointer( &
+            input_ptr%left_operand, src_map, dst_map, tmp_logical &
+       )
+       output_ptr%owns_left_operand = tmp_logical
+    end if
+    if(associated(input_ptr%right_operand))then
+       output_ptr%right_operand => duplicate_pointer( &
+            input_ptr%right_operand, src_map, dst_map, tmp_logical &
+       )
+       output_ptr%owns_right_operand = tmp_logical
+    end if
+    if(associated(input_ptr%grad))then
+       output_ptr%grad => duplicate_pointer(&
+            input_ptr%grad, src_map, dst_map, tmp_logical &
+       )
+       output_ptr%owns_gradient = .true.
     end if
 
   end function duplicate_pointer
+!###############################################################################
+
+
+!###############################################################################
+  module function duplicate_graph(this) result(output_ptr)
+    implicit none
+    class(array_type), intent(inout) :: this
+    type(array_ptr), allocatable :: src_map(:), dst_map(:)
+    type(array_type), pointer :: output_ptr
+    logical :: tmp_logical
+
+    output_ptr => duplicate_pointer(this, src_map, dst_map, tmp_logical)
+
+    ! Clean up the maps
+    call map_free(src_map)
+    call map_free(dst_map)
+
+  end function duplicate_graph
 !###############################################################################
 
 
@@ -1092,7 +1244,7 @@ contains
     type(array_type), pointer :: ptr
 
     ptr => null()
-    if(this%id .eq. id) then
+    if(this%id .eq. id)then
        ptr => this
        return
     end if
@@ -1152,7 +1304,7 @@ contains
     real(real32), dimension(:), intent(in) :: direction
 
     if(allocated(this%direction)) deallocate(this%direction)
-    if(size(this%val,1).ne.size(direction)) then
+    if(size(this%val,1).ne.size(direction))then
        call stop_program('Direction size does not match array size in set_direction')
     end if
     this%direction = direction
@@ -1189,13 +1341,13 @@ contains
            '] @' // trim(adjustl(node_addr))
 
       ! Print left operand
-      if (associated(node%left_operand)) then
-         if (node%owns_left_operand) then
+      if(associated(node%left_operand))then
+         if(node%owns_left_operand)then
             ownership_char = '(*)'
          else
             ownership_char = ''
          end if
-         if (associated(node%right_operand)) then
+         if(associated(node%right_operand))then
             new_prefix = trim(prefix) // '    ├── L' // trim(ownership_char) // ': '
          else
             new_prefix = trim(prefix) // '    └── L' // trim(ownership_char) // ': '
@@ -1204,8 +1356,8 @@ contains
       end if
 
       ! Print right operand
-      if (associated(node%right_operand)) then
-         if (node%owns_right_operand) then
+      if(associated(node%right_operand))then
+         if(node%owns_right_operand)then
             ownership_char = '(*)'
          else
             ownership_char = ''
@@ -1246,12 +1398,14 @@ contains
     c%get_partial_left => get_partial_add
     c%get_partial_right => get_partial_add
     ! Set up computation graph
-    if(a%requires_grad .or. b%requires_grad) then
+    if(a%requires_grad .or. b%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
        c%operation = 'add'
        c%left_operand => a
        c%right_operand => b
+       c%owns_left_operand = a%is_temporary
+       c%owns_right_operand = b%is_temporary
     end if
   end function add_arrays
 !-------------------------------------------------------------------------------
@@ -1266,11 +1420,12 @@ contains
     c%val = a%val + b
 
     c%get_partial_left => get_partial_add
-    if(a%requires_grad) then
+    if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'add'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function add_real2d
 !-------------------------------------------------------------------------------
@@ -1299,11 +1454,12 @@ contains
     end do
 
     c%get_partial_left => get_partial_add
-    if(a%requires_grad) then
+    if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'add'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function add_real1d
 !-------------------------------------------------------------------------------
@@ -1328,11 +1484,12 @@ contains
     c%val = a%val + b
 
     c%get_partial_left => get_partial_add
-    if(a%requires_grad) then
+    if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'add'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function add_scalar
 !-------------------------------------------------------------------------------
@@ -1370,12 +1527,14 @@ contains
 
     c%get_partial_left => get_partial_add
     c%get_partial_right => get_partial_negate
-    if(a%requires_grad .or. b%requires_grad) then
+    if(a%requires_grad .or. b%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
        c%operation = 'subtract'
        c%left_operand => a
        c%right_operand => b
+       c%owns_left_operand = a%is_temporary
+       c%owns_right_operand = b%is_temporary
     end if
   end function subtract_arrays
 !-------------------------------------------------------------------------------
@@ -1394,11 +1553,12 @@ contains
     end do
 
     c%get_partial_left => get_partial_add
-    if(a%requires_grad) then
+    if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'subtract_scalar'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function subtract_real1d
 !-------------------------------------------------------------------------------
@@ -1413,11 +1573,12 @@ contains
     c%val = a%val - b
 
     c%get_partial_left => get_partial_add
-    if(a%requires_grad) then
+    if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'subtract_scalar'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function subtract_scalar
 !-------------------------------------------------------------------------------
@@ -1432,11 +1593,12 @@ contains
     c%val = a + c%val
 
     c%get_partial_left => get_partial_negate
-    if(b%requires_grad) then
+    if(b%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = b%is_forward
        c%operation = 'subtract_scalar'
        c%left_operand => b
+       c%owns_left_operand = b%is_temporary
     end if
   end function scalar_subtract
 !-------------------------------------------------------------------------------
@@ -1450,11 +1612,12 @@ contains
     c%val = -a%val
 
     c%get_partial_left => get_partial_negate
-    if(a%requires_grad) then
+    if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'negate'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function negate_array
 !-------------------------------------------------------------------------------
@@ -1464,8 +1627,10 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
-    output = -upstream_grad
+    ptr => -upstream_grad
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_negate
 !###############################################################################
 
@@ -1505,12 +1670,14 @@ contains
 
     c%get_partial_left => get_partial_multiply_left
     c%get_partial_right => get_partial_multiply_right
-    if(a%requires_grad .or. b%requires_grad) then
+    if(a%requires_grad .or. b%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
        c%operation = 'multiply'
        c%left_operand => a
        c%right_operand => b
+       c%owns_left_operand = a%is_temporary
+       c%owns_right_operand = b%is_temporary
     end if
   end function multiply_arrays
 !-------------------------------------------------------------------------------
@@ -1526,11 +1693,12 @@ contains
     c%val = a%val * scalar
 
     c%get_partial_left => get_partial_multiply_left
-    if(a%requires_grad) then
+    if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'multiply_scalar'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
     allocate(b_array)
     b_array%is_scalar = .true.
@@ -1562,18 +1730,19 @@ contains
 
     c => a%create_result()
     do concurrent(s=1:size(a%val,2), i=1:size(a%val,1))
-       if(b(i,s)) then
+       if(b(i,s))then
           c%val(i,s) = a%val(i,s)
        else
           c%val(i,s) = 0.0_real32
        end if
     end do
 
-    if(a%requires_grad) then
+    if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'multiply_logical'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
 
   end function multiply_logical
@@ -1584,12 +1753,18 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    logical :: right_is_temporary_local
+    type(array_type), pointer :: ptr
 
+    right_is_temporary_local = this%right_operand%is_temporary
+    this%right_operand%is_temporary = .false.
     if(this%right_operand%is_scalar)then
-       output = upstream_grad * this%right_operand%val(1,1)
+       ptr => upstream_grad * this%right_operand%val(1,1)
     else
-       output = upstream_grad * this%right_operand
+       ptr => upstream_grad * this%right_operand
     end if
+    this%right_operand%is_temporary = right_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_multiply_left
 !-------------------------------------------------------------------------------
   function get_partial_multiply_right(this, upstream_grad) result(output)
@@ -1598,12 +1773,18 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    logical :: left_is_temporary_local
+    type(array_type), pointer :: ptr
 
+    left_is_temporary_local = this%left_operand%is_temporary
+    this%left_operand%is_temporary = .false.
     if(this%left_operand%is_scalar)then
-       output = upstream_grad * this%left_operand%val(1,1)
+       ptr => upstream_grad * this%left_operand%val(1,1)
     else
-       output = upstream_grad * this%left_operand
+       ptr => upstream_grad * this%left_operand
     end if
+    this%left_operand%is_temporary = left_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_multiply_right
 !###############################################################################
 
@@ -1617,7 +1798,7 @@ contains
 
     integer :: s
 
-    if(all(shape(a%val) .eq. shape(b%val))) then
+    if(all(shape(a%val) .eq. shape(b%val)))then
        c => a%create_result()
        c%val = a%val / b%val
     elseif(size(a%val,1).ne.size(b%val,1).and.size(a%val,2).eq.size(b%val,2))then
@@ -1636,12 +1817,14 @@ contains
 
     c%get_partial_left => get_partial_divide_left
     c%get_partial_right => get_partial_divide_right
-    if(a%requires_grad .or. b%requires_grad) then
+    if(a%requires_grad .or. b%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
        c%operation = 'divide'
        c%left_operand => a
        c%right_operand => b
+       c%owns_left_operand = a%is_temporary
+       c%owns_right_operand = b%is_temporary
     end if
   end function divide_arrays
 !-------------------------------------------------------------------------------
@@ -1658,11 +1841,12 @@ contains
 
     c%get_partial_left => get_partial_divide_left
     c%get_partial_right => get_partial_divide_right
-    if(a%requires_grad) then
+    if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'divide_scalar'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
     allocate(b_array)
     b_array%is_scalar = .true.
@@ -1687,11 +1871,12 @@ contains
 
     c%get_partial_left => get_partial_divide_left
     c%get_partial_right => get_partial_divide_right
-    if(a%requires_grad) then
+    if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'scalar_divide'
        c%right_operand => a
+       c%owns_right_operand = a%is_temporary
     end if
     allocate(b_array)
     b_array%is_scalar = .true.
@@ -1720,11 +1905,12 @@ contains
 
     c%get_partial_left => get_partial_divide_left
     c%get_partial_right => get_partial_divide_right
-    if(a%requires_grad) then
+    if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'divide_real1d'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
     allocate(b_array)
     b_array%is_sample_dependent = .false.
@@ -1741,12 +1927,18 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    logical :: right_is_temporary_local
+    type(array_type), pointer :: ptr
 
+    right_is_temporary_local = this%right_operand%is_temporary
+    this%right_operand%is_temporary = .false.
     if(this%right_operand%is_scalar)then
-       output = upstream_grad / this%right_operand%val(1,1)
+       ptr => upstream_grad / this%right_operand%val(1,1)
     else
-       output = upstream_grad / this%right_operand
+       ptr => upstream_grad / this%right_operand
     end if
+    this%right_operand%is_temporary = right_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_divide_left
 !-------------------------------------------------------------------------------
   function get_partial_divide_right(this, upstream_grad) result(output)
@@ -1755,17 +1947,23 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
-    type(array_type), pointer :: grad, div
+    logical :: left_is_temporary_local, right_is_temporary_local
+    type(array_type), pointer :: ptr
 
-    allocate(grad)
-    allocate(div)
+    left_is_temporary_local = this%left_operand%is_temporary
+    right_is_temporary_local = this%right_operand%is_temporary
+    this%left_operand%is_temporary = .false.
+    this%right_operand%is_temporary = .false.
     if(this%left_operand%is_scalar)then
-       grad = -upstream_grad * this%left_operand%val(1,1)
+       ptr => (-upstream_grad * this%left_operand%val(1,1)) / &
+            (this%right_operand * this%right_operand)
     else
-       grad = -upstream_grad * this%left_operand
+       ptr => (-upstream_grad * this%left_operand) / &
+            (this%right_operand * this%right_operand)
     end if
-    div = this%right_operand * this%right_operand
-    output = grad / div
+    this%left_operand%is_temporary = left_is_temporary_local
+    this%right_operand%is_temporary = right_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_divide_right
 !###############################################################################
 
@@ -1782,12 +1980,14 @@ contains
 
     c%get_partial_left => get_partial_power_base
     c%get_partial_right => get_partial_power_exponent
-    if(a%requires_grad .or. b%requires_grad) then
+    if(a%requires_grad .or. b%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
        c%operation = 'power'
        c%left_operand => a
        c%right_operand => b
+       c%owns_left_operand = a%is_temporary
+       c%owns_right_operand = b%is_temporary
     end if
   end function power_arrays
 !-------------------------------------------------------------------------------
@@ -1803,11 +2003,12 @@ contains
     c%val = a%val ** scalar
 
     c%get_partial_left => get_partial_power_base
-    if(a%requires_grad) then
+    if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'power_scalar'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
     allocate(b_array)
     b_array%is_scalar = .true.
@@ -1841,11 +2042,12 @@ contains
     c%val = scalar ** a%val
 
     c%get_partial_left => get_partial_power_base
-    if(a%requires_grad) then
+    if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'scalar_power'
        c%right_operand => a
+       c%owns_right_operand = a%is_temporary
     end if
     allocate(b_array)
     b_array%is_scalar = .true.
@@ -1873,21 +2075,30 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    logical :: left_is_temporary_local, right_is_temporary_local
+    type(array_type), pointer :: ptr
 
-    if(all(abs(this%right_operand%val - 1._real32).lt.1.E-6_real32)) then
+    left_is_temporary_local = this%left_operand%is_temporary
+    right_is_temporary_local = this%right_operand%is_temporary
+    this%left_operand%is_temporary = .false.
+    this%right_operand%is_temporary = .false.
+    if(all(abs(this%right_operand%val - 1._real32).lt.1.E-6_real32))then
        output = upstream_grad
        return
-    elseif(all(abs(this%right_operand%val - 2._real32).lt.1.E-6_real32)) then
-       output = upstream_grad * 2._real32 * this%left_operand
-       return
-    end if
-    if(this%right_operand%is_scalar)then
-       output = upstream_grad * this%right_operand%val(1,1) * &
-            this%left_operand ** ( this%right_operand%val(1,1) - 1.0_real32 )
+    elseif(all(abs(this%right_operand%val - 2._real32).lt.1.E-6_real32))then
+       ptr => upstream_grad * this%left_operand * 2._real32
     else
-       output = upstream_grad * this%right_operand * &
-            this%left_operand ** ( this%right_operand - 1.0_real32 )
+       if(this%right_operand%is_scalar)then
+          ptr => upstream_grad * this%right_operand%val(1,1) * &
+               this%left_operand ** ( this%right_operand%val(1,1) - 1.0_real32 )
+       else
+          ptr => upstream_grad * this%right_operand * &
+               this%left_operand ** ( this%right_operand - 1.0_real32 )
+       end if
     end if
+    this%left_operand%is_temporary = left_is_temporary_local
+    this%right_operand%is_temporary = right_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_power_base
 !-------------------------------------------------------------------------------
   function get_partial_power_exponent(this, upstream_grad) result(output)
@@ -1896,12 +2107,21 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    logical :: left_is_temporary_local, this_is_temporary_local
+    type(array_type), pointer :: ptr
 
+    left_is_temporary_local = this%left_operand%is_temporary
+    this_is_temporary_local = this%is_temporary
+    this%left_operand%is_temporary = .false.
+    this%is_temporary = .false.
     if(this%left_operand%is_scalar)then
-       output = upstream_grad * log(this%left_operand%val(1,1)) * this
+       ptr => upstream_grad * log(this%left_operand%val(1,1)) * this
     else
-       output = upstream_grad * log(this%left_operand) * this
+       ptr => upstream_grad * log(this%left_operand) * this
     end if
+    this%left_operand%is_temporary = left_is_temporary_local
+    this%is_temporary = this_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_power_exponent
 !###############################################################################
 
@@ -1922,11 +2142,12 @@ contains
     c%val = exp(a%val)
 
     c%get_partial_left => get_partial_exp
-    if(a%requires_grad) then
+    if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'exp'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function exp_array
 !-------------------------------------------------------------------------------
@@ -1936,8 +2157,14 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    logical :: this_is_temporary_local
+    type(array_type), pointer :: ptr
 
-    output = upstream_grad * this
+    this_is_temporary_local = this%is_temporary
+    this%is_temporary = .false.
+    ptr => upstream_grad * this
+    this%is_temporary = this_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_exp
 !###############################################################################
 
@@ -1953,11 +2180,12 @@ contains
     c%val = log(a%val)
 
     c%get_partial_left => get_partial_log
-    if(a%requires_grad) then
+    if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'log'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function log_array
 !-------------------------------------------------------------------------------
@@ -1966,9 +2194,14 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    logical :: left_is_temporary_local
+    type(array_type), pointer :: ptr
 
-    output = upstream_grad / this%left_operand
-
+    left_is_temporary_local = this%left_operand%is_temporary
+    this%left_operand%is_temporary = .false.
+    ptr => upstream_grad / this%left_operand
+    this%left_operand%is_temporary = left_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_log
 !###############################################################################
 
@@ -2013,11 +2246,12 @@ contains
     c%indices = [dim, 1]
 
     c%get_partial_left => get_partial_mean
-    if(a%requires_grad) then
+    if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'mean_array'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
 
   end function mean_array
@@ -2029,21 +2263,22 @@ contains
     type(array_type) :: output
 
     real(real32) :: rtmp1
+    type(array_type), pointer :: ptr
 
     ! Calculate the number of elements that were averaged
     rtmp1 = real(size(this%left_operand%val, this%indices(1)), real32)
 
     if(this%is_forward)then
-       output = sum( upstream_grad, dim = this%indices(1) ) / rtmp1
+       ptr => sum( upstream_grad, dim = this%indices(1) ) / rtmp1
     else
-       output = spread( &
+       ptr => spread( &
             upstream_grad / rtmp1, &
             dim=this%indices(1), &
             index=this%indices(2), &
             ncopies= size(this%left_operand%val, this%indices(1)) &
        )
     end if
-
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_mean
 !###############################################################################
 
@@ -2076,11 +2311,12 @@ contains
 
     c%get_partial_left => get_partial_sum_reverse
     c%get_partial_right => get_partial_sum_forward
-    if(a%requires_grad) then
+    if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'sum_array'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
 
   end function sum_array
@@ -2112,11 +2348,12 @@ contains
 
     c%get_partial_left => get_partial_sum_reverse
     c%is_sample_dependent = a%is_sample_dependent
-    if(a%requires_grad) then
+    if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'sum_array_output_array'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
     c%indices = [dim, new_dim_index]
   end function sum_array_output_array
@@ -2126,14 +2363,15 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
-    output = spread( &
+    ptr => spread( &
          upstream_grad, &
          dim=this%indices(1), &
          index=this%indices(2), &
          ncopies= size(this%left_operand%val, this%indices(1)) &
     )
-
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_sum_reverse
 !-------------------------------------------------------------------------------
   function get_partial_sum_forward(this, upstream_grad) result(output)
@@ -2141,12 +2379,13 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
-    output = sum( &
+    ptr => sum( &
          upstream_grad, &
          dim = this%indices(1) &
     )
-
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_sum_forward
 !###############################################################################
 
@@ -2185,11 +2424,12 @@ contains
     c%adj_ja(:,1) = [ dim, size(source%val,dim) ]
 
     c%get_partial_left => get_partial_spread
-    if(source%requires_grad) then
+    if(source%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = source%is_forward
        c%operation = 'spread'
        c%left_operand => source
+       c%owns_left_operand = source%is_temporary
     end if
   end function spread_array
 !-------------------------------------------------------------------------------
@@ -2198,14 +2438,15 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
-    output = unspread( &
+    ptr => unspread( &
          upstream_grad, &
          this%indices(1), &
          this%adj_ja(1,1), &
          this%adj_ja(2,1) &
     )
-
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_spread
 !###############################################################################
 
@@ -2240,11 +2481,12 @@ contains
     c%adj_ja(:,1) = [ dim, new_size ]
 
     c%get_partial_left => get_partial_unspread
-    if(source%requires_grad) then
+    if(source%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = source%is_forward
        c%operation = 'unspread'
        c%left_operand => source
+       c%owns_left_operand = source%is_temporary
     end if
   end function unspread_array
 !-------------------------------------------------------------------------------
@@ -2253,14 +2495,15 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
-    output = spread( &
+    ptr => spread( &
          upstream_grad, &
          this%indices(1), &
          this%adj_ja(1,1), &
          this%adj_ja(2,1) &
     )
-
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_unspread
 !###############################################################################
 

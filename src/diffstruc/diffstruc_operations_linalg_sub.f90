@@ -49,6 +49,8 @@ contains
        c%operation = 'matmul'
        c%left_operand => a
        c%right_operand => b
+       c%owns_left_operand = a%is_temporary
+       c%owns_right_operand = b%is_temporary
     end if
   end function matmul_arrays
 !-------------------------------------------------------------------------------
@@ -75,6 +77,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'matmul_scalar'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
     allocate(b_array)
     b_array%is_sample_dependent = .false.
@@ -111,6 +114,7 @@ contains
        c%is_forward = b%is_forward
        c%operation = 'matmul_scalar'
        c%right_operand => b
+       c%owns_right_operand = b%is_temporary
     end if
     allocate(a_array)
     a_array%is_sample_dependent = .false.
@@ -131,25 +135,27 @@ contains
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
 
+    logical :: right_is_temporary_local
     type(array_type), pointer :: ptr
 
+    right_is_temporary_local = this%right_operand%is_temporary
+    this%right_operand%is_temporary = .false.
     if(size(this%right_operand%shape).eq.2)then
        if(this%is_forward)then
           ptr => upstream_grad .mmul. this%right_operand
        else
           ptr => upstream_grad .mmul. transpose(this%right_operand)
-          ptr%owns_right_operand = .true.
        end if
     elseif(size(upstream_grad%shape).eq.2)then
        if(this%is_forward)then
           ptr => upstream_grad .mmul. this%right_operand
        else
           ptr => transpose(upstream_grad) .mmul. this%right_operand
-          ptr%owns_left_operand = .true.
        end if
     else
        ptr => upstream_grad .outer. this%right_operand
     end if
+    this%right_operand%is_temporary = right_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
 
   end function get_partial_matmul_left
@@ -161,25 +167,27 @@ contains
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
 
+    logical :: left_is_temporary_local
     type(array_type), pointer :: ptr
 
+    left_is_temporary_local = this%left_operand%is_temporary
+    this%left_operand%is_temporary = .false.
     if(size(this%left_operand%shape).eq.2)then
        if(this%is_forward)then
           ptr => this%left_operand .mmul. upstream_grad
        else
           ptr => transpose(this%left_operand) .mmul. upstream_grad
-          ptr%owns_left_operand = .true.
        end if
     elseif(size(upstream_grad%shape).eq.2)then
        if(this%is_forward)then
           ptr => this%left_operand .mmul. upstream_grad
        else
           ptr => this%left_operand .mmul. transpose(upstream_grad)
-          ptr%owns_right_operand = .true.
        end if
     else
        ptr => this%left_operand .outer. upstream_grad
     end if
+    this%left_operand%is_temporary = left_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
 
   end function get_partial_matmul_right
@@ -209,9 +217,50 @@ contains
        c%operation = 'outer_product'
        c%left_operand => a
        c%right_operand => b
+       c%owns_left_operand = a%is_temporary
+       c%owns_right_operand = b%is_temporary
     end if
   end function outer_product_arrays
 !-------------------------------------------------------------------------------
+  function get_partial_outer_product_left(this, upstream_grad) result(output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+    logical :: right_is_temporary_local
+    type(array_type), pointer :: ptr
+
+    right_is_temporary_local = this%right_operand%is_temporary
+    this%right_operand%is_temporary = .false.
+    if(this%is_forward)then
+       ptr => upstream_grad .outer. this%right_operand
+    else
+       ptr => upstream_grad .mmul. this%right_operand
+    end if
+    this%right_operand%is_temporary = right_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
+  end function get_partial_outer_product_left
+!-------------------------------------------------------------------------------
+  function get_partial_outer_product_right(this, upstream_grad) result(output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+    logical :: left_is_temporary_local
+    type(array_type), pointer :: ptr
+
+    left_is_temporary_local = this%left_operand%is_temporary
+    this%left_operand%is_temporary = .false.
+    if(this%is_forward)then
+       ptr => this%left_operand .outer. upstream_grad
+    else
+       ! mathematically should be ptr => transpose(upstream_grad) .mmul. this%left_operand
+       ! but for how we store vectors, this SHOULD BE equivalent
+       ptr => this%left_operand .mmul. upstream_grad
+    end if
+    this%left_operand%is_temporary = left_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
+  end function get_partial_outer_product_right
 !###############################################################################
 
 
@@ -244,6 +293,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'transpose'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function transpose_array
 !-------------------------------------------------------------------------------
@@ -252,13 +302,10 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
-    if(this%requires_grad) then
-       output = transpose(upstream_grad)
-    else
-       output%val = transpose(upstream_grad%val)
-    end if
-
+    ptr => transpose(upstream_grad)
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_transpose_left
 ! !-------------------------------------------------------------------------------
 ! !   function get_partial_transpose_right(this, upstream_grad) result(output)

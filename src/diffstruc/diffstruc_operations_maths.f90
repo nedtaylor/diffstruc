@@ -48,6 +48,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'sqrt'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function sqrt_array
 !-------------------------------------------------------------------------------
@@ -81,6 +82,7 @@ contains
     !    c%requires_grad = .true.
     !    c%operation = 'sign'
     !    c%left_operand => array
+    !    c%owns_left_operand = array%is_temporary
     ! end if
   end function sign_array
 !###############################################################################
@@ -102,6 +104,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'sigmoid'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function sigmoid_array
 !-------------------------------------------------------------------------------
@@ -110,11 +113,14 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
-    type(array_type), pointer :: sigmoid_val
+    logical :: this_is_temporary_local
+    type(array_type), pointer :: ptr
 
-    sigmoid_val => sigmoid_array(this)
-    output = upstream_grad * sigmoid_val * (1.0_real32 - sigmoid_val)
-
+    this_is_temporary_local = this%is_temporary
+    this%is_temporary = .false.
+    ptr => upstream_grad * this * (1.0_real32 - this)
+    this%is_temporary = this_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_sigmoid
 !###############################################################################
 
@@ -137,6 +143,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'gaussian'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
     allocate(b_array)
     b_array%is_sample_dependent = .false.
@@ -145,7 +152,7 @@ contains
     b_array%val(1,1) = mu
     b_array%val(2,1) = sigma
     c%right_operand => b_array
-    c%owns_left_operand = .true.
+    c%owns_right_operand = .true.
 
   end function gaussian_array
 !-------------------------------------------------------------------------------
@@ -154,14 +161,21 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
-    real(real32) :: rcoeff1
-    type(array_type) :: coeff2, exponent
+    logical :: this_is_temporary_local
+    real(real32) :: coeff
+    type(array_type), pointer :: ptr1, ptr2, ptr3
 
-    rcoeff1 = - 1._real32 / ( sqrt(2._real32 * pi ) * this%right_operand%val(2,1)**3 )
-    coeff2 = this - this%right_operand%val(1,1)
-    exponent = -0.5_real32 * ( coeff2 / this%right_operand%val(2,1) ) ** 2
-    output = upstream_grad * rcoeff1 * coeff2 * exp(exponent)
+    this_is_temporary_local = this%is_temporary
+    this%is_temporary = .false.
+    coeff = - 1._real32 / ( sqrt(2._real32 * pi ) * this%right_operand%val(2,1)**3 )
 
+    ptr1 => this - this%right_operand%val(1,1)
+    ptr2 => -0.5_real32 * ( ptr1 / this%right_operand%val(2,1) ) ** 2
+    ptr1%is_temporary = .false.
+    ptr3 => upstream_grad * coeff * ptr1 * exp(ptr2)
+    ptr1%is_temporary = .true.
+    this%is_temporary = this_is_temporary_local
+    call output%assign_and_deallocate_source(ptr3)
   end function get_partial_gaussian
 !###############################################################################
 

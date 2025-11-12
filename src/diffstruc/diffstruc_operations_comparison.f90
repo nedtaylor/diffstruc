@@ -90,6 +90,7 @@ contains
        c%is_forward = tsource%is_forward
        c%operation = 'merge'
        c%left_operand => tsource
+       c%owns_left_operand = tsource%is_temporary
     end if
   end function merge_scalar
 !-------------------------------------------------------------------------------
@@ -140,6 +141,7 @@ contains
        c%is_forward = tsource%is_forward
        c%operation = 'merge'
        c%left_operand => tsource
+       c%owns_left_operand = tsource%is_temporary
     end if
   end function merge_real2d
 !-------------------------------------------------------------------------------
@@ -148,9 +150,10 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
-    output = merge(upstream_grad, 0._real32, this%mask)
-
+    ptr => merge(upstream_grad, 0._real32, this%mask)
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_merge
 !###############################################################################
 

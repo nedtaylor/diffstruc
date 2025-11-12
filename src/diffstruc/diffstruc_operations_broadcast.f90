@@ -73,6 +73,8 @@ contains
        c%operation = 'concat'
        c%left_operand => a
        c%right_operand => b
+       c%owns_left_operand = a%is_temporary
+       c%owns_right_operand = b%is_temporary
     end if
   end function concat_arrays
 !-------------------------------------------------------------------------------
@@ -91,9 +93,10 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
-    output = upstream_grad .rtrim. this%right_operand%shape(1)
-
+    ptr => upstream_grad .rtrim. this%right_operand%shape(1)
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_concat_right
 !###############################################################################
 
@@ -119,6 +122,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'ltrim'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function ltrim_array
 !###############################################################################
@@ -145,6 +149,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'rtrim'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function rtrim_array
 !###############################################################################
@@ -173,6 +178,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'index'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function index_array
 !-------------------------------------------------------------------------------
@@ -181,12 +187,13 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
-    output = reverse_index( &
+    ptr => reverse_index( &
          upstream_grad, indices=this%indices, from=.false., &
          new_index_size=size(this%left_operand%val, 2) &
     )
-
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_index
 !###############################################################################
 
@@ -224,6 +231,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'index'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function reverse_index_array
 !###############################################################################
@@ -262,6 +270,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'pack'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function pack_array
 !-------------------------------------------------------------------------------
@@ -270,9 +279,10 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
-    output = unpack(upstream_grad, this%indices, this%adj_ja(1,1), this%adj_ja(2,1))
-
+    ptr => unpack(upstream_grad, this%indices, this%adj_ja(1,1), this%adj_ja(2,1))
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_pack
 !###############################################################################
 
@@ -313,6 +323,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'unpack'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function unpack_array
 !-------------------------------------------------------------------------------
@@ -321,9 +332,10 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
-    output = pack(upstream_grad, this%indices, this%adj_ja(1,1))
-
+    ptr => pack(upstream_grad, this%indices, this%adj_ja(1,1))
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_unpack
 !###############################################################################
 
