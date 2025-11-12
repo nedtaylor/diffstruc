@@ -4,7 +4,7 @@ module diffstruc__global
 
   integer :: max_recursion_depth = 1000
   !! Recursion depth limit for operations that traverse the computation graph
-  integer :: default_map_capacity = 16
+  integer :: default_map_capacity = 32
   !! Default capacity for pointer mapping in graph operations
 
 end module diffstruc__global

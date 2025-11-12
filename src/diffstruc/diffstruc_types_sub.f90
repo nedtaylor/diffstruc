@@ -921,6 +921,98 @@ contains
 !###############################################################################
 
 
+!##############################################################################!
+! * * * * * * * * * * * * * * * * * * *  * * * * * * * * * * * * * * * * * * * !
+!##############################################################################!
+
+
+!###############################################################################
+! Map helper functions for graph traversal
+!###############################################################################
+  subroutine double_map_add(src_map, dst_map, src_ptr, dst_ptr)
+    !! Add pointer pair to double-array map (grow if needed)
+    implicit none
+    type(array_ptr), allocatable :: src_map(:), dst_map(:)
+    type(array_type), pointer, intent(in) :: src_ptr, dst_ptr
+    integer :: n, i, newcap
+    if(.not. allocated(src_map)) allocate(src_map(default_map_capacity))
+    if(.not. allocated(dst_map)) allocate(dst_map(default_map_capacity))
+    n = size(src_map)
+    ! find first null slot
+    do i = 1, n
+       if(.not. associated(src_map(i)%p))then
+          src_map(i)%p => src_ptr
+          dst_map(i)%p => dst_ptr
+          return
+       end if
+    end do
+    ! no slot -> grow (double capacity)
+    src_map = [ src_map, array_ptr() ]
+    dst_map = [ dst_map, array_ptr() ]
+    ! store at next free
+    src_map(n+1)%p => src_ptr
+    dst_map(n+1)%p => dst_ptr
+  end subroutine double_map_add
+!-------------------------------------------------------------------------------
+  subroutine single_map_add(map, ptr)
+    !! Add pointer to single-array map (grow if needed)
+    implicit none
+    type(array_ptr), allocatable :: map(:)
+    type(array_type), pointer, intent(in) :: ptr
+    integer :: n, i
+
+    if(.not. allocated(map))then
+       allocate(map(default_map_capacity))
+    end if
+    n = size(map)
+    ! find first null slot
+    do i = 1, n
+       if(.not. associated(map(i)%p))then
+          map(i)%p => ptr
+          return
+       end if
+    end do
+    ! no slot -> grow
+    map = [ map, array_ptr() ]
+    map(n+1)%p => ptr
+  end subroutine single_map_add
+!-------------------------------------------------------------------------------
+  function map_find(map, target) result(idx)
+    !! Check if target pointer exists in single-array map
+    implicit none
+    type(array_ptr), allocatable :: map(:)
+    type(array_type), pointer, intent(in) :: target
+    integer :: idx, n, i
+
+    idx = 0
+    if(.not. allocated(map)) return
+    n = size(map)
+    do i = 1, n
+       if(associated(map(i)%p, target))then
+          idx = i
+          return
+       end if
+    end do
+  end function map_find
+!-------------------------------------------------------------------------------
+  subroutine map_free(map)
+    !! Free array map (nullify pointers and deallocate array)
+    implicit none
+    type(array_ptr), allocatable :: map(:)
+    integer :: i
+
+    if(allocated(map))then
+       do i = 1, size(map)
+          if(associated(map(i)%p))then
+             nullify(map(i)%p)
+          end if
+       end do
+       deallocate(map)
+    end if
+  end subroutine map_free
+!###############################################################################
+
+
 !###############################################################################
   recursive subroutine nullify_graph_recursive(this, visited_map, dealloc_list, &
        ignore_ownership &
@@ -931,37 +1023,14 @@ contains
     class(array_type), intent(inout), target :: this
     type(array_ptr), allocatable, intent(inout) :: visited_map(:), dealloc_list(:)
     logical, intent(in) :: ignore_ownership
-    integer :: idx, i, n
-    logical :: already_listed
+    integer :: idx
 
     ! Check if we've already visited this node
-    if(allocated(visited_map))then
-       n = size(visited_map)
-       do i = 1, n
-          if(associated(visited_map(i)%p, this))then
-             ! Already processed this node, return immediately
-             return
-          end if
-       end do
-    end if
+    idx = map_find(visited_map, this)
+    if(idx .ne. 0) return  ! Already processed, avoid infinite loop
 
-    ! Mark this node as visited by adding to map
-    if(.not. allocated(visited_map))then
-       allocate(visited_map(default_map_capacity))
-    end if
-    n = size(visited_map)
-    do i = 1, n
-       if(.not. associated(visited_map(i)%p))then
-          visited_map(i)%p => this
-          exit
-       end if
-       if(i == n)then
-          ! Need to grow the array
-          visited_map = [ visited_map, array_ptr() ]
-          visited_map(n+1)%p => this
-          exit
-       end if
-    end do
+    ! Mark this node as visited by adding to map BEFORE recursing
+    call single_map_add(visited_map, this)
 
     ! Now process children recursively first
     ! ... this node is not reprocessed due to visited check
@@ -1002,37 +1071,12 @@ contains
 
     ! After recursion, collect nodes that need deallocation
     ! Only add to dealloc list if we own it and it's not a fixed pointer
-    ! Also check if it's already in the list to avoid double-free
+    ! Check if already in list to avoid double-free
     if(associated(this%left_operand))then
        if(.not.this%left_operand%fix_pointer .and. this%owns_left_operand)then
-          ! Check if already in deallocation list
-          already_listed = .false.
-          if(allocated(dealloc_list))then
-             check_left_loop: do i = 1, size(dealloc_list)
-                if(associated(dealloc_list(i)%p, this%left_operand))then
-                   already_listed = .true.
-                   exit check_left_loop
-                end if
-             end do check_left_loop
-          end if
-
-          if(.not. already_listed)then
-             ! Add to deallocation list
-             if(.not. allocated(dealloc_list))then
-                allocate(dealloc_list(default_map_capacity))
-             end if
-             n = size(dealloc_list)
-             left_loop: do i = 1, n
-                if(.not. associated(dealloc_list(i)%p))then
-                   dealloc_list(i)%p => this%left_operand
-                   exit left_loop
-                end if
-                if(i .eq. n)then
-                   dealloc_list = [ dealloc_list, array_ptr() ]
-                   dealloc_list(n+1)%p => this%left_operand
-                   exit left_loop
-                end if
-             end do left_loop
+          idx = map_find(dealloc_list, this%left_operand)
+          if(idx .eq. 0)then  ! Not already listed
+             call single_map_add(dealloc_list, this%left_operand)
           end if
        end if
        nullify(this%left_operand)
@@ -1040,34 +1084,9 @@ contains
 
     if(associated(this%right_operand))then
        if(.not.this%right_operand%fix_pointer .and. this%owns_right_operand)then
-          ! Check if already in deallocation list
-          already_listed = .false.
-          if(allocated(dealloc_list))then
-             check_right_loop: do i = 1, size(dealloc_list)
-                if(associated(dealloc_list(i)%p, this%right_operand))then
-                   already_listed = .true.
-                   exit check_right_loop
-                end if
-             end do check_right_loop
-          end if
-
-          if(.not. already_listed)then
-             ! Add to deallocation list
-             if(.not. allocated(dealloc_list))then
-                allocate(dealloc_list(default_map_capacity))
-             end if
-             n = size(dealloc_list)
-             right_loop: do i = 1, n
-                if(.not. associated(dealloc_list(i)%p))then
-                   dealloc_list(i)%p => this%right_operand
-                   exit right_loop
-                end if
-                if(i .eq. n)then
-                   dealloc_list = [ dealloc_list, array_ptr() ]
-                   dealloc_list(n+1)%p => this%right_operand
-                   exit right_loop
-                end if
-             end do right_loop
+          idx = map_find(dealloc_list, this%right_operand)
+          if(idx .eq. 0)then  ! Not already listed
+             call single_map_add(dealloc_list, this%right_operand)
           end if
        end if
        nullify(this%right_operand)
@@ -1075,34 +1094,9 @@ contains
 
     if(associated(this%grad))then
        if(.not.this%grad%fix_pointer .and. this%owns_gradient)then
-          ! Check if already in deallocation list
-          already_listed = .false.
-          if(allocated(dealloc_list))then
-             check_grad_loop: do i = 1, size(dealloc_list)
-                if(associated(dealloc_list(i)%p, this%grad))then
-                   already_listed = .true.
-                   exit check_grad_loop
-                end if
-             end do check_grad_loop
-          end if
-
-          if(.not. already_listed)then
-             ! Add to deallocation list
-             if(.not. allocated(dealloc_list))then
-                allocate(dealloc_list(default_map_capacity))
-             end if
-             n = size(dealloc_list)
-             grad_loop: do i = 1, n
-                if(.not. associated(dealloc_list(i)%p))then
-                   dealloc_list(i)%p => this%grad
-                   exit grad_loop
-                end if
-                if(i .eq. n)then
-                   dealloc_list = [ dealloc_list, array_ptr() ]
-                   dealloc_list(n+1)%p => this%grad
-                   exit grad_loop
-                end if
-             end do grad_loop
+          idx = map_find(dealloc_list, this%grad)
+          if(idx .eq. 0)then  ! Not already listed
+             call single_map_add(dealloc_list, this%grad)
           end if
        end if
        nullify(this%grad)
@@ -1155,101 +1149,10 @@ contains
        deallocate(dealloc_list)
     end if
 
-    ! Clean up the visited map (just nullify pointers, don't deallocate the nodes!)
-    if(allocated(visited_map))then
-       do i = 1, size(visited_map)
-          if(associated(visited_map(i)%p))then
-             nullify(visited_map(i)%p)
-          end if
-       end do
-       deallocate(visited_map)
-    end if
+    ! Clean up the map
+    call map_free(visited_map)
 
   end subroutine nullify_graph
-!###############################################################################
-
-
-!##############################################################################!
-! * * * * * * * * * * * * * * * * * * *  * * * * * * * * * * * * * * * * * * * !
-!##############################################################################!
-
-
-!###############################################################################
-  subroutine map_init(src_map, dst_map, capacity)
-    ! Append-find map implemented with parallel arrays of pointer components.
-    implicit none
-    type(array_ptr), allocatable :: src_map(:), dst_map(:)
-    integer, intent(in), optional :: capacity
-    integer :: cap
-    cap = default_map_capacity
-    if(present(capacity)) cap = capacity
-    allocate(src_map(cap))
-    allocate(dst_map(cap))
-  end subroutine map_init
-!-------------------------------------------------------------------------------
-  subroutine map_free(src_map, dst_map)
-    implicit none
-    type(array_ptr), allocatable :: src_map(:), dst_map(:)
-    integer :: i
-    if(allocated(src_map))then
-       do i = 1, size(src_map)
-          if(associated(src_map(i)%p))then
-             nullify(src_map(i)%p)
-          end if
-       end do
-       deallocate(src_map)
-    end if
-    if(allocated(dst_map))then
-       do i = 1, size(dst_map)
-          if(associated(dst_map(i)%p))then
-             nullify(dst_map(i)%p)
-          end if
-       end do
-       deallocate(dst_map)
-    end if
-  end subroutine map_free
-!-------------------------------------------------------------------------------
-  function map_find(src_map, dst_map, target) result(idx)
-    implicit none
-    type(array_ptr), allocatable :: src_map(:), dst_map(:)
-    type(array_type), pointer, intent(in) :: target
-    integer :: idx, n, i
-
-    idx = 0
-    if(.not. allocated(src_map)) return
-    n = size(src_map)
-    do i = 1, n
-       if(associated(src_map(i)%p, target))then
-          idx = i
-          return
-       end if
-    end do
-  end function map_find
-!-------------------------------------------------------------------------------
-  subroutine map_add(src_map, dst_map, src_ptr, dst_ptr)
-    implicit none
-    type(array_ptr), allocatable :: src_map(:), dst_map(:)
-    type(array_type), pointer, intent(in) :: src_ptr, dst_ptr
-    integer :: n, i, newcap
-    if(.not. allocated(src_map))then
-       call map_init(src_map, dst_map, default_map_capacity)
-    end if
-    n = size(src_map)
-    ! find first null slot
-    do i = 1, n
-       if(.not. associated(src_map(i)%p))then
-          src_map(i)%p => src_ptr
-          dst_map(i)%p => dst_ptr
-          return
-       end if
-    end do
-    ! no slot -> grow (double capacity)
-    src_map = [ src_map, array_ptr() ]
-    dst_map = [ dst_map, array_ptr() ]
-    ! store at next free
-    src_map(n+1)%p => src_ptr
-    dst_map(n+1)%p => dst_ptr
-  end subroutine map_add
 !###############################################################################
 
 
@@ -1265,7 +1168,7 @@ contains
     logical :: tmp_logical
 
     owns_self = .false.
-    idx = map_find(src_map, dst_map, input_ptr)
+    idx = map_find(src_map, input_ptr)
     if(idx .ne. 0)then
        output_ptr => dst_map(idx)%p
        return
@@ -1283,7 +1186,7 @@ contains
     owns_self = .true.
 
     ! Add to map BEFORE recursing to handle cycles / shared nodes
-    call map_add(src_map, dst_map, input_ptr, output_ptr)
+    call double_map_add(src_map, dst_map, input_ptr, output_ptr)
 
     ! Now recursively duplicate children (use pointer assignment to map results)
     if(associated(input_ptr%left_operand))then
@@ -1317,11 +1220,12 @@ contains
     type(array_type), pointer :: output_ptr
     logical :: tmp_logical
 
-    call map_init(src_map, dst_map, 64)
     output_ptr => duplicate_pointer(this, src_map, dst_map, tmp_logical)
 
-    ! Tear down bookkeeping arrays (do not deallocate duplicated nodes here!)
-    call map_free(src_map, dst_map)
+    ! Clean up the maps
+    call map_free(src_map)
+    call map_free(dst_map)
+
   end function duplicate_graph
 !###############################################################################
 
