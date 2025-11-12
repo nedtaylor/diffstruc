@@ -111,33 +111,6 @@ program test_memory_detailed
   write(*,*) "  Test 2 complete"
   write(*,*) ""
 
-  ! ! Test 3: Multiple operations with nullify_graph
-  ! write(*,*) "Test 3: Multiple operations with nullify_graph()"
-  ! call x%allocate(array_shape=[1000, 100])
-  ! call y%allocate(array_shape=[1000, 100])
-  ! x%val = 1.0_real32
-  ! y%val = 2.0_real32
-  ! call x%set_requires_grad(.true.)
-  ! call y%set_requires_grad(.true.)
-
-  ! do i = 1, n_iterations
-  !    f = x**2 + y * x + exp(x * 0.01_real32)!((x**2 + y) * x + y**2) / (x + 1.0_real32)
-  !    call f%grad_reverse(record_graph=.false., reset_graph=.false.)
-
-  !    ! Aggressive cleanup
-  !    call f%nullify_graph()
-
-  !    if (mod(i, 10) == 0) then
-  !       write(*,'(A,I0)') "  Iteration ", i
-  !    end if
-  ! end do
-  ! write(*,*) "associated(x%grad):", associated(x%grad)
-  ! !write(*,*) "  Final gradient x:", x%grad%val(1,1)
-  ! call x%deallocate()
-  ! call y%deallocate()
-  ! write(*,*) "  Test 3 complete"
-  ! write(*,*) ""
-
   write(*,*) "=== All Tests Complete ==="
   write(*,*) "Monitor memory usage - it should remain stable."
   write(*,*) "If memory grows during tests, there are still leaks!"
