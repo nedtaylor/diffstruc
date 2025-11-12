@@ -1621,27 +1621,6 @@ contains
 
 
 !###############################################################################
-  module function add_arrays_no_ptr(a, b) result(c)
-    !! Add two autodiff arrays
-    implicit none
-    class(array_type), intent(in) :: a, b
-    type(array_type) :: c
-
-    integer :: s
-
-    ! Safely create result array
-    if(b%is_sample_dependent)then
-       c%val = a%val + b%val
-    else
-       allocate(c%val(size(a%val,1), size(a%val,2)))
-       do s = 1, size(a%val, 2)
-          c%val(:,s) = a%val(:,s) + b%val(:,1)
-       end do
-    end if
-
-    c%requires_grad = .false.
-  end function add_arrays_no_ptr
-!-------------------------------------------------------------------------------
   module function add_arrays(a, b) result(c)
     !! Add two autodiff arrays
     implicit none
@@ -1690,6 +1669,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'add'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function add_real2d
 !-------------------------------------------------------------------------------
@@ -1723,6 +1703,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'add'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function add_real1d
 !-------------------------------------------------------------------------------
@@ -1752,6 +1733,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'add'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function add_scalar
 !-------------------------------------------------------------------------------
@@ -1795,6 +1777,8 @@ contains
        c%operation = 'subtract'
        c%left_operand => a
        c%right_operand => b
+       c%owns_left_operand = a%is_temporary
+       c%owns_right_operand = b%is_temporary
     end if
   end function subtract_arrays
 !-------------------------------------------------------------------------------
@@ -1818,6 +1802,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'subtract_scalar'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function subtract_real1d
 !-------------------------------------------------------------------------------
@@ -1837,6 +1822,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'subtract_scalar'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function subtract_scalar
 !-------------------------------------------------------------------------------
@@ -1856,6 +1842,7 @@ contains
        c%is_forward = b%is_forward
        c%operation = 'subtract_scalar'
        c%left_operand => b
+       c%owns_left_operand = b%is_temporary
     end if
   end function scalar_subtract
 !-------------------------------------------------------------------------------
@@ -1874,6 +1861,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'negate'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function negate_array
 !-------------------------------------------------------------------------------
@@ -1883,8 +1871,10 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
-    output = -upstream_grad
+    ptr => -upstream_grad
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_negate
 !###############################################################################
 
@@ -2007,14 +1997,17 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    logical :: right_is_temporary_local
     type(array_type), pointer :: ptr
 
+    right_is_temporary_local = this%right_operand%is_temporary
+    this%right_operand%is_temporary = .false.
     if(this%right_operand%is_scalar)then
        ptr => upstream_grad * this%right_operand%val(1,1)
     else
        ptr => upstream_grad * this%right_operand
-       ptr%owns_right_operand = .false.
     end if
+    this%right_operand%is_temporary = right_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_multiply_left
 !-------------------------------------------------------------------------------
@@ -2024,14 +2017,17 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    logical :: left_is_temporary_local
     type(array_type), pointer :: ptr
 
+    left_is_temporary_local = this%left_operand%is_temporary
+    this%left_operand%is_temporary = .false.
     if(this%left_operand%is_scalar)then
        ptr => upstream_grad * this%left_operand%val(1,1)
     else
        ptr => upstream_grad * this%left_operand
-       ptr%owns_right_operand = .false.
     end if
+    this%left_operand%is_temporary = left_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_multiply_right
 !###############################################################################
@@ -2158,6 +2154,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'divide_real1d'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
     allocate(b_array)
     b_array%is_sample_dependent = .false.
@@ -2174,12 +2171,18 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    logical :: right_is_temporary_local
+    type(array_type), pointer :: ptr
 
+    right_is_temporary_local = this%right_operand%is_temporary
+    this%right_operand%is_temporary = .false.
     if(this%right_operand%is_scalar)then
-       output = upstream_grad / this%right_operand%val(1,1)
+       ptr => upstream_grad / this%right_operand%val(1,1)
     else
-       output = upstream_grad / this%right_operand
+       ptr => upstream_grad / this%right_operand
     end if
+    this%right_operand%is_temporary = right_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_divide_left
 !-------------------------------------------------------------------------------
   function get_partial_divide_right(this, upstream_grad) result(output)
@@ -2188,15 +2191,23 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    logical :: left_is_temporary_local, right_is_temporary_local
+    type(array_type), pointer :: ptr
 
-    ! Use direct computation without allocating intermediate pointers
+    left_is_temporary_local = this%left_operand%is_temporary
+    right_is_temporary_local = this%right_operand%is_temporary
+    this%left_operand%is_temporary = .false.
+    this%right_operand%is_temporary = .false.
     if(this%left_operand%is_scalar)then
-       output = (-upstream_grad * this%left_operand%val(1,1)) / &
+       ptr => (-upstream_grad * this%left_operand%val(1,1)) / &
             (this%right_operand * this%right_operand)
     else
-       output = (-upstream_grad * this%left_operand) / &
+       ptr => (-upstream_grad * this%left_operand) / &
             (this%right_operand * this%right_operand)
     end if
+    this%left_operand%is_temporary = left_is_temporary_local
+    this%right_operand%is_temporary = right_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_divide_right
 !###############################################################################
 
@@ -2308,8 +2319,13 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    logical :: left_is_temporary_local, right_is_temporary_local
     type(array_type), pointer :: ptr
 
+    left_is_temporary_local = this%left_operand%is_temporary
+    right_is_temporary_local = this%right_operand%is_temporary
+    this%left_operand%is_temporary = .false.
+    this%right_operand%is_temporary = .false.
     if(all(abs(this%right_operand%val - 1._real32).lt.1.E-6_real32))then
        output = upstream_grad
        return
@@ -2324,6 +2340,8 @@ contains
                this%left_operand ** ( this%right_operand - 1.0_real32 )
        end if
     end if
+    this%left_operand%is_temporary = left_is_temporary_local
+    this%right_operand%is_temporary = right_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_power_base
 !-------------------------------------------------------------------------------
@@ -2333,13 +2351,20 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    logical :: left_is_temporary_local, this_is_temporary_local
     type(array_type), pointer :: ptr
 
+    left_is_temporary_local = this%left_operand%is_temporary
+    this_is_temporary_local = this%is_temporary
+    this%left_operand%is_temporary = .false.
+    this%is_temporary = .false.
     if(this%left_operand%is_scalar)then
        ptr => upstream_grad * log(this%left_operand%val(1,1)) * this
     else
        ptr => upstream_grad * log(this%left_operand) * this
     end if
+    this%left_operand%is_temporary = left_is_temporary_local
+    this%is_temporary = this_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_power_exponent
 !###############################################################################
@@ -2376,10 +2401,13 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    logical :: this_is_temporary_local
     type(array_type), pointer :: ptr
 
-    ptr => upstream_grad * this!exp(this%left_operand)
-    ptr%owns_right_operand = .false.
+    this_is_temporary_local = this%is_temporary
+    this%is_temporary = .false.
+    ptr => upstream_grad * this
+    this%is_temporary = this_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_exp
 !###############################################################################
@@ -2410,9 +2438,13 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    logical :: left_is_temporary_local
     type(array_type), pointer :: ptr
 
+    left_is_temporary_local = this%left_operand%is_temporary
+    this%left_operand%is_temporary = .false.
     ptr => upstream_grad / this%left_operand
+    this%left_operand%is_temporary = left_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_log
 !###############################################################################
@@ -2425,37 +2457,6 @@ contains
 
 
 !###############################################################################
-  module function mean_array_no_ptr(a, dim) result(c)
-    !! Compute mean values along a dimension
-    implicit none
-    class(array_type), intent(in), target :: a
-    integer, intent(in) :: dim
-    type(array_type) :: c
-
-    integer :: s
-    real(real32) :: rtmp1
-
-
-    rtmp1 = real(size(a%val,dim), real32)
-    select case (dim)
-    case (1)
-       allocate(c%val(1, size(a%val, 2)))
-       do concurrent(s = 1:size(a%val,2))
-          c%val(1,s) = sum(a%val(:,s)) / rtmp1
-       end do
-    case (2)
-       allocate(c%val(size(a%val,1), 1))
-       do concurrent(s = 1:size(a%val,1))
-          c%val(s,1) = sum(a%val(s,:)) / rtmp1
-       end do
-       c%is_sample_dependent = .false.
-    case default
-       call stop_program("mean_array_nograph: only dim=1 or 2 are supported")
-    end select
-    c%requires_grad = .false.
-
-  end function mean_array_no_ptr
-!-------------------------------------------------------------------------------
   module function mean_array(a, dim) result(c)
     !! Compute mean values along a dimension
     implicit none
@@ -2506,20 +2507,22 @@ contains
     type(array_type) :: output
 
     real(real32) :: rtmp1
+    type(array_type), pointer :: ptr
 
     ! Calculate the number of elements that were averaged
     rtmp1 = real(size(this%left_operand%val, this%indices(1)), real32)
 
     if(this%is_forward)then
-       output = sum( upstream_grad, dim = this%indices(1) ) / rtmp1
+       ptr => sum( upstream_grad, dim = this%indices(1) ) / rtmp1
     else
-       output = spread( &
+       ptr => spread( &
             upstream_grad / rtmp1, &
             dim=this%indices(1), &
             index=this%indices(2), &
             ncopies= size(this%left_operand%val, this%indices(1)) &
        )
     end if
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_mean
 !###############################################################################
 
@@ -2604,13 +2607,15 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
-    output = spread( &
+    ptr => spread( &
          upstream_grad, &
          dim=this%indices(1), &
          index=this%indices(2), &
          ncopies= size(this%left_operand%val, this%indices(1)) &
     )
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_sum_reverse
 !-------------------------------------------------------------------------------
   function get_partial_sum_forward(this, upstream_grad) result(output)
@@ -2618,11 +2623,13 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
-    output = sum( &
+    ptr => sum( &
          upstream_grad, &
          dim = this%indices(1) &
     )
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_sum_forward
 !###############################################################################
 
@@ -2675,13 +2682,15 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
-    output = unspread( &
+    ptr => unspread( &
          upstream_grad, &
          this%indices(1), &
          this%adj_ja(1,1), &
          this%adj_ja(2,1) &
     )
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_spread
 !###############################################################################
 
@@ -2730,13 +2739,15 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
-    output = spread( &
+    ptr => spread( &
          upstream_grad, &
          this%indices(1), &
          this%adj_ja(1,1), &
          this%adj_ja(2,1) &
     )
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_unspread
 !###############################################################################
 

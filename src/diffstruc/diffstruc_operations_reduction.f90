@@ -74,6 +74,8 @@ contains
        c%operation = 'max'
        c%left_operand => a
        c%right_operand => b
+       c%owns_left_operand = a%is_temporary
+       c%owns_right_operand = b%is_temporary
     end if
   end function max_array
 !-------------------------------------------------------------------------------
@@ -93,6 +95,7 @@ contains
        c%is_forward = a%is_forward
        c%operation = 'max_scalar'
        c%left_operand => a
+       c%owns_left_operand = a%is_temporary
     end if
   end function max_scalar
 !-------------------------------------------------------------------------------
@@ -101,9 +104,10 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
-    output = upstream_grad * (this%val .eq. this%left_operand%val)
-
+    ptr => upstream_grad * (this%val .eq. this%left_operand%val)
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_max_left
 !-------------------------------------------------------------------------------
   function get_partial_max_right(this, upstream_grad) result(output)
@@ -111,9 +115,10 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
+    type(array_type), pointer :: ptr
 
-    output = upstream_grad * (this%val .eq. this%right_operand%val)
-
+    ptr => upstream_grad * (this%val .eq. this%right_operand%val)
+    call output%assign_and_deallocate_source(ptr)
   end function get_partial_max_right
 !###############################################################################
 

@@ -10,8 +10,8 @@ program test_memory_detailed
   logical :: do_forward, do_second_order
 
 
-  do_forward = .false.
-  do_second_order = .false.
+  do_forward = .true.
+  do_second_order = .true.
   n_iterations = 10000
   x%is_temporary = .false.
   y%is_temporary = .false.
