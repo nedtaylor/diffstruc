@@ -638,7 +638,7 @@ contains
 
 
 !###############################################################################
-  module recursive subroutine reverse_mode_ptr(array, upstream_grad, depth)
+  recursive subroutine reverse_mode_ptr(array, upstream_grad, depth)
     !! Backward operation for arrays
     implicit none
     class(array_type), intent(inout) :: array
@@ -741,7 +741,7 @@ contains
 
 
 !###############################################################################
-  module recursive subroutine reverse_mode(array, upstream_grad, depth)
+  recursive subroutine reverse_mode(array, upstream_grad, depth)
     !! Backward operation for arrays
     implicit none
     class(array_type), intent(inout) :: array
@@ -877,7 +877,7 @@ contains
 
 
 !###############################################################################
-  module recursive subroutine zero_all_fixed_pointer_grads(this)
+  recursive subroutine zero_all_fixed_pointer_grads(this)
     !! Zero the gradients of this array
     implicit none
     type(array_type), intent(inout) :: this
@@ -1297,7 +1297,7 @@ contains
 
 
 !###############################################################################
-  subroutine set_direction(this, direction)
+  module subroutine set_direction(this, direction)
     !! Set the direction for the array (for higher-order derivatives)
     implicit none
     class(array_type), intent(inout) :: this
