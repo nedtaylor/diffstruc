@@ -679,13 +679,13 @@ contains
   recursive subroutine accumulate_gradient_ptr(array, grad, depth)
     !! Accumulate gradient for array with safe memory management
     implicit none
-    type(array_type), intent(inout) :: array
+    type(array_type), intent(inout), target :: array
     type(array_type), intent(in), pointer :: grad
     integer, intent(in) :: depth
 
     integer :: s
     logical :: is_directional
-    type(array_type), pointer :: directional_grad
+    type(array_type), pointer :: directional_grad, tmp_ptr
 
     is_directional = .false.
     if(allocated(array%direction))then

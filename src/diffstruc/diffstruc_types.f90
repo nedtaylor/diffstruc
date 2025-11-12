@@ -76,9 +76,7 @@ module diffstruc__types
      !! Procedure for shallow assignment of array
      procedure, pass(this) :: assign_and_deallocate_source
      !! Procedure for assigning and deallocating source array
-     procedure :: assign => assign_array
-     generic, public :: assignment(=) => assign
-     !! Overloaded assignment operator
+
      procedure, pass(this) :: set => set_array
      !! Procedure for setting array
      procedure, pass(this) :: extract => extract_array
@@ -106,6 +104,21 @@ module diffstruc__types
      !! Helper to safely create result arrays
 
      procedure, pass(this) :: print_graph
+     !! Print the computation graph
+
+     procedure :: add_arrays, add_real1d, add_real2d, add_scalar
+     generic, public :: operator(+) => &
+          add_arrays, add_real1d, add_real2d, add_scalar
+     !! Overloaded addition operator
+
+     procedure :: subtract_arrays, subtract_real1d, subtract_scalar, negate_array
+     generic, public :: operator(-) => &
+          subtract_arrays, subtract_real1d, subtract_scalar, negate_array
+     !! Overloaded subtraction operator
+
+     procedure :: assign => assign_array
+     generic, public :: assignment(=) => assign
+     !! Overloaded assignment operator
 
      final :: finalise_array
      !! Finaliser for array type
@@ -310,7 +323,8 @@ module diffstruc__types
   end interface
 
 
-  interface operator(+)
+  ! Arithmetic operator interfaces that are directly overloaded into array_type
+  interface
      module function add_arrays(a, b) result(c)
        class(array_type), intent(in), target :: a, b
        type(array_type), pointer :: c
@@ -322,23 +336,11 @@ module diffstruc__types
        type(array_type), pointer :: c
      end function add_real2d
 
-     module function real2d_add(a, b) result(c)
-       real(real32), dimension(:,:), intent(in) :: a
-       class(array_type), intent(in), target :: b
-       type(array_type), pointer :: c
-     end function real2d_add
-
      module function add_real1d(a, b) result(c)
        class(array_type), intent(in), target :: a
        real(real32), dimension(:), intent(in) :: b
        type(array_type), pointer :: c
      end function add_real1d
-
-     module function real1d_add(a, b) result(c)
-       real(real32), dimension(:), intent(in) :: a
-       class(array_type), intent(in), target :: b
-       type(array_type), pointer :: c
-     end function real1d_add
 
      module function add_scalar(a, b) result(c)
        class(array_type), intent(in), target :: a
@@ -346,15 +348,6 @@ module diffstruc__types
        type(array_type), pointer :: c
      end function add_scalar
 
-     module function scalar_add(a, b) result(c)
-       real(real32), intent(in) :: a
-       class(array_type), intent(in), target :: b
-       type(array_type), pointer :: c
-     end function scalar_add
-  end interface
-
-
-  interface operator(-)
      module function subtract_arrays(a, b) result(c)
        class(array_type), intent(in), target :: a, b
        type(array_type), pointer :: c
@@ -372,16 +365,42 @@ module diffstruc__types
        type(array_type), pointer :: c
      end function subtract_scalar
 
+     module function negate_array(a) result(c)
+       class(array_type), intent(in), target :: a
+       type(array_type), pointer :: c
+     end function negate_array
+  end interface
+
+
+  ! Arithmetic operator interfaces that are not directly overloaded into array_type
+  interface operator(+)
+     module function real2d_add(a, b) result(c)
+       real(real32), dimension(:,:), intent(in) :: a
+       class(array_type), intent(in), target :: b
+       type(array_type), pointer :: c
+     end function real2d_add
+
+     module function real1d_add(a, b) result(c)
+       real(real32), dimension(:), intent(in) :: a
+       class(array_type), intent(in), target :: b
+       type(array_type), pointer :: c
+     end function real1d_add
+
+
+     module function scalar_add(a, b) result(c)
+       real(real32), intent(in) :: a
+       class(array_type), intent(in), target :: b
+       type(array_type), pointer :: c
+     end function scalar_add
+  end interface
+
+
+  interface operator(-)
      module function scalar_subtract(a, b) result(c)
        real(real32), intent(in) :: a
        class(array_type), intent(in), target :: b
        type(array_type), pointer :: c
      end function scalar_subtract
-
-     module function negate_array(a) result(c)
-       class(array_type), intent(in), target :: a
-       type(array_type), pointer :: c
-     end function negate_array
   end interface
 
 
