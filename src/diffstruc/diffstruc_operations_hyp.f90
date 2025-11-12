@@ -86,15 +86,12 @@ contains
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
-    logical :: this_is_temporary_local, left_is_temporary_local
+    logical :: left_is_temporary_local
     type(array_type), pointer :: ptr
 
-    this_is_temporary_local = this%is_temporary
     left_is_temporary_local = this%left_operand%is_temporary
-    this%is_temporary = .false.
     this%left_operand%is_temporary = .false.
     ptr => (-2._real32) * upstream_grad * this%left_operand
-    this%is_temporary = this_is_temporary_local
     this%left_operand%is_temporary = left_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_tanh_reverse
