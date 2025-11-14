@@ -30,7 +30,7 @@ program test_functions
 
   ! Compute first derivatives (gradient)
   call x%set_direction([1._real32, 1._real32])
-  call f%grad_reverse( record_graph=.true.)
+  call f%grad_reverse()
   write(*,*) "First derivatives (gradient):"
   if(associated(x%grad)) then
      write(*,*) "  df/dx1 =", x%grad%val(1,1)
@@ -61,7 +61,7 @@ program test_functions
 
   ! Compute first derivatives (gradient)
   call x%set_direction([1._real32, 1._real32])
-  call f%grad_reverse( record_graph=.true., reset_graph=.true. )
+  call f%grad_reverse( reset_graph=.true. )
   write(*,*) "First derivatives (gradient):"
   if(associated(x%grad)) then
      write(*,*) "  df/dx1 =", x%grad%val(1,1)
@@ -103,7 +103,7 @@ program test_functions
   call f%reset_graph()
   f = mean( x * tanh(x), dim = 1 )
   write(*,*) "Function value f =", f%val(:,1)
-  call f%grad_reverse( record_graph=.true. )
+  call f%grad_reverse()
   write(*,*) "Gradient (first derivatives):"
   if(associated(x%grad)) then
      write(*,*) "  df/dx1 =", x%grad%val(:,1)
@@ -118,7 +118,7 @@ program test_functions
 !   f = x**4
   f = x * x * x!* x * x!tanh(x) !mean( x * tanh(x), dim = 1 )
   write(*,*) "Function value f =", f%val(:,1)
-  call f%grad_reverse( record_graph=.true. )
+  call f%grad_reverse()
   write(*,*) "Gradient (first derivatives):"
   if(associated(x%grad)) then
      write(*,*) "  df/dx1 =", x%grad%val(:,1)
@@ -142,7 +142,7 @@ program test_functions
   loss = sum(residual ** 2, dim=1)
   write(*,*) "  Loss (should be close to 0):", loss%val(1,1)
 
-  call loss%grad_reverse( record_graph=.true. )
+  call loss%grad_reverse()
 
   write(*,*) "Gradient of loss:"
   if(associated(x%grad)) then
