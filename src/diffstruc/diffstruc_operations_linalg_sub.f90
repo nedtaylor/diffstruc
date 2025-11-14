@@ -6,7 +6,7 @@ submodule(diffstruc__operations_linalg) diffstruc__operations_linalg_sub
 contains
 
 !###############################################################################
-  function matmul_arrays(a, b) result(c)
+  module function matmul_arrays(a, b) result(c)
     !! Matrix multiplication of two autodiff arrays
     implicit none
     class(array_type), intent(in), target :: a, b
@@ -54,7 +54,7 @@ contains
     end if
   end function matmul_arrays
 !-------------------------------------------------------------------------------
-  function matmul_real2d(a, b) result(c)
+  module function matmul_real2d(a, b) result(c)
     !! Matrix multiplication of a real array and an autodiff array
     implicit none
     class(array_type), intent(in), target :: a
@@ -91,7 +91,7 @@ contains
     c%owns_right_operand = .true.
   end function matmul_real2d
 !-------------------------------------------------------------------------------
-  function real2d_matmul(a, b) result(c)
+  module function real2d_matmul(a, b) result(c)
     !! Matrix multiplication of two autodiff arrays
     implicit none
     real(real32), dimension(:,:), intent(in) :: a
@@ -195,7 +195,7 @@ contains
 
 
 !###############################################################################
-  function outer_product_arrays(a, b) result(c)
+  module function outer_product_arrays(a, b) result(c)
     !! Outer product of two autodiff arrays
     implicit none
     class(array_type), intent(in), target :: a, b
@@ -265,7 +265,7 @@ contains
 
 
 !###############################################################################
-  function transpose_array(a) result(c)
+  module function transpose_array(a) result(c)
     !! Transpose an autodiff array
     implicit none
     class(array_type), intent(in), target :: a

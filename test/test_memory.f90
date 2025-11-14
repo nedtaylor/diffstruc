@@ -35,7 +35,7 @@ program test_memory_detailed
      temp => x**2 + y * x + exp(x * 0.01_real32)
      call f%assign_and_deallocate_source(temp)
      f%is_temporary = .false.
-     call f%grad_reverse(record_graph=.false., reset_graph=.true.)
+     call f%grad_reverse(reset_graph=.true.)
      call f%nullify_graph()
      call f%deallocate()
      if (mod(i, 10) == 0) then
@@ -78,7 +78,7 @@ program test_memory_detailed
            xgradgrad%is_temporary = .false.
         end if
      else
-        call temp%grad_reverse(record_graph=.true., reset_graph=.true.)
+        call temp%grad_reverse(reset_graph=.true.)
      end if
 
      ! Explicit cleanup of temp (THIS IS KEY TO AVOIDING LEAKS)
