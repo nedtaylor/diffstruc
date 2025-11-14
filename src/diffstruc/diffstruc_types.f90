@@ -192,9 +192,8 @@ module diffstruc__types
        type(array_type), pointer :: output
      end function grad_forward
 
-     module subroutine grad_reverse(this, record_graph, reset_graph)
+     module subroutine grad_reverse(this, reset_graph)
        class(array_type), intent(inout) :: this
-       logical, intent(in), optional :: record_graph
        logical, intent(in), optional :: reset_graph
      end subroutine grad_reverse
   end interface

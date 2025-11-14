@@ -466,17 +466,13 @@ contains
 
 
 !###############################################################################
-  module subroutine grad_reverse(this, record_graph, reset_graph)
+  module subroutine grad_reverse(this, reset_graph)
     !! Perform backward pass starting from this array
     implicit none
     class(array_type), intent(inout) :: this
-    logical, intent(in), optional :: record_graph
     logical, intent(in), optional :: reset_graph
 
-    logical :: record_graph_
 
-    record_graph_ = .true.
-    if(present(record_graph)) record_graph_ = record_graph
     if(present(reset_graph))then
        if(reset_graph) call this%reset_graph()
     end if
@@ -488,7 +484,6 @@ contains
        ! Safely initialise gradient without copying computation graph
        call this%grad%allocate(array_shape=[this%shape, size(this%val,2)])
        this%grad%is_sample_dependent = this%is_sample_dependent
-       this%grad%requires_grad = record_graph_
        this%grad%operation = 'none'
        this%grad%left_operand => null()
        this%grad%right_operand => null()
@@ -505,11 +500,7 @@ contains
     end if
 
     ! Recursively compute gradients
-    if(record_graph_)then
-       call reverse_mode_ptr(this, this%grad, 0)
-    else
-       call reverse_mode(this, this%grad, 0)
-    end if
+    call reverse_mode_ptr(this, this%grad, 0)
   end subroutine grad_reverse
 !###############################################################################
 
@@ -739,104 +730,6 @@ contains
   end subroutine accumulate_gradient_ptr
 !###############################################################################
 
-
-!###############################################################################
-  recursive subroutine reverse_mode(array, upstream_grad, depth)
-    !! Backward operation for arrays
-    implicit none
-    class(array_type), intent(inout) :: array
-    type(array_type), intent(in) :: upstream_grad
-    integer, intent(in) :: depth
-
-    type(array_type) :: left_partial, right_partial
-
-    ! write(*,'("Performing backward operation for: ",A,T60,"id: ",I0)') &
-    !      trim(array%operation), array%id
-    if(depth.gt.max_recursion_depth)then
-       write(0,*) "MAX RECURSION DEPTH REACHED IN REVERSE MODE", depth
-       return
-    end if
-    array%is_forward = .false.
-    if(associated(array%left_operand))then
-       if(array%left_operand%requires_grad)then
-          left_partial = array%get_partial_left(upstream_grad)
-          left_partial%is_temporary = .false.
-          call accumulate_gradient(array%left_operand, left_partial, depth)
-       end if
-    end if
-    if(associated(array%right_operand))then
-       if(array%right_operand%requires_grad)then
-          right_partial = array%get_partial_right(upstream_grad)
-          right_partial%is_temporary = .false.
-          call accumulate_gradient(array%right_operand, right_partial, depth)
-       end if
-    end if
-    ! write(*,*) "done operation: ", trim(array%operation)
-  end subroutine reverse_mode
-!###############################################################################
-
-
-!###############################################################################
-  recursive subroutine accumulate_gradient(array, grad, depth)
-    !! Accumulate gradient for array with safe memory management
-    implicit none
-    type(array_type), intent(inout) :: array
-    type(array_type), intent(inout) :: grad
-    integer, intent(in) :: depth
-
-    integer :: s
-
-    ! Apply direction if specified (in-place to avoid copy)
-    if(allocated(array%direction))then
-       if(size(array%direction).gt.0)then
-          do s = 1, size(grad%val, 2)
-             grad%val(:, s) = grad%val(:, s) * array%direction
-          end do
-       end if
-    end if
-
-    if(.not. associated(array%grad))then
-       ! First gradient accumulation - allocate and set
-       allocate(array%grad)
-       if(array%is_sample_dependent)then
-          call array%grad%allocate(array_shape=[grad%shape,size(grad%val,2)])
-          array%grad%val = grad%val
-       else
-          call array%grad%allocate(array_shape=[grad%shape,1])
-          array%grad%val(:,1) = sum(grad%val, dim = 2)
-       end if
-       array%grad%is_scalar = array%is_scalar
-       array%grad%is_sample_dependent = array%is_sample_dependent
-       array%grad%requires_grad = .false.
-       array%grad%owns_gradient = .false.
-       array%owns_gradient = .true.
-       array%grad%is_temporary = array%is_temporary
-    else
-       ! Accumulate to existing gradient (in-place)
-       if(array%is_sample_dependent)then
-          array%grad%val = array%grad%val + grad%val
-       else
-          ! rtmp1 = real(size(grad%val,2), real32)
-          ! ! mean reduction
-          ! do concurrent(s = 1:size(grad%val,1))
-          !    array%grad%val(s,1) = array%grad%val(s,1) + sum(grad%val(s,:)) / rtmp1
-          ! end do
-          ! sum reduction
-          array%grad%val(:,1) = array%grad%val(:,1) + sum(grad%val, dim = 2)
-       end if
-    end if
-
-    if(associated(array%left_operand).or.associated(array%right_operand))then
-       call reverse_mode(array, grad, depth+1)
-    end if
-    if(array%grad%is_temporary)then
-       call array%grad%nullify_graph()
-       call array%grad%deallocate()
-       deallocate(array%grad)
-       array%owns_gradient = .false.
-    end if
-  end subroutine accumulate_gradient
-!###############################################################################
 
 
 !##############################################################################!
