@@ -13,9 +13,8 @@ module diffstruc__types
   public :: operator(+), operator(-), operator(*), operator(/), operator(**)
   public :: sum, mean, spread, unspread, exp, log
 
-  type array_ptr
-  type(array_type), pointer :: p => null()
-  end type array_ptr
+
+
 !-------------------------------------------------------------------------------
 ! Automatic differentiation derived type
 !-------------------------------------------------------------------------------
@@ -53,17 +52,28 @@ module diffstruc__types
      type(array_type), pointer :: right_operand => null()
      !! Right operand for backward pass
      character(len=32) :: operation = 'none'
+     !! Name of the operation that created this array
      logical :: owns_left_operand = .false.
+     !! Boolean whether this array owns its left operand
      logical :: owns_right_operand = .false.
+     !! Boolean whether this array owns its right operand
      logical :: owns_gradient = .true.
-     !! Flag indicating if this array owns its gradient memory
+     !! Boolean whether this array owns its gradient memory
      logical :: fix_pointer = .false.
+     !! Boolean to prevent pointer changes during graph operations
+     !! ... i.e. during duplicate_graph or nullify_graph, this array will not be
+     !! ... duplicated or nullified
      logical :: is_temporary = .true.
+     !! Boolean indicating if array is temporary
 
      real(real32), dimension(:), allocatable :: direction
+     !! Direction vector for forward-mode differentiation
+     !! ... i.e. derivative wrt this direction will be computed
 
      procedure(get_partial), pass(this), pointer :: get_partial_left => null()
+     !! Pointer procedure for getting partial derivative wrt left operand
      procedure(get_partial), pass(this), pointer :: get_partial_right => null()
+     !! Pointer procedure for getting partial derivative wrt right operand
 
    contains
      procedure, pass(this) :: allocate => allocate_array
@@ -83,23 +93,28 @@ module diffstruc__types
      !! Procedure for extracting array as a standard real array
 
      procedure, pass(this) :: set_direction
+     !! Set the direction vector for forward-mode differentiation
+     procedure, pass(this) :: set_requires_grad
+     !! Set whether gradients are required
      procedure, pass(this) :: grad_reverse
      !! Reverse-mode: accumulate gradients wrt all inputs
      procedure, pass(this) :: grad_forward
      !! Forward-mode: return derivative wrt variable pointer
 
-     !! Backward pass for gradient computation
      procedure, pass(this) :: zero_grad
+      !! Zero the gradient
      procedure, pass(this) :: zero_all_grads
      !! Zero the gradients
      procedure, pass(this) :: reset_graph
+     !! Reset the gradient graph of this array
      procedure, pass(this) :: duplicate_graph
+     !! Duplicate the computation graph and return pointer to new graph
      procedure, pass(this) :: nullify_graph
+     !! Nullify the computation graph
      procedure, pass(this) :: get_ptr_from_id
+     !! Get pointer to array in graph by its ID
      procedure, pass(this) :: detach
      !! Detach from computation graph
-     procedure, pass(this) :: set_requires_grad
-     !! Set requires_grad flag
      procedure, pass(this) :: create_result => create_result_array
      !! Helper to safely create result arrays
 
@@ -270,9 +285,23 @@ module diffstruc__types
        class(array_type), intent(in) :: this
      end subroutine print_graph
   end interface
+!-------------------------------------------------------------------------------
 
 
-  ! Operation interfaces
+!-------------------------------------------------------------------------------
+! Pointer wrapper type
+!-------------------------------------------------------------------------------
+  type :: array_ptr
+     type(array_type), pointer :: p => null()
+  end type array_ptr
+!-------------------------------------------------------------------------------
+
+
+!-------------------------------------------------------------------------------
+! Operation interfaces
+!-------------------------------------------------------------------------------
+
+  ! Arithmetic reduction interfaces that are directly overloaded into array_type
   !-----------------------------------------------------------------------------
   interface mean
      module function mean_array(a, dim) result(c)
@@ -323,6 +352,7 @@ module diffstruc__types
 
 
   ! Arithmetic operator interfaces that are directly overloaded into array_type
+  !-----------------------------------------------------------------------------
   interface
      module function add_arrays(a, b) result(c)
        class(array_type), intent(in), target :: a, b
@@ -500,5 +530,6 @@ module diffstruc__types
        type(array_type), pointer :: c
      end function log_array
   end interface
+!-------------------------------------------------------------------------------
 
 end module diffstruc__types
