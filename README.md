@@ -2,6 +2,7 @@
 [![Latest Release](https://img.shields.io/github/v/release/nedtaylor/diffstruc?sort=semver)](https://github.com/nedtaylor/diffstruc/releases "View on GitHub")
 [![FPM](https://img.shields.io/badge/fpm-0.12.0-purple)](https://github.com/fortran-lang/fpm "View Fortran Package Manager")
 [![GCC compatibility](https://img.shields.io/badge/gcc-15.2.0-green)](https://gcc.gnu.org/gcc-15/ "View GCC")
+[![IFX compatibility](https://img.shields.io/badge/ifx-2025.2.0-green)](https://www.intel.com/content/www/us/en/developer/tools/oneapi/fortran-compiler.html "View ifx")
 
 # diffstruc
 
@@ -52,7 +53,11 @@ The library has the following dependencies
 - [fpm](https://github.com/fortran-lang/fpm)
 
 The library has been developed and tested using the following compilers:
-- gfortran -- gcc 15.1.0
+- gfortran -- gcc 15.2.0
+- ifx -- ifx 2025.2.0
+
+> **_NOTE:_** diffstruc is known to be incompatible with all versions of the gfortran compiler below `14.3.0` due to issues with the calling of the `final` procedure of `array_type`.
+
 
 
 ### Building with fpm
