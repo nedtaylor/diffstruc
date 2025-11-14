@@ -486,6 +486,7 @@ contains
        ! Safely initialise gradient without copying computation graph
        call this%grad%allocate(array_shape=[this%shape, size(this%val,2)])
        this%grad%is_sample_dependent = this%is_sample_dependent
+       this%grad%requires_grad = .true.
        this%grad%operation = 'none'
        this%grad%left_operand => null()
        this%grad%right_operand => null()
