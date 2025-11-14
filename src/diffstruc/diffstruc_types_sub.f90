@@ -1166,8 +1166,18 @@ contains
 
     this%requires_grad = .false.
     this%operation = 'none'
+    if(this%owns_left_operand.and.associated(this%left_operand))then
+       call this%left_operand%deallocate()
+       deallocate(this%left_operand)
+    end if
+    if(this%owns_right_operand.and.associated(this%right_operand))then
+       call this%right_operand%deallocate()
+       deallocate(this%right_operand)
+    end if
     this%left_operand => null()
     this%right_operand => null()
+    this%owns_left_operand = .false.
+    this%owns_right_operand = .false.
   end subroutine detach
 !###############################################################################
 
