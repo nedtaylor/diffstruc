@@ -262,6 +262,7 @@ contains
     this%is_forward = source%is_forward
     this%is_scalar = source%is_scalar
     this%allocated = source%allocated
+    this%is_temporary = source%is_temporary
     if(allocated(source%shape)) this%shape = source%shape
     if(allocated(source%val)) this%val = source%val
     this%requires_grad = source%requires_grad
@@ -340,6 +341,7 @@ contains
     result_ptr%get_partial_left => null()
     result_ptr%get_partial_right => null()
     result_ptr%is_temporary = .true.
+    result_ptr%fix_pointer = .false.
   end function create_result_array
 !###############################################################################
 
@@ -484,6 +486,7 @@ contains
        ! Safely initialise gradient without copying computation graph
        call this%grad%allocate(array_shape=[this%shape, size(this%val,2)])
        this%grad%is_sample_dependent = this%is_sample_dependent
+       this%grad%requires_grad = .true.
        this%grad%operation = 'none'
        this%grad%left_operand => null()
        this%grad%right_operand => null()
@@ -718,7 +721,7 @@ contains
           ! ! mean reduction
           ! array%grad => array%grad + mean( directional_grad, dim = 2 )
           ! sum reduction
-          array%grad => array%grad + sum( directional_grad%val, dim = 2 )
+          array%grad => array%grad + sum( directional_grad, dim = 2 )
        end if
        array%grad%is_temporary = array%is_temporary
 
@@ -1075,8 +1078,8 @@ contains
     allocate(output_ptr)
     call output_ptr%assign_shallow(input_ptr)
     ! Mark that output_ptr is a duplicate (so callers can deallocate later)
-    !output_ptr%owns_self = .true.     ! <-- add this flag to array_type if helpful
     owns_self = .true.
+    output_ptr%is_temporary = .true.
 
     ! Add to map BEFORE recursing to handle cycles / shared nodes
     call double_map_add(src_map, dst_map, input_ptr, output_ptr)
@@ -1114,6 +1117,7 @@ contains
     logical :: tmp_logical
 
     output_ptr => duplicate_pointer(this, src_map, dst_map, tmp_logical)
+    output_ptr%is_temporary = .true.
 
     ! Clean up the maps
     call map_free(src_map)
