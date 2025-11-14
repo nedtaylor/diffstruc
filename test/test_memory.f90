@@ -37,7 +37,6 @@ program test_memory_detailed
      f%is_temporary = .false.
      call f%grad_reverse(reset_graph=.true.)
      call f%nullify_graph()
-     call f%deallocate()
      if (mod(i, 10) == 0) then
         write(*,'(A,I0)') "  Iteration ", i
      end if
@@ -83,13 +82,10 @@ program test_memory_detailed
 
      ! Explicit cleanup of temp (THIS IS KEY TO AVOIDING LEAKS)
      call temp%nullify_graph()
-     call temp%deallocate()
      if(do_forward)then
         call xgrad%nullify_graph()
-        call xgrad%deallocate()
         if(do_second_order)then
            call xgradgrad%nullify_graph()
-           call xgradgrad%deallocate()
         end if
      end if
 
