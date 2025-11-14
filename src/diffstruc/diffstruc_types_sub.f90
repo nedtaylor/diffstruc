@@ -826,7 +826,7 @@ contains
     !! Add pointer pair to double-array map (grow if needed)
     implicit none
     type(array_ptr), allocatable :: src_map(:), dst_map(:)
-    type(array_type), pointer, intent(in) :: src_ptr, dst_ptr
+    type(array_type), intent(in), target :: src_ptr, dst_ptr
     integer :: n, i, newcap
     if(.not. allocated(src_map)) allocate(src_map(default_map_capacity))
     if(.not. allocated(dst_map)) allocate(dst_map(default_map_capacity))
@@ -851,7 +851,7 @@ contains
     !! Add pointer to single-array map (grow if needed)
     implicit none
     type(array_ptr), allocatable :: map(:)
-    type(array_type), pointer, intent(in) :: ptr
+    type(array_type), intent(in), target :: ptr
     integer :: n, i
 
     if(.not. allocated(map))then
@@ -874,7 +874,7 @@ contains
     !! Check if target pointer exists in single-array map
     implicit none
     type(array_ptr), allocatable :: map(:)
-    type(array_type), pointer, intent(in) :: target
+    type(array_type), intent(in), target :: target
     integer :: idx, n, i
 
     idx = 0
