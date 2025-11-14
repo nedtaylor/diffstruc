@@ -1,14 +1,15 @@
 module diffstruc
   !! This is the top-level module for the diffstruc Fortran library.
   use coreutils, only: real32
-  use diffstruc__global, only: max_recursion_depth, default_map_capacity
+  use diffstruc__global, only: diffstruc__max_recursion_depth, diffstruc__init_map_cap
   use diffstruc__types, only: &
        array_type, get_partial, &
        operator(+), operator(-), operator(*), operator(/), operator(**), &
        sum, mean, spread, unspread, exp, log
   use diffstruc__operations_trig, only: sin, cos, tan
   use diffstruc__operations_hyp, only: tanh
-  use diffstruc__operations_linalg, only: operator(.mmul.), operator(.outer.), transpose
+  use diffstruc__operations_linalg, only: &
+       matmul, operator(.mmul.), outer_product, operator(.outer.), transpose
   use diffstruc__operations_broadcast, only: &
        operator(.concat.), operator(.ltrim.), operator(.rtrim.), &
        operator(.index.), reverse_index, &
@@ -21,14 +22,14 @@ module diffstruc
   private
 
   public :: real32
-  public :: max_recursion_depth, default_map_capacity
+  public :: diffstruc__max_recursion_depth, diffstruc__init_map_cap
   public :: array_type, get_partial
 
   public :: operator(+), operator(-), operator(*), operator(/), operator(**)
   public :: sum, mean, spread, unspread, exp, log
   public :: sin, cos, tan
   public :: tanh
-  public :: operator(.mmul.), operator(.outer.), transpose
+  public :: matmul, operator(.mmul.), outer_product, operator(.outer.), transpose
   public :: operator(.concat.), operator(.ltrim.), operator(.rtrim.), &
        operator(.index.), reverse_index, &
        pack, unpack

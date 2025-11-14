@@ -1,7 +1,7 @@
 submodule(diffstruc__types) diffstruc__types_submodule
   !! Submodule containing implementations for derived types
   use coreutils, only: stop_program, print_warning
-  use diffstruc__global, only: max_recursion_depth, default_map_capacity
+  use diffstruc__global, only: diffstruc__max_recursion_depth, diffstruc__init_map_cap
 
 
 
@@ -456,6 +456,10 @@ contains
 
     integer :: depth
 
+    if(.not.variable%requires_grad)then
+       call print_warning("Variable does not require grad in forward mode")
+       return
+    end if
     depth = 0
     output => forward_over_reverse(this, variable, depth)
     output%is_forward = .true.
@@ -525,7 +529,7 @@ contains
     logical :: is_forward_local
 
     depth = depth + 1
-    if(depth.gt.max_recursion_depth)then
+    if(depth.gt.diffstruc__max_recursion_depth)then
        write(0,*) "MAX RECURSION DEPTH REACHED", depth
        return
     end if
@@ -640,7 +644,7 @@ contains
 
     ! write(*,'("Performing backward operation for: ",A,T60,"id: ",I0)') &
     !      trim(array%operation), array%id
-    if(depth.gt.max_recursion_depth)then
+    if(depth.gt.diffstruc__max_recursion_depth)then
        write(0,*) "MAX RECURSION DEPTH REACHED IN REVERSE MODE", depth
        return
     end if
@@ -828,8 +832,8 @@ contains
     type(array_ptr), allocatable :: src_map(:), dst_map(:)
     type(array_type), intent(in), target :: src_ptr, dst_ptr
     integer :: n, i, newcap
-    if(.not. allocated(src_map)) allocate(src_map(default_map_capacity))
-    if(.not. allocated(dst_map)) allocate(dst_map(default_map_capacity))
+    if(.not. allocated(src_map)) allocate(src_map(diffstruc__init_map_cap))
+    if(.not. allocated(dst_map)) allocate(dst_map(diffstruc__init_map_cap))
     n = size(src_map)
     ! find first null slot
     do i = 1, n
@@ -855,7 +859,7 @@ contains
     integer :: n, i
 
     if(.not. allocated(map))then
-       allocate(map(default_map_capacity))
+       allocate(map(diffstruc__init_map_cap))
     end if
     n = size(map)
     ! find first null slot
