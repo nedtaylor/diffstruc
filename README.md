@@ -19,24 +19,18 @@ diffstruc is distributed with the following directories:
 
 | Directory | Description |
 |---|---|
+|  _docs/_ |    Compilable documentation |
 |  _src/_ |      Source code  |
-|  _test/_  |    A set of unit test programs to check functionality of the library works after compilation |
+|  _test/_ |    A set of unit test programs to check functionality of the library works after compilation |
+
 
 
 Documentation
 -----
 
-The library has a compilable documentation this can be accessed with the [FORD (FORtran Documenter)](https://forddocs.readthedocs.io/en/stable/) tool.
-The documentation can be compiled using the following terminal command in the root directory of the repository:
+Tutorials and documentation are provided on the [docs](http://diffstruc.readthedocs.io/) website.
 
-```
-  ford ford.md
-```
-
-This will generate the `doc/html` directory, inside which, you will find `index.html`.
-By opening this file in a browser window, you will be able to view a nagivable documentation.
-
-A Read*the*Docs documentation providing guides on how to use the library is currently being developed but not yet available.
+Refer to the [API Documentation section](#api-documentation) later in this document to see how to access the API-specific documentation.
 
 Setup
 -----
@@ -83,9 +77,20 @@ To check whether diffstruc has installed correctly and that the compilation work
 This runs a set of test programs (found within the test/ directory) to ensure the expected output occurs when layers and networks are set up.
 
 
-Developers
-----------
-- Ned Thaddeus Taylor
+
+API documentation
+-----------------
+
+API documentation can be generated using FORD (Fortran Documenter).
+The library has a compilable documentation this can be accessed with the [FORD (FORtran Documenter)](https://forddocs.readthedocs.io/en/stable/) tool.
+The documentation can be compiled using the following terminal command in the root directory of the repository:
+
+```
+  ford ford.md
+```
+
+This will generate the `docs/html` directory, inside which, you will find `index.html`.
+By opening this file in a browser window, you will be able to view a nagivable documentation.
 
 Contributing
 ------------
