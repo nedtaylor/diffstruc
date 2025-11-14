@@ -10,6 +10,9 @@ by Ned Thaddeus Taylor
 
 diffstruc is a Fortran library that provides automatic differentiation capabilities through use of an array derived type.
 
+The library has implemented both forward and reverse mode automatic differentiation.
+Through repetitive use of the forward mode differentiation procedure, any higher order partial differentiation is achievable (note, memory usage will increase for higher order differentials) and has been tested up to third order.
+
 ---
 
 diffstruc is distributed with the following directories:
@@ -33,6 +36,7 @@ The documentation can be compiled using the following terminal command in the ro
 This will generate the `doc/html` directory, inside which, you will find `index.html`.
 By opening this file in a browser window, you will be able to view a nagivable documentation.
 
+A Read*the*Docs documentation providing guides on how to use the library is currently being developed but not yet available.
 
 Setup
 -----
