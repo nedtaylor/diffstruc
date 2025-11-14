@@ -6,11 +6,11 @@ module diffstruc__operations_linalg
 
   private
 
-  public :: operator(.mmul.), operator(.outer.), transpose
+  public :: matmul, operator(.mmul.), outer_product, operator(.outer.), transpose
 
   ! Operation interfaces
   !-----------------------------------------------------------------------------
-  interface operator(.mmul.)
+  interface matmul
      module function matmul_arrays(a, b) result(c)
        class(array_type), intent(in), target :: a, b
        type(array_type), pointer :: c
@@ -28,11 +28,19 @@ module diffstruc__operations_linalg
      end function real2d_matmul
   end interface
 
-  interface operator(.outer.)
+  interface operator(.mmul.)
+    module procedure matmul_arrays, matmul_real2d, real2d_matmul
+  end interface
+
+  interface outer_product
      module function outer_product_arrays(a, b) result(c)
        class(array_type), intent(in), target :: a, b
        type(array_type), pointer :: c
      end function outer_product_arrays
+  end interface
+
+  interface operator(.outer.)
+    module procedure outer_product_arrays
   end interface
 
   interface transpose

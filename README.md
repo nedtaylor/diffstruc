@@ -10,29 +10,27 @@ by Ned Thaddeus Taylor
 
 diffstruc is a Fortran library that provides automatic differentiation capabilities through use of an array derived type.
 
+The library has implemented both forward and reverse mode automatic differentiation.
+Through repetitive use of the forward mode differentiation procedure, any higher order partial differentiation is achievable (note, memory usage will increase for higher order differentials) and has been tested up to third order.
+
 ---
 
 diffstruc is distributed with the following directories:
 
 | Directory | Description |
 |---|---|
+|  _docs/_ |    Compilable documentation |
 |  _src/_ |      Source code  |
-|  _test/_  |    A set of unit test programs to check functionality of the library works after compilation |
+|  _test/_ |    A set of unit test programs to check functionality of the library works after compilation |
+
 
 
 Documentation
 -----
 
-The library has a compilable documentation this can be accessed with the [FORD (FORtran Documenter)](https://forddocs.readthedocs.io/en/stable/) tool.
-The documentation can be compiled using the following terminal command in the root directory of the repository:
+Tutorials and documentation are provided on the [docs](http://diffstruc.readthedocs.io/) website.
 
-```
-  ford ford.md
-```
-
-This will generate the `doc/html` directory, inside which, you will find `index.html`.
-By opening this file in a browser window, you will be able to view a nagivable documentation.
-
+Refer to the [API Documentation section](#api-documentation) later in this document to see how to access the API-specific documentation.
 
 Setup
 -----
@@ -79,9 +77,20 @@ To check whether diffstruc has installed correctly and that the compilation work
 This runs a set of test programs (found within the test/ directory) to ensure the expected output occurs when layers and networks are set up.
 
 
-Developers
-----------
-- Ned Thaddeus Taylor
+
+API documentation
+-----------------
+
+API documentation can be generated using FORD (Fortran Documenter).
+The library has a compilable documentation this can be accessed with the [FORD (FORtran Documenter)](https://forddocs.readthedocs.io/en/stable/) tool.
+The documentation can be compiled using the following terminal command in the root directory of the repository:
+
+```
+  ford ford.md
+```
+
+This will generate the `docs/html` directory, inside which, you will find `index.html`.
+By opening this file in a browser window, you will be able to view a nagivable documentation.
 
 Contributing
 ------------
