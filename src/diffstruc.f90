@@ -9,7 +9,10 @@ module diffstruc
   use diffstruc__operations_trig, only: sin, cos, tan
   use diffstruc__operations_hyp, only: tanh
   use diffstruc__operations_linalg, only: &
-       matmul, operator(.mmul.), outer_product, operator(.outer.), transpose
+       matmul, operator(.mmul.), &
+       outer_product, operator(.outer.), &
+       dot_product, operator(.dot.), &
+       transpose
   use diffstruc__operations_broadcast, only: &
        operator(.concat.), operator(.ltrim.), operator(.rtrim.), &
        operator(.index.), reverse_index, &
@@ -29,7 +32,10 @@ module diffstruc
   public :: sum, mean, spread, unspread, exp, log
   public :: sin, cos, tan
   public :: tanh
-  public :: matmul, operator(.mmul.), outer_product, operator(.outer.), transpose
+  public :: matmul, operator(.mmul.), &
+       outer_product, operator(.outer.), &
+       dot_product, operator(.dot.), &
+       transpose
   public :: operator(.concat.), operator(.ltrim.), operator(.rtrim.), &
        operator(.index.), reverse_index, &
        pack, unpack

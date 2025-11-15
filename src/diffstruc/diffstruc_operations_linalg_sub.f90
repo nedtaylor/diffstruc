@@ -203,6 +203,13 @@ contains
 
     integer :: i, j, s
 
+    ! check shapes
+    if(size(a%shape).ne.1 .or. size(b%shape).ne.1)then
+       call stop_program("dot_product_arrays: only 1D arrays supported")
+    elseif(size(a%val,2).ne.size(b%val,2))then
+       call stop_program("dot_product_arrays: array length mismatch")
+    end if
+
     c => a%create_result(array_shape = [size(a%val,1), size(b%val,1), size(a%val,2)])
     ! outer product 1D array by using shape to swap dimensions
     do concurrent(s=1:size(a%val,2))
@@ -211,6 +218,9 @@ contains
        end do
     end do
 
+    c%get_partial_left => get_partial_outer_product_left
+    c%get_partial_right => get_partial_outer_product_right
+    c%is_sample_dependent = a%is_sample_dependent
     if(a%requires_grad .or. b%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
@@ -261,6 +271,81 @@ contains
     this%left_operand%is_temporary = left_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_outer_product_right
+!###############################################################################
+
+
+!###############################################################################
+  module function dot_product_arrays(a, b) result(c)
+    !! Dot product of two autodiff arrays
+    implicit none
+    class(array_type), intent(in), target :: a, b
+    type(array_type), pointer :: c
+
+    integer :: s
+
+    ! check shapes
+    if(size(a%shape).ne.1 .or. size(b%shape).ne.1)then
+       call stop_program("dot_product_arrays: only 1D arrays supported")
+    elseif(any(shape(a%val).ne.shape(b%val)))then
+       call stop_program("dot_product_arrays: array length mismatch")
+    end if
+
+    c => a%create_result(array_shape = [1, size(a%val,2)])
+    do concurrent(s=1:size(a%val,2))
+       c%val(1,s) = dot_product(a%val(:,s), b%val(:,s))
+    end do
+
+    c%get_partial_left => get_partial_dot_product_left
+    c%get_partial_right => get_partial_dot_product_right
+    c%is_sample_dependent = a%is_sample_dependent
+    if(a%requires_grad .or. b%requires_grad) then
+       c%requires_grad = .true.
+       c%is_forward = a%is_forward .or. b%is_forward
+       c%operation = 'dot_product'
+       c%left_operand => a
+       c%right_operand => b
+       c%owns_left_operand = a%is_temporary
+       c%owns_right_operand = b%is_temporary
+    end if
+  end function dot_product_arrays
+!-------------------------------------------------------------------------------
+  function get_partial_dot_product_left(this, upstream_grad) result(output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+    logical :: right_is_temporary_local
+    type(array_type), pointer :: ptr
+
+    right_is_temporary_local = this%right_operand%is_temporary
+    this%right_operand%is_temporary = .false.
+    if(this%is_forward)then
+       ptr => dot_product(upstream_grad, this%right_operand)
+    else
+       ptr => upstream_grad * this%right_operand
+    end if
+    this%right_operand%is_temporary = right_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
+  end function get_partial_dot_product_left
+!-------------------------------------------------------------------------------
+  function get_partial_dot_product_right(this, upstream_grad) result(output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+    logical :: left_is_temporary_local
+    type(array_type), pointer :: ptr
+
+    left_is_temporary_local = this%left_operand%is_temporary
+    this%left_operand%is_temporary = .false.
+    if(this%is_forward)then
+       ptr => dot_product(this%left_operand, upstream_grad)
+    else
+       ptr => upstream_grad * this%left_operand
+    end if
+    this%left_operand%is_temporary = left_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
+  end function get_partial_dot_product_right
 !###############################################################################
 
 
