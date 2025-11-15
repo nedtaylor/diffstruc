@@ -31,9 +31,13 @@ To build and use diffstruc, you need:
 
 1. **A Fortran Compiler** (compatible with Fortran 2018 or later)
 2. **Fortran Package Manager (fpm)** - https://github.com/fortran-lang/fpm
+3. **coreutils** - (dependency handled automatically by fpm) https://github.com/nedtaylor/coreutils
 
 .. important::
    diffstruc is known to be **incompatible** with all versions of the gfortran compiler below ``14.3.0`` due to issues with the calling of the ``final`` procedure of ``array_type``.
+
+coreutils is a lightweight Fortran library that provides essential precision types, mathematical constants, and utility functions.
+The installation of coreutils is managed automatically by fpm when building diffstruc.
 
 Supported Compilers
 ~~~~~~~~~~~~~~~~~~~
@@ -96,6 +100,11 @@ Installing a Fortran Compiler
 **Intel Fortran (ifx):**
 
 Download from the `Intel oneAPI website <https://www.intel.com/content/www/us/en/developer/tools/oneapi/fortran-compiler.html>`_.
+
+Installing coreutils
+~~~~~~~~~~~~~~~~~~~~
+
+coreutils will be installed automatically by fpm when you build diffstruc, so no manual installation is necessary.
 
 
 Building diffstruc
