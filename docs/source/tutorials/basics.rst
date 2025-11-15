@@ -1,7 +1,8 @@
-Getting Started: The Basics
-===========================
+Automatic Differentiation using ``array_type``
+==============================================
 
 This tutorial introduces the fundamental concepts of using diffstruc for automatic differentiation.
+Specifically, it explores the ``array_type`` derived type, which is central to diffstruc's functionality.
 
 What is Automatic Differentiation?
 -----------------------------------
@@ -46,6 +47,7 @@ The main components of ``array_type`` are:
 * ``requires_grad`` - Flag to enable gradient tracking
 * ``grad`` - Pointer to the gradient (derivative) array
 * ``is_temporary`` - Flag indicating if this is a temporary computation result
+* ``operation`` - Character string indicating the operation that produced this variable
 
 
 Worked Example
@@ -97,10 +99,7 @@ A full code example is provided below.
    df/dx = 2x =    6.00000000
 
 
-.. _:
-
-In-depth Explanation
-~~~~~~~~~~~~~~~~~~~~~
+We now break down each step:
 
 1. **Initialise the input**
 
@@ -231,7 +230,38 @@ is_temporary Flag
    x%is_temporary = .false.  ! Explicit variable
    f => x ** 2               ! f%is_temporary = .true. (automatic)
 
+Graph Visualisation
+-------------------
 
+You can visualise computation graphs using the ``print_graph()`` procedure.
+
+.. code-block:: fortran
+
+   call f%print_graph()
+
+This will output a representation of the computation graph to the console, showing the operations and dependencies involved in computing ``f``.
+An example output for the function ``f => x ** 4 + x ** 2 * y`` would look like:
+
+.. code-block:: text
+
+   --- Computation Graph Tree ---
+   └── [add] @5484082544
+      ├── L(*):└── [power_scalar] @5484108400
+      ├── L(*):    ├── L:└── [none] @4330881024
+      ├── L(*):    └── R(*):└── [none] @5484083920
+      └── R(*):└── [multiply] @5484138304
+      └── R(*):    ├── L(*):└── [power_scalar] @5484126400
+      └── R(*):    ├── L(*):    ├── L:└── [none] @4330881024
+      └── R(*):    ├── L(*):    └── R(*):└── [none] @5484097808
+      └── R(*):    └── R:└── [none] @4330881640
+   --- End Graph ---
+
+The square brackets indicate the operation type, and the tree structure shows how each operation depends on its inputs.
+``L`` and ``R`` denote the left and right operands, respectively, whilst ``(*)`` indicates that the variable is owned by its parent node (instead of being a pointer to an external variable).
+The memory addresses (e.g., ``@5484082544``) are included for reference, which is obtained from the Fortran ``loc()`` intrinsic function.
+It can be seen that the memory address ``@4330881024`` appears multiple times, which corresponds to the variable ``x``.
+An operation with the ``[none]`` type indicates a leaf node in the graph (i.e., an input variable).
+It can be seen that the variables ``x`` and ``y`` are leaf nodes and are not owned by any parent node; this is specified by setting ``is_temporary = .false.`` for these variables.
 
 Common Issues
 -------------

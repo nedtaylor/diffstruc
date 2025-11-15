@@ -1,5 +1,5 @@
-Memory Management Best Practices
-=================================
+Memory Management
+=================
 
 Proper memory management is crucial when using diffstruc to avoid memory leaks and ensure efficient performance.
 
@@ -64,6 +64,18 @@ Call ``nullify_graph()`` on:
    call f%nullify_graph()      ! Clean function graph
    call df_dx%nullify_graph()  ! Clean gradient graph
 
+Sometimes it is necessary to use the ``ignore_ownership`` argument of ``nullify_graph()`` to prevent repeated deallocation attempts of shared nodes.
+Setting ``ignore_ownership = .false.`` skips deallocation of nodes not owned by the current variable.
+By default, ``ignore_ownership = .true.`` (unless the variable has been generated from ``grad_forward``).
+As such, it might sometimes be useful to do the following:
+
+.. code-block:: fortran
+
+   call f%nullify_graph(ignore_ownership = .true.)
+   call df_dx%nullify_graph(ignore_ownership = .false.)
+
+where the first call cleans up all nodes owned by ``f``, and the second call only cleans up nodes owned by ``df_dx``.
+
 Common Mistake
 ~~~~~~~~~~~~~~
 
@@ -78,8 +90,6 @@ Common Mistake
    ! CORRECT - Clean both
    call f%nullify_graph()
    call df_dx%nullify_graph()
-   call f%deallocate()
-   call df_dx%deallocate()
    deallocate(f, df_dx)
 
 
@@ -114,6 +124,8 @@ Memory Leak Patterns
 Pattern 1: Forgetting Cleanup
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+Forgetting to clean up inside loops or repeated computations can lead to significant memory leaks over time.
+
 .. code-block:: fortran
 
    ! BAD - Memory leak!
@@ -126,7 +138,6 @@ Pattern 1: Forgetting Cleanup
    do i = 1, 1000
      f => x**2
      call f%nullify_graph()
-     call f%deallocate()
      deallocate(f)
    end do
 
@@ -149,12 +160,14 @@ However, to be safe and avoid leaks in complex graphs, always clean up both.
    ! GOOD
    call f%nullify_graph()
    call df_dx%nullify_graph()
-   call f%deallocate()
-   call df_dx%deallocate()
    deallocate(f, df_dx)
 
 Pattern 3: Circular References
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Circular references are common in computation graphs.
+These can lead to memory not being freed if not handled correctly.
+The ``nullify_graph()`` procedure is designed to handle these cases safely.
 
 .. code-block:: fortran
 

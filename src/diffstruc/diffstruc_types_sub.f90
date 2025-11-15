@@ -578,8 +578,6 @@ contains
                    left_deriv = this%get_partial_left(left_deriv_tmp)
                 end if
              end if
-             !write(*,*) "left owns l", left_deriv_tmp%owns_left_operand
-             !write(*,*) "left owns r", left_deriv_tmp%owns_right_operand
              !  left_deriv%owns_left_operand = .true.
              !  left_deriv%owns_right_operand = .true.
              ! end if
