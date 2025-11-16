@@ -30,13 +30,16 @@ Operation Summary Table
      - ``exp``, ``log``
      - log is natural logarithm
    * - Linear Algebra
-     - ``matmul``, ``outer_product``, ``transpose``
+     - ``dot_product``, ``outer_product``, ``matmul``, ``transpose``
      - Matrix operations
    * - Reduction
      - ``sum``, ``mean``, ``unspread``, ``max``, ``maxval``
      - Collapse dimensions
+   * - Comparison
+     - ``.lt.``, ``.gt.``, ``merge``
+     - Element-wise comparisons
    * - Broadcast
-     - ``spread``, ``concat``, ``ltrim``, ``rtrim``, ``index``, ``reverse_index``
+     - ``spread``, ``.concat.``, ``.ltrim.``, ``.rtrim.``, ``.index.``, ``reverse_index``
      - Broadcasting and indexing
    * - Other
      - ``sign``, ``sqrt``, ``sigmoid``, ``gaussian``
