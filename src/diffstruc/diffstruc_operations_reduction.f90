@@ -106,7 +106,7 @@ contains
     type(array_type) :: output
     type(array_type), pointer :: ptr
 
-    ptr => upstream_grad * (this%val .eq. this%left_operand%val)
+    ptr => upstream_grad * (abs( this%val - this%left_operand%val ) .lt. 1.E-6_real32)
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_max_left
 !-------------------------------------------------------------------------------
@@ -117,7 +117,7 @@ contains
     type(array_type) :: output
     type(array_type), pointer :: ptr
 
-    ptr => upstream_grad * (this%val .eq. this%right_operand%val)
+    ptr => upstream_grad * (abs( this%val - this%right_operand%val ) .lt. 1.E-6_real32)
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_max_right
 !###############################################################################

@@ -13,12 +13,15 @@ contains
     type(array_type), pointer :: c
 
     integer :: s
+    character(len=128) :: err_msg
     real(real32), pointer :: temp(:,:)
 
     if(.not.a%is_sample_dependent)then
        if(size(b%shape).ne.1)then
-          call stop_program( &
-               'Matrix multiplication not implemented for these shapes yet' )
+          write(err_msg,'("Matrix multiplication not implemented for array ''b'' &
+               &rank: ",I0)') size(b%shape)
+          call stop_program(err_msg)
+          return
        end if
        c => a%create_result(array_shape=[a%shape(1), size(b%val,2)])
        temp(1:a%shape(1), 1:a%shape(2)) => a%val
@@ -27,8 +30,10 @@ contains
        end do
     elseif(.not.b%is_sample_dependent)then
        if(size(a%shape).ne.1)then
-          call stop_program( &
-               'Matrix multiplication not implemented for these shapes yet' )
+          write(err_msg,'("Matrix multiplication not implemented for array ''a'' &
+               &rank: ",I0)') size(a%shape)
+          call stop_program(err_msg)
+          return
        end if
        c => b%create_result(array_shape=[b%shape(2), size(a%val,2)])
        temp(1:b%shape(1), 1:b%shape(2)) => b%val
@@ -142,15 +147,15 @@ contains
     this%right_operand%is_temporary = .false.
     if(size(this%right_operand%shape).eq.2)then
        if(this%is_forward)then
-          ptr => upstream_grad .mmul. this%right_operand
+          ptr => matmul( upstream_grad, this%right_operand )
        else
-          ptr => upstream_grad .mmul. transpose(this%right_operand)
+          ptr => matmul( upstream_grad, transpose(this%right_operand) )
        end if
     elseif(size(upstream_grad%shape).eq.2)then
        if(this%is_forward)then
-          ptr => upstream_grad .mmul. this%right_operand
+          ptr => matmul( upstream_grad, this%right_operand )
        else
-          ptr => transpose(upstream_grad) .mmul. this%right_operand
+          ptr => matmul( transpose(upstream_grad), this%right_operand )
        end if
     else
        ptr => upstream_grad .outer. this%right_operand
@@ -174,15 +179,15 @@ contains
     this%left_operand%is_temporary = .false.
     if(size(this%left_operand%shape).eq.2)then
        if(this%is_forward)then
-          ptr => this%left_operand .mmul. upstream_grad
+          ptr => matmul(this%left_operand, upstream_grad)
        else
-          ptr => transpose(this%left_operand) .mmul. upstream_grad
+          ptr => matmul(transpose(this%left_operand), upstream_grad)
        end if
     elseif(size(upstream_grad%shape).eq.2)then
        if(this%is_forward)then
-          ptr => this%left_operand .mmul. upstream_grad
+          ptr => matmul(this%left_operand, upstream_grad)
        else
-          ptr => this%left_operand .mmul. transpose(upstream_grad)
+          ptr => matmul(this%left_operand, transpose(upstream_grad))
        end if
     else
        ptr => this%left_operand .outer. upstream_grad
@@ -245,7 +250,7 @@ contains
     if(this%is_forward)then
        ptr => upstream_grad .outer. this%right_operand
     else
-       ptr => upstream_grad .mmul. this%right_operand
+       ptr => matmul(upstream_grad, this%right_operand)
     end if
     this%right_operand%is_temporary = right_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
@@ -266,7 +271,7 @@ contains
     else
        ! mathematically should be ptr => transpose(upstream_grad) .mmul. this%left_operand
        ! but for how we store vectors, this SHOULD BE equivalent
-       ptr => this%left_operand .mmul. upstream_grad
+       ptr => matmul(this%left_operand, upstream_grad)
     end if
     this%left_operand%is_temporary = left_is_temporary_local
     call output%assign_and_deallocate_source(ptr)

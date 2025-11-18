@@ -1,6 +1,6 @@
 module diffstruc__operations_broadcast
   !! This module contains broadcast operations for the diffstruc library.
-  use coreutils, only: real32
+  use coreutils, only: real32, stop_program
   use diffstruc__types, only: array_type, get_partial, &
        operator(+), operator(-), operator(*), operator(**)
   implicit none
@@ -35,11 +35,11 @@ module diffstruc__operations_broadcast
   end interface
 
   interface pack
-     module procedure pack_array
+     module procedure pack_indices_array, pack_mask_array
   end interface
 
   interface unpack
-     module procedure unpack_array
+     module procedure unpack_indices_array, unpack_mask_array
   end interface
 
 
@@ -238,7 +238,185 @@ contains
 
 
 !###############################################################################
-  function pack_array(a, indices, dim) result(c)
+  function pack_mask_array(a, dim, mask) result(c)
+    !! Pack an autodiff array using a logical mask
+    implicit none
+    class(array_type), intent(in), target :: a
+    integer, intent(in) :: dim
+    logical, dimension(:), intent(in), optional :: mask
+    type(array_type), pointer :: c
+
+    integer :: i, j, s, itmp1
+
+    if(present(mask))then
+       itmp1 = count(mask)
+       if(dim.eq.1)then
+          c => a%create_result(array_shape=[itmp1, size(a%val,2)])
+          allocate(c%indices(itmp1))
+          i = 0
+          do concurrent(s=1:size(a%val,2))
+             do j = 1, size(a%val,1)
+                if(mask(j)) then
+                   i = i + 1
+                   c%val(i, s) = a%val(j, s)
+                end if
+             end do
+             i = 0
+          end do
+          c%indices = pack([(j, j=1,size(mask))], mask)
+       elseif(dim.eq.2)then
+          c => a%create_result(array_shape=[a%shape, itmp1])
+          allocate(c%indices(itmp1))
+          i = 0
+          do concurrent(s=1:size(a%val,1))
+             do j = 1, size(a%val,2)
+                if(mask(j)) then
+                   i = i + 1
+                   c%val(s, i) = a%val(s, j)
+                end if
+             end do
+             i = 0
+          end do
+          c%indices = pack([(j, j=1,size(mask))], mask)
+       else
+          call stop_program("pack_mask: only 1 or 2 dimensions are supported")
+       end if
+    else
+       if(dim.eq.1)then
+          c => a%create_result(array_shape=[size(a%val,1), size(a%val,2)])
+          do concurrent(s=1:size(a%val,2), i=1:size(a%val,1))
+             c%val(i, s) = a%val(i, s)
+          end do
+       elseif(dim.eq.2)then
+          c => a%create_result()
+          do concurrent(s=1:size(a%val,1), i=1:size(a%val,2))
+             c%val(s, i) = a%val(s, i)
+          end do
+       else
+          call stop_program("pack: only 1 or 2 dimensions are supported")
+       end if
+       !c%indices = [(j, j=1,size(a%val,dim))]
+    end if
+    allocate(c%adj_ja(size(a%shape)+2,1))
+    c%adj_ja(1,1) = dim
+    c%adj_ja(2:,1) = [ a%shape, size(a%val,2) ]
+
+    c%get_partial_left => get_partial_pack_mask
+    if(a%requires_grad) then
+       c%requires_grad = .true.
+       c%is_forward = a%is_forward
+       c%operation = 'pack_mask'
+       c%left_operand => a
+       c%owns_left_operand = a%is_temporary
+    end if
+  end function pack_mask_array
+!-------------------------------------------------------------------------------
+  function get_partial_pack_mask(this, upstream_grad) result(output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+    type(array_type), pointer :: ptr
+
+    if(allocated(this%indices))then
+        ptr => unpack(upstream_grad, array_shape=this%adj_ja(2:,1), dim = this%adj_ja(1,1), indices = this%indices)
+    else
+        ptr => unpack(upstream_grad, array_shape=this%adj_ja(2:,1), dim = this%adj_ja(1,1))
+    end if
+    call output%assign_and_deallocate_source(ptr)
+  end function get_partial_pack_mask
+!###############################################################################
+
+
+!###############################################################################
+  function unpack_mask_array(a, array_shape, dim, indices) result(c)
+    !! Unpack an autodiff array
+    implicit none
+    class(array_type), intent(in), target :: a
+    integer, dimension(:), intent(in) :: array_shape
+    integer, intent(in), optional :: dim
+    integer, dimension(:), intent(in), optional :: indices
+    type(array_type), pointer :: c
+
+    integer :: i, s, dim_, num_samples, num_elements
+
+    if(present(dim)) then
+       dim_ = dim
+    else
+       dim_ = 1
+    end if
+    num_samples = array_shape(size(array_shape))
+    num_elements = product(array_shape(1:size(array_shape)-1))
+
+    c => a%create_result(array_shape = array_shape)
+    c%val = 0.0_real32
+    if(dim_.eq.1)then
+       if(present(indices))then
+          do concurrent(i=1:size(indices,1), s=1:num_samples)
+             c%val(indices(i),s) = a%val(i,s)
+          end do
+       else
+          do concurrent(i=1:num_elements, s=1:num_samples)
+             c%val(i,s) = a%val(i,s)
+          end do
+       end if
+    elseif(dim_.eq.2)then
+       if(present(indices))then
+          do concurrent(i=1:num_elements, s=1:size(indices,1))
+             c%val(i,indices(s)) = a%val(i,s)
+          end do
+       else
+          do concurrent(i=1:num_elements, s=1:num_samples)
+             c%val(i,s) = a%val(i,s)
+          end do
+       end if
+    else
+       call stop_program("unpack_mask: only 1 or 2 dimensions are supported")
+    end if
+
+    if(present(indices))then
+       c%indices = indices
+    end if
+    allocate(c%adj_ja(1,1))
+    c%adj_ja(1,1) = dim_
+
+    c%get_partial_left => get_partial_unpack_mask
+    c%get_partial_right => get_partial_pack_mask
+    if(a%requires_grad) then
+       c%requires_grad = .true.
+       c%is_forward = a%is_forward
+       c%operation = 'unpack_mask'
+       c%left_operand => a
+       c%owns_left_operand = a%is_temporary
+    end if
+  end function unpack_mask_array
+!-------------------------------------------------------------------------------
+  function get_partial_unpack_mask(this, upstream_grad) result(output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+    type(array_type), pointer :: ptr
+
+    logical, dimension(:), allocatable :: mask
+
+    if(allocated(this%indices))then
+       allocate(mask(size(upstream_grad%val,this%adj_ja(1,1))))
+       mask = .false.
+       mask(this%indices) = .true.
+       ptr => pack(upstream_grad, this%adj_ja(1,1), mask)
+    else
+       ptr => pack(upstream_grad, this%adj_ja(1,1))
+    end if
+
+    call output%assign_and_deallocate_source(ptr)
+  end function get_partial_unpack_mask
+!###############################################################################
+
+
+
+!###############################################################################
+  function pack_indices_array(a, indices, dim) result(c)
     !! Pack an autodiff array
     implicit none
     class(array_type), intent(in), target :: a
@@ -263,18 +441,18 @@ contains
     allocate(c%adj_ja(2,1))
     c%adj_ja(:,1) = [ dim, size(a%val,dim) ]
 
-    c%get_partial_left => get_partial_pack
-    c%get_partial_right => get_partial_unpack
+    c%get_partial_left => get_partial_pack_indices
+    c%get_partial_right => get_partial_unpack_indices
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%operation = 'pack'
+       c%operation = 'pack_indices'
        c%left_operand => a
        c%owns_left_operand = a%is_temporary
     end if
-  end function pack_array
+  end function pack_indices_array
 !-------------------------------------------------------------------------------
-  function get_partial_pack(this, upstream_grad) result(output)
+  function get_partial_pack_indices(this, upstream_grad) result(output)
     implicit none
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
@@ -283,12 +461,12 @@ contains
 
     ptr => unpack(upstream_grad, this%indices, this%adj_ja(1,1), this%adj_ja(2,1))
     call output%assign_and_deallocate_source(ptr)
-  end function get_partial_pack
+  end function get_partial_pack_indices
 !###############################################################################
 
 
 !###############################################################################
-  function unpack_array(a, indices, dim, new_size) result(c)
+  function unpack_indices_array(a, indices, dim, new_size) result(c)
     !! Unpack an autodiff array
     implicit none
     class(array_type), intent(in), target :: a
@@ -316,18 +494,18 @@ contains
     allocate(c%adj_ja(2,1))
     c%adj_ja(:,1) = [ dim, new_size ]
 
-    c%get_partial_left => get_partial_unpack
-    c%get_partial_right => get_partial_pack
+    c%get_partial_left => get_partial_unpack_indices
+    c%get_partial_right => get_partial_pack_indices
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%operation = 'unpack'
+       c%operation = 'unpack_indices'
        c%left_operand => a
        c%owns_left_operand = a%is_temporary
     end if
-  end function unpack_array
+  end function unpack_indices_array
 !-------------------------------------------------------------------------------
-  function get_partial_unpack(this, upstream_grad) result(output)
+  function get_partial_unpack_indices(this, upstream_grad) result(output)
     implicit none
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
@@ -336,7 +514,7 @@ contains
 
     ptr => pack(upstream_grad, this%indices, this%adj_ja(1,1))
     call output%assign_and_deallocate_source(ptr)
-  end function get_partial_unpack
+  end function get_partial_unpack_indices
 !###############################################################################
 
 end module diffstruc__operations_broadcast

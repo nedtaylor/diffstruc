@@ -102,7 +102,7 @@ module diffstruc__types
      !! Forward-mode: return derivative wrt variable pointer
 
      procedure, pass(this) :: zero_grad
-      !! Zero the gradient
+     !! Zero the gradient
      procedure, pass(this) :: zero_all_grads
      !! Zero the gradients
      procedure, pass(this) :: reset_graph
@@ -126,9 +126,11 @@ module diffstruc__types
           add_arrays, add_real1d, add_real2d, add_scalar
      !! Overloaded addition operator
 
-     procedure :: subtract_arrays, subtract_real1d, subtract_scalar, negate_array
+     procedure :: subtract_arrays, subtract_real2d, subtract_real1d, &
+          subtract_scalar, negate_array
      generic, public :: operator(-) => &
-          subtract_arrays, subtract_real1d, subtract_scalar, negate_array
+          subtract_arrays, subtract_real2d, subtract_real1d, &
+          subtract_scalar, negate_array
      !! Overloaded subtraction operator
 
      procedure :: assign => assign_array
@@ -382,6 +384,12 @@ module diffstruc__types
        type(array_type), pointer :: c
      end function subtract_arrays
 
+     module function subtract_real2d(a, b) result(c)
+       class(array_type), intent(in), target :: a
+       real(real32), dimension(:,:), intent(in) :: b
+       type(array_type), pointer :: c
+     end function subtract_real2d
+
      module function subtract_real1d(a, b) result(c)
        class(array_type), intent(in), target :: a
        real(real32), dimension(:), intent(in) :: b
@@ -438,6 +446,18 @@ module diffstruc__types
        class(array_type), intent(in), target :: a, b
        type(array_type), pointer :: c
      end function multiply_arrays
+
+     module function multiply_real2d(a, b) result(c)
+       class(array_type), intent(in), target :: a
+       real(real32), dimension(:,:), intent(in) :: b
+       type(array_type), pointer :: c
+     end function multiply_real2d
+
+     module function real2d_multiply(a, b) result(c)
+       real(real32), dimension(:,:), intent(in) :: a
+       class(array_type), intent(in), target :: b
+       type(array_type), pointer :: c
+     end function real2d_multiply
 
      module function multiply_scalar(a, scalar) result(c)
        class(array_type), intent(in), target :: a

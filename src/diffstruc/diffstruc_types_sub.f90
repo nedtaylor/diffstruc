@@ -1447,6 +1447,28 @@ contains
     end if
   end function subtract_arrays
 !-------------------------------------------------------------------------------
+  module function subtract_real2d(a, b) result(c)
+    !! Subtract a real array from an autodiff array
+    implicit none
+    class(array_type), intent(in), target :: a
+    real(real32), dimension(:,:), intent(in) :: b
+    type(array_type), pointer :: c
+
+    integer :: s
+
+    c => a%create_result()
+    c%val(:,:) = a%val - b
+
+    c%get_partial_left => get_partial_add
+    if(a%requires_grad)then
+       c%requires_grad = .true.
+       c%is_forward = a%is_forward
+       c%operation = 'subtract_scalar'
+       c%left_operand => a
+       c%owns_left_operand = a%is_temporary
+    end if
+  end function subtract_real2d
+!-------------------------------------------------------------------------------
   module function subtract_real1d(a, b) result(c)
     !! Subtract a real array from an autodiff array
     implicit none
@@ -1553,8 +1575,8 @@ contains
 
     integer :: s
 
+    c => a%create_result()
     if(b%is_scalar)then
-       c => a%create_result()
        c%val = a%val * b%val(1,1)
     elseif(.not.b%is_sample_dependent)then
        do s = 1, size(a%val,2)
@@ -1589,6 +1611,48 @@ contains
        c%owns_right_operand = b%is_temporary
     end if
   end function multiply_arrays
+!-------------------------------------------------------------------------------
+  module function multiply_real2d(a, b) result(c)
+    !! Multiply autodiff array by real array (element-wise)
+    implicit none
+    class(array_type), intent(in), target :: a
+    real(real32), dimension(:,:), intent(in) :: b
+    type(array_type), pointer :: c
+    type(array_type), pointer :: b_array
+
+    integer :: s, i
+
+    c => a%create_result()
+    do concurrent(s=1:size(a%val,2), i=1:size(a%val,1))
+       c%val(i,s) = a%val(i,s) * b(i,s)
+    end do
+
+    c%get_partial_left => get_partial_multiply_left
+    if(a%requires_grad)then
+       c%requires_grad = .true.
+       c%is_forward = a%is_forward
+       c%operation = 'multiply_real2d'
+       c%left_operand => a
+       c%owns_left_operand = a%is_temporary
+    end if
+    allocate(b_array)
+    b_array%is_scalar = .false.
+    b_array%requires_grad = .false.
+    call b_array%allocate(array_shape=shape(b))
+    b_array%val(:,:) = b
+    c%right_operand => b_array
+    c%owns_right_operand = .true.
+  end function multiply_real2d
+!-------------------------------------------------------------------------------
+  module function real2d_multiply(a, b) result(c)
+    !! Multiply scalar by autodiff array
+    implicit none
+    real(real32), dimension(:,:), intent(in) :: a
+    class(array_type), intent(in), target :: b
+    type(array_type), pointer :: c
+
+    c => multiply_real2d(b, a)
+  end function real2d_multiply
 !-------------------------------------------------------------------------------
   module function multiply_scalar(a, scalar) result(c)
     !! Multiply autodiff array by scalar
