@@ -518,7 +518,7 @@ contains
 
     ! Recursively compute gradients
     !call reverse_mode_ptr(this, this%grad, 0)
-    call reverse_mode_ptr1(this, this%grad%val, 0)
+    call reverse_mode(this, this%grad%val, 0)
   end subroutine grad_reverse
 !###############################################################################
 
@@ -736,11 +736,11 @@ contains
 
 
 !###############################################################################
-  recursive subroutine reverse_mode_ptr1(array, upstream_grad, depth)
+  recursive subroutine reverse_mode(array, upstream_grad, depth)
     !! Backward operation for arrays
     implicit none
     class(array_type), intent(inout) :: array
-    real(real32), intent(in), dimension(:,:) :: upstream_grad
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
     integer, intent(in) :: depth
 
     integer :: num_samples
@@ -755,71 +755,81 @@ contains
     if(associated(array%left_operand))then
        if(array%left_operand%requires_grad)then
           num_samples = max(size(array%left_operand%val, 2), size(upstream_grad, 2))
-          left_operand: block
-            real(real32), dimension(size(array%left_operand%val, 1), num_samples) :: &
-                 partial
-            call array%get_partial_left_val(upstream_grad, partial)
-            call accumulate_gradient_ptr1(array%left_operand, partial, depth)
-          end block left_operand
+          if(array%left_operand%is_sample_dependent.or.num_samples.eq.1)then
+             call accumulate_gradient_samples( &
+                  array%left_operand, array, &
+                  upstream_grad, num_samples, .true., depth &
+             )
+          else
+             call accumulate_gradient_single( &
+                  array%left_operand, array, &
+                  upstream_grad, num_samples, .true., depth &
+             )
+          end if
        end if
     end if
     if(associated(array%right_operand))then
        if(array%right_operand%requires_grad)then
           num_samples = max(size(array%right_operand%val, 2), size(upstream_grad, 2))
-          right_operand: block
-            real(real32), dimension(size(array%right_operand%val, 1), num_samples) :: &
-                 partial
-            call array%get_partial_right_val(upstream_grad, partial)
-            call accumulate_gradient_ptr1(array%right_operand, partial, depth)
-          end block right_operand
+          if(array%right_operand%is_sample_dependent.or.num_samples.eq.1)then
+             call accumulate_gradient_samples( &
+                  array%right_operand, array, &
+                  upstream_grad, num_samples, .false., depth &
+             )
+          else
+             call accumulate_gradient_single( &
+                  array%right_operand, array, &
+                  upstream_grad, num_samples, .false., depth &
+             )
+          end if
        end if
     end if
     ! write(*,*) "done operation: ", trim(array%operation)
-  end subroutine reverse_mode_ptr1
+  end subroutine reverse_mode
 !###############################################################################
 
 
 !###############################################################################
-  recursive subroutine accumulate_gradient_ptr1(array, grad_val, depth)
-    !! Accumulate gradient for array with safe memory management
+  recursive subroutine accumulate_gradient_single( &
+       array, parent, upstream_grad, num_samples, is_left_operand, depth &
+  )
+    !! Accumulate gradient for array
     implicit none
-    type(array_type), intent(inout) :: array
-    real(real32), dimension(:,:), intent(inout) :: grad_val
+    class(array_type), intent(inout) :: array
+    class(array_type), intent(inout) :: parent
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    integer, intent(in) :: num_samples
+    logical, intent(in) :: is_left_operand
     integer, intent(in) :: depth
+    procedure(get_partial_val), pointer :: get_partial_ptr
 
     integer :: s
-    logical :: is_directional
     type(array_type), pointer :: directional_grad, tmp_ptr
-    real(real32), dimension(size(grad_val,1),1) :: out_grad
+    real(real32), dimension(size(array%val, 1), num_samples) :: grad
+    real(real32), dimension(size(grad,1),1) :: out_grad
 
-    is_directional = .false.
+    if(is_left_operand)then
+       call parent%get_partial_left_val(upstream_grad, grad)
+    else
+       call parent%get_partial_right_val(upstream_grad, grad)
+    end if
+
     if(allocated(array%direction))then
-       if(size(array%direction).gt.0) is_directional = .true.
+       if(size(array%direction).gt.0)then
+          do s = 1, size(grad, 2)
+             grad(:, s) = grad(:, s) * array%direction
+          end do
+       end if
     end if
-
-    ! check if is a temporary, if so, just pass the grad_val directly to reverse_mode_ptr1
-    !if not, set up the gradient and add to it
-
-    if(is_directional)then
-       do s = 1, size(grad_val, 2)
-          grad_val(:, s) = grad_val(:, s) * array%direction
-       end do
-    end if
-    if(.not.array%is_sample_dependent)then
-       out_grad(:,1) = sum(grad_val, dim = 2)
-    end if
+    out_grad(:,1) = sum(grad, dim = 2)
 
     if(.not. associated(array%grad))then
        allocate(array%grad)
        call array%grad%allocate(array_shape=[array%shape, size(array%val,2)])
-       if(array%is_sample_dependent)then
-          call array%grad%set(grad_val)
-       else
-          ! ! mean reduction
-          ! array%grad => array%grad + mean( directional_grad, dim = 2 )
-          ! sum reduction
-          array%grad%val = out_grad
-       end if
+       ! ! mean reduction
+       ! array%grad => array%grad + mean( directional_grad, dim = 2 )
+       ! sum reduction
+       array%grad%val = out_grad
        array%grad%is_scalar = array%is_scalar
        array%grad%is_sample_dependent = array%is_sample_dependent
        array%grad%requires_grad = .not. array%is_scalar
@@ -828,28 +838,73 @@ contains
        array%owns_gradient = .true.
        array%grad%is_temporary = array%is_temporary
     else
-
        array%grad%is_temporary = .true.
-       if(array%is_sample_dependent)then
-          array%grad%val(:,:) = array%grad%val + grad_val
-       else
-          ! ! mean reduction
-          ! array%grad => array%grad + mean( directional_grad, dim = 2 )
-          ! sum reduction
-          array%grad%val = array%grad%val + out_grad
-       end if
-       array%grad%is_temporary = array%is_temporary
-
+       ! ! mean reduction
+       ! array%grad => array%grad + mean( directional_grad, dim = 2 )
+       ! sum reduction
+       array%grad%val = array%grad%val + out_grad
     end if
 
     if(associated(array%left_operand).or.associated(array%right_operand))then
-       if(array%is_sample_dependent)then
-          call reverse_mode_ptr1(array, grad_val, depth+1)
-       else
-          call reverse_mode_ptr1(array, out_grad, depth+1)
+       call reverse_mode(array, out_grad, depth+1)
+    end if
+  end subroutine accumulate_gradient_single
+!###############################################################################
+
+
+!###############################################################################
+  recursive subroutine accumulate_gradient_samples( &
+       array, parent, upstream_grad, num_samples, is_left_operand, depth &
+  )
+    !! Accumulate gradient for array
+    implicit none
+    class(array_type), intent(inout) :: array
+    class(array_type), intent(inout) :: parent
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    integer, intent(in) :: num_samples
+    logical, intent(in) :: is_left_operand
+    integer, intent(in) :: depth
+    procedure(get_partial_val), pointer :: get_partial_ptr
+
+    integer :: s
+    type(array_type), pointer :: directional_grad, tmp_ptr
+    real(real32), dimension(size(array%val, 1), num_samples) :: grad
+
+    if(is_left_operand)then
+       call parent%get_partial_left_val(upstream_grad, grad)
+    else
+       call parent%get_partial_right_val(upstream_grad, grad)
+    end if
+
+    if(allocated(array%direction))then
+       if(size(array%direction).gt.0)then
+          do s = 1, size(grad, 2)
+             grad(:, s) = grad(:, s) * array%direction
+          end do
        end if
     end if
-  end subroutine accumulate_gradient_ptr1
+
+    if(.not. associated(array%grad))then
+       allocate(array%grad)
+       call array%grad%allocate(array_shape=[array%shape, size(array%val,2)])
+       array%grad%val = grad
+       array%grad%is_scalar = array%is_scalar
+       array%grad%is_sample_dependent = array%is_sample_dependent
+       array%grad%requires_grad = .not. array%is_scalar
+       array%grad%grad => null()
+       array%grad%owns_gradient = .false.
+       array%owns_gradient = .true.
+       array%grad%is_temporary = array%is_temporary
+    else
+       array%grad%is_temporary = .true.
+       array%grad%val(:,:) = array%grad%val + grad
+       array%grad%is_temporary = array%is_temporary
+    end if
+
+    if(associated(array%left_operand).or.associated(array%right_operand))then
+       call reverse_mode(array, grad, depth+1)
+    end if
+  end subroutine accumulate_gradient_samples
 !###############################################################################
 
 
