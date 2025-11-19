@@ -350,6 +350,8 @@ contains
     result_ptr%right_operand => null()
     result_ptr%get_partial_left => null()
     result_ptr%get_partial_right => null()
+    result_ptr%get_partial_left_val => null()
+    result_ptr%get_partial_right_val => null()
     result_ptr%is_temporary = .true.
     result_ptr%fix_pointer = .false.
   end function create_result_array
@@ -1827,10 +1829,11 @@ contains
 
     integer :: s
 
-    c => a%create_result()
     if(b%is_scalar)then
+       c => a%create_result()
        c%val = a%val * b%val(1,1)
     elseif(.not.b%is_sample_dependent)then
+       c => a%create_result()
        do s = 1, size(a%val,2)
           c%val(:,s) = a%val(:,s) * b%val(:,1)
        end do
