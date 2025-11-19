@@ -2125,7 +2125,7 @@ contains
 
     c => a%create_result()
     scalar_tmp = 1._real32 / scalar
-    do concurrent i = 1:size(a%val,1), s = 1:size(a%val,2)
+    do concurrent(i = 1:size(a%val,1), s = 1:size(a%val,2))
        c%val(i,s) = a%val(i,s) * scalar_tmp
     end do
 
