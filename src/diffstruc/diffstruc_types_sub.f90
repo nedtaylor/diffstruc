@@ -1653,7 +1653,7 @@ contains
     c%val = a%val - b
 
     c%get_partial_left => get_partial_add
-    c%get_partial_left_val => get_partial_negate_val
+    c%get_partial_left_val => get_partial_add_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -1722,21 +1722,19 @@ contains
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
-    output = 0._real32
     if(size(upstream_grad,2).ne.size(output,2))then
        if(size(output,1).eq.1)then
-          output(1,1) = sum(upstream_grad)
+          output(1,1) = -sum(upstream_grad)
        else
-          output(:,1) = sum(upstream_grad, dim=2)
+          output(:,1) = -sum(upstream_grad, dim=2)
        end if
     else
        if(size(output,1).eq.1.and.size(output,1).ne.size(upstream_grad,1))then
-          output(1,:) = sum(upstream_grad,1)
+          output(1,:) = -sum(upstream_grad,1)
        else
-          output = upstream_grad
+          output = -upstream_grad
        end if
     end if
-    output = -output
   end subroutine get_partial_negate_val
 !###############################################################################
 
@@ -1946,14 +1944,12 @@ contains
 
     integer :: s
 
-    if(size(upstream_grad,2).ne.size(output,2))then
-       if(this%right_operand%is_scalar)then
-          output = upstream_grad * this%right_operand%val(1,1)
-       else
-          do concurrent( s = 1 : size(output,2) )
-             output(:,s) = upstream_grad(:,s) * this%right_operand%val(:,1)
-          end do
-       end if
+    if(this%right_operand%is_scalar)then
+       output = upstream_grad * this%right_operand%val(1,1)
+    elseif(size(upstream_grad,2).ne.size(output,2))then
+       do concurrent( s = 1 : size(output,2) )
+          output(:,s) = upstream_grad(:,s) * this%right_operand%val(:,1)
+       end do
     else
        output = upstream_grad * this%right_operand%val
     end if
@@ -1967,14 +1963,12 @@ contains
 
     integer :: s
 
-    if(size(upstream_grad,2).ne.size(output,2))then
-       if(this%left_operand%is_scalar)then
-          output = upstream_grad * this%left_operand%val(1,1)
-       else
-          do concurrent( s = 1 : size(output,2) )
-             output(:,s) = upstream_grad(:,s) * this%left_operand%val(:,1)
-          end do
-       end if
+    if(this%left_operand%is_scalar)then
+       output = upstream_grad * this%left_operand%val(1,1)
+    elseif(size(upstream_grad,2).ne.size(output,2))then
+       do concurrent( s = 1 : size(output,2) )
+          output(:,s) = upstream_grad(:,s) * this%left_operand%val(:,1)
+       end do
     else
        output = upstream_grad * this%left_operand%val
     end if
