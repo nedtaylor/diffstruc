@@ -31,6 +31,7 @@ contains
     c%val = tanh(a%val)
 
     c%get_partial_left => get_partial_tanh
+    c%get_partial_left_val => get_partial_tanh_val
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -57,6 +58,15 @@ contains
     this%is_temporary = this_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_tanh
+!-------------------------------------------------------------------------------
+  subroutine get_partial_tanh_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    output = upstream_grad * (1._real32 - this%val ** 2._real32)
+  end subroutine get_partial_tanh_val
 !###############################################################################
 
 
@@ -72,6 +82,7 @@ contains
     c%val = 1._real32 - (a%val ** 2._real32)
 
     c%get_partial_left => get_partial_tanh_reverse
+    c%get_partial_left_val => get_partial_tanh_reverse_val
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -95,6 +106,15 @@ contains
     this%left_operand%is_temporary = left_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_tanh_reverse
+!-------------------------------------------------------------------------------
+  subroutine get_partial_tanh_reverse_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    output = (-2._real32) * upstream_grad * this%left_operand%val
+  end subroutine get_partial_tanh_reverse_val
 !###############################################################################
 
 end module diffstruc__operations_hyp

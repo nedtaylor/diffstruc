@@ -75,6 +75,12 @@ module diffstruc__types
      procedure(get_partial), pass(this), pointer :: get_partial_right => null()
      !! Pointer procedure for getting partial derivative wrt right operand
 
+     procedure(get_partial_val), pass(this), pointer :: get_partial_left_val => null()
+     !! Pointer procedure for getting partial derivative wrt left operand
+     procedure(get_partial_val), pass(this), pointer :: get_partial_right_val => null()
+     !! Pointer procedure for getting partial derivative wrt right operand
+
+
    contains
      procedure, pass(this) :: allocate => allocate_array
      !! Abstract procedure for allocating array
@@ -280,6 +286,12 @@ module diffstruc__types
        type(array_type), intent(in) :: upstream_grad
        type(array_type) :: output
      end function get_partial
+
+     module subroutine get_partial_val(this, upstream_grad, output)
+       class(array_type), intent(inout) :: this
+       real(real32), dimension(:,:), intent(in) :: upstream_grad
+       real(real32), dimension(:,:), intent(out) :: output
+     end subroutine get_partial_val
   end interface
 
   interface

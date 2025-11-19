@@ -175,6 +175,8 @@ contains
     this%owns_right_operand = .false.
     nullify(this%get_partial_left)
     nullify(this%get_partial_right)
+    nullify(this%get_partial_left_val)
+    nullify(this%get_partial_right_val)
     this%is_temporary = .true.
     ! write(*,*) "finalised array loc: ", loc(this)
 
@@ -242,6 +244,10 @@ contains
          this%get_partial_left => input%get_partial_left
     if(associated(input%get_partial_right)) &
          this%get_partial_right => input%get_partial_right
+    if(associated(input%get_partial_left_val)) &
+         this%get_partial_left_val => input%get_partial_left_val
+    if(associated(input%get_partial_right_val)) &
+         this%get_partial_right_val => input%get_partial_right_val
 
   end subroutine assign_array
 !-------------------------------------------------------------------------------
@@ -281,6 +287,10 @@ contains
          this%get_partial_left => source%get_partial_left
     if(associated(source%get_partial_right)) &
          this%get_partial_right => source%get_partial_right
+    if(associated(source%get_partial_left_val)) &
+         this%get_partial_left_val => source%get_partial_left_val
+    if(associated(source%get_partial_right_val)) &
+         this%get_partial_right_val => source%get_partial_right_val
 
   end subroutine assign_shallow
 !-------------------------------------------------------------------------------
@@ -507,7 +517,8 @@ contains
     end if
 
     ! Recursively compute gradients
-    call reverse_mode_ptr(this, this%grad, 0)
+    !call reverse_mode_ptr(this, this%grad, 0)
+    call reverse_mode_ptr1(this, this%grad%val, 0)
   end subroutine grad_reverse
 !###############################################################################
 
@@ -540,7 +551,6 @@ contains
     this%is_forward = .true.
     ! write(*,*) "Performing forward-over-reverse operation for: ", trim(this%operation)
     if(loc(this).eq.loc(variable))then
-       ! call output%allocate(array_shape=[this%shape, size(this%val,2)])
        allocate(output)
        output = this
        if(allocated(this%direction))then
@@ -553,16 +563,10 @@ contains
        if(allocated(output%direction)) deallocate(output%direction)
 
     elseif(associated(this%left_operand).or.associated(this%right_operand))then
-       ! if(associated(this%grad))then
-       !    output = this%grad
-       ! else
        is_left_a_variable = .false.
        if(associated(this%left_operand))then
           if(associated(this%get_partial_left))then
              is_left_a_variable = .true.
-             !if(associated(this%left_operand%grad))then
-             !   left_deriv => this%left_operand%grad
-             !else
              left_deriv_tmp => &
                   forward_over_reverse(this%left_operand, variable, depth)
              ! call left_deriv_tmp%set_requires_grad(.false.)
@@ -580,7 +584,6 @@ contains
              end if
              !  left_deriv%owns_left_operand = .true.
              !  left_deriv%owns_right_operand = .true.
-             ! end if
           end if
        end if
 
@@ -588,9 +591,6 @@ contains
        if(associated(this%right_operand))then
           if(associated(this%get_partial_right))then
              is_right_a_variable = .true.
-             !if(associated(this%right_operand%grad))then
-             !   right_deriv => this%right_operand%grad
-             !else
              right_deriv_tmp => &
                   forward_over_reverse(this%right_operand, variable, depth)
              ! call right_deriv_tmp%set_requires_grad(.false.)
@@ -602,7 +602,6 @@ contains
              end if
              !  right_deriv%owns_left_operand = .true.
              !  right_deriv%owns_right_operand = .true.
-             !end if
           end if
        end if
 
@@ -616,12 +615,10 @@ contains
           call stop_program("Neither operand is a variable in forward-over-reverse")
        end if
 
-       ! end if
     else
        allocate(output)
        output = this
        if(allocated(output%direction)) deallocate(output%direction)
-       ! call output%allocate(array_shape=[this%shape, size(this%val,2)])
        output%val(:,:) = 0._real32
     end if
     this%is_forward = is_forward_local
@@ -719,11 +716,13 @@ contains
        array%grad%is_temporary = .true.
        if(array%is_sample_dependent)then
           array%grad => array%grad + directional_grad
+          !array%grad%val = array%grad%val + directional_grad%val
        else
           ! ! mean reduction
           ! array%grad => array%grad + mean( directional_grad, dim = 2 )
           ! sum reduction
           array%grad => array%grad + sum( directional_grad, dim = 2 )
+          !array%grad%val(:,1) = array%grad%val(:,1) + sum( directional_grad%val, dim = 2 )
        end if
        array%grad%is_temporary = array%is_temporary
 
@@ -733,6 +732,124 @@ contains
        call reverse_mode_ptr(array, directional_grad, depth+1)
     end if
   end subroutine accumulate_gradient_ptr
+!###############################################################################
+
+
+!###############################################################################
+  recursive subroutine reverse_mode_ptr1(array, upstream_grad, depth)
+    !! Backward operation for arrays
+    implicit none
+    class(array_type), intent(inout) :: array
+    real(real32), intent(in), dimension(:,:) :: upstream_grad
+    integer, intent(in) :: depth
+
+    integer :: num_samples
+
+    ! write(*,'("Performing backward operation for: ",A,T60,"id: ",I0)') &
+    !      trim(array%operation), array%id
+    if(depth.gt.diffstruc__max_recursion_depth)then
+       write(0,*) "MAX RECURSION DEPTH REACHED IN REVERSE MODE", depth
+       return
+    end if
+    array%is_forward = .false.
+    if(associated(array%left_operand))then
+       if(array%left_operand%requires_grad)then
+          num_samples = max(size(array%left_operand%val, 2), size(upstream_grad, 2))
+          left_operand: block
+            real(real32), dimension(size(array%left_operand%val, 1), num_samples) :: &
+                 partial
+            call array%get_partial_left_val(upstream_grad, partial)
+            call accumulate_gradient_ptr1(array%left_operand, partial, depth)
+          end block left_operand
+       end if
+    end if
+    if(associated(array%right_operand))then
+       if(array%right_operand%requires_grad)then
+          num_samples = max(size(array%right_operand%val, 2), size(upstream_grad, 2))
+          right_operand: block
+            real(real32), dimension(size(array%right_operand%val, 1), num_samples) :: &
+                 partial
+            call array%get_partial_right_val(upstream_grad, partial)
+            call accumulate_gradient_ptr1(array%right_operand, partial, depth)
+          end block right_operand
+       end if
+    end if
+    ! write(*,*) "done operation: ", trim(array%operation)
+  end subroutine reverse_mode_ptr1
+!###############################################################################
+
+
+!###############################################################################
+  recursive subroutine accumulate_gradient_ptr1(array, grad_val, depth)
+    !! Accumulate gradient for array with safe memory management
+    implicit none
+    type(array_type), intent(inout) :: array
+    real(real32), dimension(:,:), intent(inout) :: grad_val
+    integer, intent(in) :: depth
+
+    integer :: s
+    logical :: is_directional
+    type(array_type), pointer :: directional_grad, tmp_ptr
+    real(real32), dimension(size(grad_val,1),1) :: out_grad
+
+    is_directional = .false.
+    if(allocated(array%direction))then
+       if(size(array%direction).gt.0) is_directional = .true.
+    end if
+
+    ! check if is a temporary, if so, just pass the grad_val directly to reverse_mode_ptr1
+    !if not, set up the gradient and add to it
+
+    if(is_directional)then
+       do s = 1, size(grad_val, 2)
+          grad_val(:, s) = grad_val(:, s) * array%direction
+       end do
+    end if
+    if(.not.array%is_sample_dependent)then
+       out_grad(:,1) = sum(grad_val, dim = 2)
+    end if
+
+    if(.not. associated(array%grad))then
+       allocate(array%grad)
+       call array%grad%allocate(array_shape=[array%shape, size(array%val,2)])
+       if(array%is_sample_dependent)then
+          call array%grad%set(grad_val)
+       else
+          ! ! mean reduction
+          ! array%grad => array%grad + mean( directional_grad, dim = 2 )
+          ! sum reduction
+          array%grad%val = out_grad
+       end if
+       array%grad%is_scalar = array%is_scalar
+       array%grad%is_sample_dependent = array%is_sample_dependent
+       array%grad%requires_grad = .not. array%is_scalar
+       array%grad%grad => null()
+       array%grad%owns_gradient = .false.
+       array%owns_gradient = .true.
+       array%grad%is_temporary = array%is_temporary
+    else
+
+       array%grad%is_temporary = .true.
+       if(array%is_sample_dependent)then
+          array%grad%val(:,:) = array%grad%val + grad_val
+       else
+          ! ! mean reduction
+          ! array%grad => array%grad + mean( directional_grad, dim = 2 )
+          ! sum reduction
+          array%grad%val = array%grad%val + out_grad
+       end if
+       array%grad%is_temporary = array%is_temporary
+
+    end if
+
+    if(associated(array%left_operand).or.associated(array%right_operand))then
+       if(array%is_sample_dependent)then
+          call reverse_mode_ptr1(array, grad_val, depth+1)
+       else
+          call reverse_mode_ptr1(array, out_grad, depth+1)
+       end if
+    end if
+  end subroutine accumulate_gradient_ptr1
 !###############################################################################
 
 
@@ -1006,6 +1123,8 @@ contains
     this%owns_gradient = .false.
     nullify(this%get_partial_left)
     nullify(this%get_partial_right)
+    nullify(this%get_partial_left_val)
+    nullify(this%get_partial_right_val)
 
   end subroutine nullify_graph_recursive
 !###############################################################################
@@ -1306,6 +1425,8 @@ contains
 
     c%get_partial_left => get_partial_add
     c%get_partial_right => get_partial_add
+    c%get_partial_left_val => get_partial_add_val
+    c%get_partial_right_val => get_partial_add_val
     ! Set up computation graph
     if(a%requires_grad .or. b%requires_grad)then
        c%requires_grad = .true.
@@ -1329,6 +1450,7 @@ contains
     c%val = a%val + b
 
     c%get_partial_left => get_partial_add
+    c%get_partial_left_val => get_partial_add_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -1363,6 +1485,7 @@ contains
     end do
 
     c%get_partial_left => get_partial_add
+    c%get_partial_left_val => get_partial_add_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -1393,6 +1516,7 @@ contains
     c%val = a%val + b
 
     c%get_partial_left => get_partial_add
+    c%get_partial_left_val => get_partial_add_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -1421,6 +1545,27 @@ contains
 
     output = upstream_grad
   end function get_partial_add
+!-------------------------------------------------------------------------------
+  subroutine get_partial_add_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    if(size(upstream_grad,2).ne.size(output,2))then
+       if(size(output,1).eq.1)then
+          output(1,1) = sum(upstream_grad)
+       else
+          output(:,1) = sum(upstream_grad, dim=2)
+       end if
+    else
+       if(size(output,1).eq.1.and.size(output,1).ne.size(upstream_grad,1))then
+          output(1,:) = sum(upstream_grad,1)
+       else
+          output = upstream_grad
+       end if
+    end if
+  end subroutine get_partial_add_val
 !###############################################################################
 
 
@@ -1436,6 +1581,8 @@ contains
 
     c%get_partial_left => get_partial_add
     c%get_partial_right => get_partial_negate
+    c%get_partial_left_val => get_partial_add_val
+    c%get_partial_right_val => get_partial_negate_val
     if(a%requires_grad .or. b%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
@@ -1460,6 +1607,7 @@ contains
     c%val(:,:) = a%val - b
 
     c%get_partial_left => get_partial_add
+    c%get_partial_left_val => get_partial_negate_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -1484,6 +1632,7 @@ contains
     end do
 
     c%get_partial_left => get_partial_add
+    c%get_partial_left_val => get_partial_negate_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -1504,6 +1653,7 @@ contains
     c%val = a%val - b
 
     c%get_partial_left => get_partial_add
+    c%get_partial_left_val => get_partial_negate_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -1524,6 +1674,7 @@ contains
     c%val = a + c%val
 
     c%get_partial_left => get_partial_negate
+    c%get_partial_left_val => get_partial_negate_val
     if(b%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = b%is_forward
@@ -1543,6 +1694,7 @@ contains
     c%val = -a%val
 
     c%get_partial_left => get_partial_negate
+    c%get_partial_left_val => get_partial_negate_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -1563,6 +1715,29 @@ contains
     ptr => -upstream_grad
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_negate
+!-------------------------------------------------------------------------------
+  subroutine get_partial_negate_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    output = 0._real32
+    if(size(upstream_grad,2).ne.size(output,2))then
+       if(size(output,1).eq.1)then
+          output(1,1) = sum(upstream_grad)
+       else
+          output(:,1) = sum(upstream_grad, dim=2)
+       end if
+    else
+       if(size(output,1).eq.1.and.size(output,1).ne.size(upstream_grad,1))then
+          output(1,:) = sum(upstream_grad,1)
+       else
+          output = upstream_grad
+       end if
+    end if
+    output = -output
+  end subroutine get_partial_negate_val
 !###############################################################################
 
 
@@ -1601,6 +1776,8 @@ contains
 
     c%get_partial_left => get_partial_multiply_left
     c%get_partial_right => get_partial_multiply_right
+    c%get_partial_left_val => get_partial_multiply_left_val
+    c%get_partial_right_val => get_partial_multiply_right_val
     if(a%requires_grad .or. b%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
@@ -1666,6 +1843,7 @@ contains
     c%val = a%val * scalar
 
     c%get_partial_left => get_partial_multiply_left
+    c%get_partial_left_val => get_partial_multiply_left_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -1759,6 +1937,48 @@ contains
     this%left_operand%is_temporary = left_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_multiply_right
+!-------------------------------------------------------------------------------
+  subroutine get_partial_multiply_left_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: s
+
+    if(size(upstream_grad,2).ne.size(output,2))then
+       if(this%right_operand%is_scalar)then
+          output = upstream_grad * this%right_operand%val(1,1)
+       else
+          do concurrent( s = 1 : size(output,2) )
+             output(:,s) = upstream_grad(:,s) * this%right_operand%val(:,1)
+          end do
+       end if
+    else
+       output = upstream_grad * this%right_operand%val
+    end if
+  end subroutine get_partial_multiply_left_val
+!-------------------------------------------------------------------------------
+  subroutine get_partial_multiply_right_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: s
+
+    if(size(upstream_grad,2).ne.size(output,2))then
+       if(this%left_operand%is_scalar)then
+          output = upstream_grad * this%left_operand%val(1,1)
+       else
+          do concurrent( s = 1 : size(output,2) )
+             output(:,s) = upstream_grad(:,s) * this%left_operand%val(:,1)
+          end do
+       end if
+    else
+       output = upstream_grad * this%left_operand%val
+    end if
+  end subroutine get_partial_multiply_right_val
 !###############################################################################
 
 
@@ -1976,6 +2196,7 @@ contains
     c%val = a%val ** scalar
 
     c%get_partial_left => get_partial_power_base
+    c%get_partial_left_val => get_partial_power_base_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -2096,6 +2317,27 @@ contains
     this%is_temporary = this_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_power_exponent
+!-------------------------------------------------------------------------------
+  subroutine get_partial_power_base_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    if(all(abs(this%right_operand%val - 1._real32).lt.1.E-6_real32))then
+       output = upstream_grad
+    elseif(all(abs(this%right_operand%val - 2._real32).lt.1.E-6_real32))then
+       output = upstream_grad * this%left_operand%val * 2._real32
+    else
+       if(this%right_operand%is_scalar)then
+          output = upstream_grad * this%right_operand%val(1,1) * &
+               this%left_operand%val ** ( this%right_operand%val(1,1) - 1.0_real32 )
+       else
+          output = upstream_grad * this%right_operand%val * &
+               this%left_operand%val ** ( this%right_operand%val - 1.0_real32 )
+       end if
+    end if
+  end subroutine get_partial_power_base_val
 !###############################################################################
 
 
@@ -2115,6 +2357,7 @@ contains
     c%val = exp(a%val)
 
     c%get_partial_left => get_partial_exp
+    c%get_partial_left_val => get_partial_exp_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -2139,6 +2382,15 @@ contains
     this%is_temporary = this_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_exp
+!-------------------------------------------------------------------------------
+  subroutine get_partial_exp_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    output = upstream_grad * this%val
+  end subroutine get_partial_exp_val
 !###############################################################################
 
 
@@ -2153,6 +2405,7 @@ contains
     c%val = log(a%val)
 
     c%get_partial_left => get_partial_log
+    c%get_partial_left_val => get_partial_log_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -2176,6 +2429,15 @@ contains
     this%left_operand%is_temporary = left_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_log
+!-------------------------------------------------------------------------------
+  subroutine get_partial_log_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    output = upstream_grad / this%left_operand%val
+  end subroutine get_partial_log_val
 !###############################################################################
 
 
@@ -2219,6 +2481,7 @@ contains
     c%indices = [dim, 1]
 
     c%get_partial_left => get_partial_mean
+    c%get_partial_left_val => get_partial_mean_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -2253,6 +2516,28 @@ contains
     end if
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_mean
+!-------------------------------------------------------------------------------
+  subroutine get_partial_mean_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, dim
+    real(real32) :: rtmp1
+
+    dim = this%indices(1)
+    rtmp1 = real(size(this%left_operand%val, dim), real32)
+    if(dim.eq.1)then
+       do i = 1, size(output,2)
+          output(:,i) = upstream_grad(1,i) / rtmp1
+       end do
+    else if(dim.eq.2)then
+       do i = 1, size(output,1)
+          output(i,:) = upstream_grad(i,1) / rtmp1
+       end do
+    end if
+  end subroutine get_partial_mean_val
 !###############################################################################
 
 
