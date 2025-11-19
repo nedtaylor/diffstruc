@@ -1607,7 +1607,7 @@ contains
     c%val(:,:) = a%val - b
 
     c%get_partial_left => get_partial_add
-    c%get_partial_left_val => get_partial_negate_val
+    c%get_partial_left_val => get_partial_add_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -1673,14 +1673,8 @@ contains
     c => negate_array(b)
     c%val = a + c%val
 
-    c%get_partial_left => get_partial_negate
-    c%get_partial_left_val => get_partial_negate_val
     if(b%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = b%is_forward
        c%operation = 'subtract_scalar'
-       c%left_operand => b
-       c%owns_left_operand = b%is_temporary
     end if
   end function scalar_subtract
 !-------------------------------------------------------------------------------
