@@ -755,7 +755,7 @@ contains
     if(associated(array%left_operand))then
        if(array%left_operand%requires_grad)then
           num_samples = max(size(array%left_operand%val, 2), size(upstream_grad, 2))
-          if(array%left_operand%is_sample_dependent.or.num_samples.eq.1)then
+          if(array%left_operand%is_sample_dependent .or. num_samples.eq.1)then
              call accumulate_gradient_samples( &
                   array%left_operand, array, &
                   upstream_grad, num_samples, .true., depth &
@@ -771,7 +771,7 @@ contains
     if(associated(array%right_operand))then
        if(array%right_operand%requires_grad)then
           num_samples = max(size(array%right_operand%val, 2), size(upstream_grad, 2))
-          if(array%right_operand%is_sample_dependent.or.num_samples.eq.1)then
+          if(array%right_operand%is_sample_dependent .or. num_samples.eq.1)then
              call accumulate_gradient_samples( &
                   array%right_operand, array, &
                   upstream_grad, num_samples, .false., depth &
@@ -801,34 +801,51 @@ contains
     integer, intent(in) :: num_samples
     logical, intent(in) :: is_left_operand
     integer, intent(in) :: depth
-    procedure(get_partial_val), pointer :: get_partial_ptr
 
-    integer :: s
-    type(array_type), pointer :: directional_grad, tmp_ptr
+    integer :: s, i, n_elem
     real(real32), dimension(size(array%val, 1), num_samples) :: grad
     real(real32), dimension(size(grad,1),1) :: out_grad
+    logical :: has_direction
 
+    ! Compute partial derivative
     if(is_left_operand)then
        call parent%get_partial_left_val(upstream_grad, grad)
     else
        call parent%get_partial_right_val(upstream_grad, grad)
     end if
 
+    ! Apply directional derivative in-place
+    has_direction = .false.
     if(allocated(array%direction))then
-       if(size(array%direction).gt.0)then
-          do s = 1, size(grad, 2)
-             grad(:, s) = grad(:, s) * array%direction
-          end do
-       end if
+       if(size(array%direction).gt.0) has_direction = .true.
     end if
-    out_grad(:,1) = sum(grad, dim = 2)
 
+    if(has_direction)then
+       ! In-place multiplication by direction
+       do concurrent( s = 1 : num_samples, i = 1 : size(grad,1) )
+          grad(i, s) = grad(i, s) * array%direction(i)
+       end do
+    end if
+
+    ! Sum reduction - optimized to avoid creating temporary arrays
+    n_elem = size(grad, 1)
+    if(num_samples.eq.1)then
+       ! Direct assignment when only one sample
+       out_grad = grad
+    else
+       ! Manual sum to avoid intrinsic overhead, alternative reduction is mean()
+       out_grad(:,1) = grad(:,1)
+       do s = 2, num_samples
+          do i = 1, n_elem
+             out_grad(i,1) = out_grad(i,1) + grad(i,s)
+          end do
+       end do
+    end if
+
+    ! Accumulate gradient
     if(.not. associated(array%grad))then
        allocate(array%grad)
        call array%grad%allocate(array_shape=[array%shape, size(array%val,2)])
-       ! ! mean reduction
-       ! array%grad => array%grad + mean( directional_grad, dim = 2 )
-       ! sum reduction
        array%grad%val = out_grad
        array%grad%is_scalar = array%is_scalar
        array%grad%is_sample_dependent = array%is_sample_dependent
@@ -839,12 +856,12 @@ contains
        array%grad%is_temporary = array%is_temporary
     else
        array%grad%is_temporary = .true.
-       ! ! mean reduction
-       ! array%grad => array%grad + mean( directional_grad, dim = 2 )
-       ! sum reduction
-       array%grad%val = array%grad%val + out_grad
+       do concurrent( i = 1 : n_elem )
+          array%grad%val(i,1) = array%grad%val(i,1) + out_grad(i,1)
+       end do
     end if
 
+    ! Recurse if needed
     if(associated(array%left_operand).or.associated(array%right_operand))then
        call reverse_mode(array, out_grad, depth+1)
     end if
@@ -856,7 +873,7 @@ contains
   recursive subroutine accumulate_gradient_samples( &
        array, parent, upstream_grad, num_samples, is_left_operand, depth &
   )
-    !! Accumulate gradient for array
+    !! Accumulate gradient for array - optimized version with reduced allocations
     implicit none
     class(array_type), intent(inout) :: array
     class(array_type), intent(inout) :: parent
@@ -864,26 +881,32 @@ contains
     integer, intent(in) :: num_samples
     logical, intent(in) :: is_left_operand
     integer, intent(in) :: depth
-    procedure(get_partial_val), pointer :: get_partial_ptr
 
-    integer :: s
-    type(array_type), pointer :: directional_grad, tmp_ptr
+    integer :: s, i, n_elem, n_samples_actual
     real(real32), dimension(size(array%val, 1), num_samples) :: grad
+    logical :: has_direction
 
+    ! Compute partial derivative
     if(is_left_operand)then
        call parent%get_partial_left_val(upstream_grad, grad)
     else
        call parent%get_partial_right_val(upstream_grad, grad)
     end if
 
+    ! Apply directional derivative in-place
+    has_direction = .false.
     if(allocated(array%direction))then
-       if(size(array%direction).gt.0)then
-          do s = 1, size(grad, 2)
-             grad(:, s) = grad(:, s) * array%direction
-          end do
-       end if
+       if(size(array%direction).gt.0) has_direction = .true.
     end if
 
+    if(has_direction)then
+       ! In-place multiplication by direction
+       do concurrent( s = 1 : num_samples, i = 1 : size(grad,1) )
+          grad(i, s) = grad(i, s) * array%direction(i)
+       end do
+    end if
+
+    ! Accumulate gradient
     if(.not. associated(array%grad))then
        allocate(array%grad)
        call array%grad%allocate(array_shape=[array%shape, size(array%val,2)])
@@ -896,11 +919,18 @@ contains
        array%owns_gradient = .true.
        array%grad%is_temporary = array%is_temporary
     else
+       ! In-place addition to avoid temporary array creation
        array%grad%is_temporary = .true.
-       array%grad%val(:,:) = array%grad%val + grad
-       array%grad%is_temporary = array%is_temporary
+       n_elem = size(array%grad%val, 1)
+       n_samples_actual = size(array%grad%val, 2)
+
+       ! Optimized loop for in-place addition
+       do concurrent( s = 1 : n_samples_actual, i = 1 : n_elem )
+          array%grad%val(i,s) = array%grad%val(i,s) + grad(i,s)
+       end do
     end if
 
+    ! Recurse if needed
     if(associated(array%left_operand).or.associated(array%right_operand))then
        call reverse_mode(array, grad, depth+1)
     end if
