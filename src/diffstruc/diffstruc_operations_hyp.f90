@@ -27,8 +27,13 @@ contains
     class(array_type), intent(in), target :: a
     type(array_type), pointer :: c
 
+    integer :: i, s
+
     c => a%create_result()
-    c%val = tanh(a%val)
+    do concurrent(s = 1:size(a%val, 2), i = 1:size(a%val,1))
+      c%val(i,s) = tanh(a%val(i,s))
+    end do
+    !c%val = tanh(a%val)
 
     c%get_partial_left => get_partial_tanh
     c%get_partial_left_val => get_partial_tanh_val
@@ -77,9 +82,12 @@ contains
     class(array_type), intent(in), target :: a
     type(array_type), pointer :: c
 
-    !  allocate(output)
+    integer :: i, s
+
     c => a%create_result()
-    c%val = 1._real32 - (a%val ** 2._real32)
+    do concurrent(s = 1:size(a%val, 2), i = 1:size(a%val,1))
+      c%val(i,s) = 1._real32 - (a%val(i,s) ** 2._real32)
+    end do
 
     c%get_partial_left => get_partial_tanh_reverse
     c%get_partial_left_val => get_partial_tanh_reverse_val

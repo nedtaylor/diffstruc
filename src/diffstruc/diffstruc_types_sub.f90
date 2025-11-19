@@ -1507,15 +1507,15 @@ contains
     class(array_type), intent(in), target :: a, b
     type(array_type), pointer :: c
 
-    integer :: s
+    integer :: i, s
 
     ! Safely create result array
     c => a%create_result()
     if(b%is_sample_dependent)then
        c%val = a%val + b%val
     else
-       do s = 1, size(a%val, 2)
-          c%val(:,s) = a%val(:,s) + b%val(:,1)
+       do concurrent(s = 1:size(a%val, 2), i = 1:size(a%val,1))
+          c%val(i,s) = a%val(i,s) + b%val(i,1)
        end do
     end if
 
@@ -1672,8 +1672,12 @@ contains
     class(array_type), intent(in), target :: a, b
     type(array_type), pointer :: c
 
+    integer :: i, s
+
     c => a%create_result()
-    c%val = a%val - b%val
+    do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
+       c%val(i,s) = a%val(i,s) - b%val(i,s)
+    end do
 
     c%get_partial_left => get_partial_add
     c%get_partial_right => get_partial_negate
@@ -1697,10 +1701,12 @@ contains
     real(real32), dimension(:,:), intent(in) :: b
     type(array_type), pointer :: c
 
-    integer :: s
+    integer :: i, s
 
     c => a%create_result()
-    c%val(:,:) = a%val - b
+    do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
+       c%val(i,s) = a%val(i,s) - b(i,s)
+    end do
 
     c%get_partial_left => get_partial_add
     c%get_partial_left_val => get_partial_add_val
@@ -1836,26 +1842,26 @@ contains
     class(array_type), intent(in), target :: a, b
     type(array_type), pointer :: c
 
-    integer :: s
+    integer :: i, s
 
     if(b%is_scalar)then
        c => a%create_result()
        c%val = a%val * b%val(1,1)
     elseif(.not.b%is_sample_dependent)then
        c => a%create_result()
-       do s = 1, size(a%val,2)
-          c%val(:,s) = a%val(:,s) * b%val(:,1)
+       do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
+          c%val(i,s) = a%val(i,s) * b%val(i,1)
        end do
     elseif(size(a%val,1).ne.size(b%val,1).and.size(a%val,2).eq.size(b%val,2))then
        if(size(a%val,1) .eq. 1)then
           c => b%create_result()
-          do concurrent(s=1:size(a%val,2))
-             c%val(:,s) = a%val(1,s) * b%val(:,s)
+          do concurrent(s = 1:size(a%val,2), i = 1:size(b%val,1))
+             c%val(i,s) = a%val(1,s) * b%val(i,s)
           end do
        elseif(size(b%val,1) .eq. 1)then
           c => a%create_result()
-          do concurrent(s=1:size(a%val,2))
-             c%val(:,s) = a%val(:,s) * b%val(1,s)
+          do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
+             c%val(i,s) = a%val(i,s) * b%val(1,s)
           end do
        end if
     else
@@ -2033,13 +2039,13 @@ contains
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
-    integer :: s
+    integer :: i, s
 
     if(this%right_operand%is_scalar)then
        output = upstream_grad * this%right_operand%val(1,1)
     elseif(size(upstream_grad,2).ne.size(output,2))then
-       do concurrent( s = 1 : size(output,2) )
-          output(:,s) = upstream_grad(:,s) * this%right_operand%val(:,1)
+       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
+          output(i,s) = upstream_grad(i,s) * this%right_operand%val(i,1)
        end do
     else
        output = upstream_grad * this%right_operand%val
@@ -2052,13 +2058,13 @@ contains
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
-    integer :: s
+    integer :: i, s
 
     if(this%left_operand%is_scalar)then
        output = upstream_grad * this%left_operand%val(1,1)
     elseif(size(upstream_grad,2).ne.size(output,2))then
-       do concurrent( s = 1 : size(output,2) )
-          output(:,s) = upstream_grad(:,s) * this%left_operand%val(:,1)
+       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
+          output(i,s) = upstream_grad(i,s) * this%left_operand%val(i,1)
        end do
     else
        output = upstream_grad * this%left_operand%val
@@ -2074,7 +2080,7 @@ contains
     class(array_type), intent(in), target :: a, b
     type(array_type), pointer :: c
 
-    integer :: s
+    integer :: i, s
 
     if(all(shape(a%val) .eq. shape(b%val)))then
        c => a%create_result()
@@ -2082,13 +2088,13 @@ contains
     elseif(size(a%val,1).ne.size(b%val,1).and.size(a%val,2).eq.size(b%val,2))then
        if(size(a%val,1) .eq. 1)then
           c => b%create_result()
-          do concurrent(s=1:size(a%val,2))
-             c%val(:,s) = a%val(1,s) / b%val(:,s)
+          do concurrent(s = 1:size(a%val,2), i = 1:size(b%val,1))
+             c%val(i,s) = a%val(1,s) / b%val(i,s)
           end do
        elseif(size(b%val,1) .eq. 1)then
           c => a%create_result()
-          do concurrent(s=1:size(a%val,2))
-             c%val(:,s) = a%val(:,s) / b%val(1,s)
+          do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
+             c%val(i,s) = a%val(i,s) / b%val(1,s)
           end do
        end if
     end if
@@ -2114,8 +2120,14 @@ contains
     type(array_type), pointer :: c
     type(array_type), pointer :: b_array
 
+    integer :: i, s
+    real(real32) :: scalar_tmp
+
     c => a%create_result()
-    c%val = a%val / scalar
+    scalar_tmp = 1._real32 / scalar
+    do concurrent i = 1:size(a%val,1), s = 1:size(a%val,2)
+       c%val(i,s) = a%val(i,s) * scalar_tmp
+    end do
 
     c%get_partial_left => get_partial_divide_left
     c%get_partial_right => get_partial_divide_right
@@ -2174,11 +2186,11 @@ contains
     type(array_type), pointer :: c
     type(array_type), pointer :: b_array
 
-    integer :: s
+    integer :: i, s
 
     c => a%create_result()
-    do concurrent(s=1:size(a%val,2))
-       c%val(:,s) = a%val(:,s) / b(s)
+    do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
+       c%val(i,s) = a%val(i,s) / b(s)
     end do
 
     c%get_partial_left => get_partial_divide_left
@@ -2277,8 +2289,12 @@ contains
     type(array_type), pointer :: c
     type(array_type), pointer :: b_array
 
+    integer :: i, s
+
     c => a%create_result()
-    c%val = a%val ** scalar
+    do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
+       c%val(i,s) = a%val(i,s) ** scalar
+    end do
 
     c%get_partial_left => get_partial_power_base
     c%get_partial_left_val => get_partial_power_base_val
@@ -2534,31 +2550,47 @@ contains
 
 !###############################################################################
   module function mean_array(a, dim) result(c)
-    !! Compute mean values along a dimension
+    !! Compute mean values along a dimension - optimized version
     implicit none
     class(array_type), intent(in), target :: a
     integer, intent(in) :: dim
     type(array_type), pointer :: c
 
-    integer :: s
-    real(real32) :: rtmp1
+    integer :: s, i, n_rows, n_cols
+    real(real32) :: rtmp1, inv_count
 
     ! if(size(a%shape) .ne. 1)then
     !    call stop_program("mean_array: only 1D arrays can be used")
     ! end if
 
+    ! Cache dimensions to avoid repeated size() calls
+    n_rows = size(a%val, 1)
+    n_cols = size(a%val, 2)
+
     if(dim.eq.1)then
-       c => a%create_result(array_shape = [1, size(a%val,2)])
-       rtmp1 = real(size(a%val,1), real32)
-       do concurrent(s=1:size(a%val,2))
-          c%val(1,s) = sum(a%val(:,s)) / rtmp1
+       c => a%create_result(array_shape = [1, n_cols])
+       rtmp1 = real(n_rows, real32)
+       inv_count = 1.0_real32 / rtmp1
+
+       ! Manual reduction to avoid temporary arrays from sum()
+       c%val(1,:) = 0.0_real32
+       do concurrent(s = 1:n_cols, i = 1:n_rows)
+          c%val(1,s) = c%val(1,s) + a%val(i,s)
        end do
+       c%val(1,:) = c%val(1,:) * inv_count
+
     else if(dim.eq.2)then
        c => a%create_result(array_shape = [a%shape, 1])
-       rtmp1 = real(size(a%val,2), real32)
-       do concurrent(s=1:size(a%val,1))
-          c%val(s,1) = sum(a%val(s,:)) / rtmp1
+       rtmp1 = real(n_cols, real32)
+       inv_count = 1.0_real32 / rtmp1
+
+       ! Manual reduction to avoid temporary arrays from sum()
+       c%val(:,1) = 0.0_real32
+       do concurrent(s = 1:n_rows, i = 1:n_cols)
+          c%val(s,1) = c%val(s,1) + a%val(s,i)
        end do
+       c%val(:,1) = c%val(:,1) * inv_count
+
        c%is_sample_dependent = .false.
     else
        call stop_program("mean_array: only 1 or 2 dimensions are supported")
@@ -2603,23 +2635,28 @@ contains
   end function get_partial_mean
 !-------------------------------------------------------------------------------
   subroutine get_partial_mean_val(this, upstream_grad, output)
+    !! Optimized gradient computation for mean operation
     implicit none
     class(array_type), intent(inout) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
-    integer :: i, dim
-    real(real32) :: rtmp1
+    integer :: i, s, dim, n_rows, n_cols
+    real(real32) :: inv_count
 
+    ! Cache values to avoid repeated accesses
     dim = this%indices(1)
-    rtmp1 = real(size(this%left_operand%val, dim), real32)
+    n_rows = size(output, 1)
+    n_cols = size(output, 2)
+    inv_count = 1.0_real32 / real(size(this%left_operand%val, dim), real32)
+
     if(dim.eq.1)then
-       do i = 1, size(output,2)
-          output(:,i) = upstream_grad(1,i) / rtmp1
+       do concurrent(s = 1:n_cols, i = 1:n_rows)
+          output(i,s) = upstream_grad(1,s) * inv_count
        end do
     else if(dim.eq.2)then
-       do i = 1, size(output,1)
-          output(i,:) = upstream_grad(i,1) / rtmp1
+       do concurrent(s = 1:n_cols, i = 1:n_rows)
+          output(i,s) = upstream_grad(i,1) * inv_count
        end do
     end if
   end subroutine get_partial_mean_val
@@ -2628,23 +2665,31 @@ contains
 
 !###############################################################################
   module function sum_array(a, dim) result(c)
-    !! Sum values along a dimension
+    !! Sum values along a dimension - optimized version
     implicit none
     class(array_type), intent(in), target :: a
     integer, intent(in) :: dim
     type(array_type), pointer :: c
 
-    integer :: s
+    integer :: s, i, n_rows, n_cols
+
+    ! Cache dimensions
+    n_rows = size(a%val, 1)
+    n_cols = size(a%val, 2)
 
     if(dim.eq.1)then
-       c => a%create_result(array_shape=[1, size(a%val,2)])
-       do concurrent(s=1:size(a%val,2))
-          c%val(1,s) = sum(a%val(:,s))
+       c => a%create_result(array_shape=[1, n_cols])
+       ! Manual reduction to avoid temporary arrays from sum()
+       c%val(1,:) = 0.0_real32
+       do concurrent(s = 1:n_cols, i = 1:n_rows)
+          c%val(1,s) = c%val(1,s) + a%val(i,s)
        end do
     else if(dim.eq.2)then
        c => a%create_result(array_shape=[a%shape, 1])
-       do concurrent(s=1:size(a%val,1))
-          c%val(s,1) = sum(a%val(s,:))
+       ! Manual reduction to avoid temporary arrays from sum()
+       c%val(:,1) = 0.0_real32
+       do concurrent(s = 1:n_rows, i = 1:n_cols)
+          c%val(s,1) = c%val(s,1) + a%val(s,i)
        end do
        c%is_sample_dependent = .false.
     else
