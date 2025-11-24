@@ -29,7 +29,7 @@ contains
             product(array_shape(1:size(array_shape)-1)),  &
             array_shape(size(array_shape)) &
        ))
-       this%shape = array_shape(1:size(array_shape)-1)
+       this%shape = [ array_shape(1:size(array_shape)-1) ]
     end if
     if(present(source))then
        select rank(source)

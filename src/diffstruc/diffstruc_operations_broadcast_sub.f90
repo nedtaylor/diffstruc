@@ -18,7 +18,7 @@ contains
     ! concatenate 1D array by using shape to swap dimensions
     do concurrent(s=1:size(a%val,2))
        do concurrent(i=1:1, j=1:size(a%val,1))
-          c%val( i, s) = a%val( i, s)
+          c%val(i, s) = a%val(i, s)
        end do
        do concurrent(i=1:1, j=1:size(b%val,1))
           c%val( size(a%val,1) + i, s) = b%val( i, s)
@@ -27,6 +27,8 @@ contains
 
     c%get_partial_left => get_partial_concat_left
     c%get_partial_right => get_partial_concat_right
+    c%get_partial_left_val => get_partial_concat_left_val
+    c%get_partial_right_val => get_partial_concat_right_val
     if(a%requires_grad .or. b%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
@@ -58,6 +60,28 @@ contains
     ptr => upstream_grad .rtrim. this%right_operand%shape(1)
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_concat_right
+!-------------------------------------------------------------------------------
+  subroutine get_partial_concat_left_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    output = upstream_grad(1:this%left_operand%shape(1), :)
+
+  end subroutine get_partial_concat_left_val
+!-------------------------------------------------------------------------------
+  subroutine get_partial_concat_right_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    output = upstream_grad( &
+         this%left_operand%shape(1)+1:size(upstream_grad,1), : &
+    )
+
+  end subroutine get_partial_concat_right_val
 !###############################################################################
 
 
