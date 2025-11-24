@@ -1447,10 +1447,17 @@ contains
 
 
 !###############################################################################
-  module subroutine print_graph(this)
+  module subroutine print_graph(this, print_location)
     implicit none
     class(array_type), intent(in) :: this
+    logical, intent(in), optional :: print_location
+    logical :: print_location_
 
+    if(present(print_location))then
+       print_location_ = print_location
+    else
+       print_location_ = .true.
+    end if
     print *, '--- Computation Graph Tree ---'
     call print_tree(this, '')
     print *, '--- End Graph ---'
@@ -1460,25 +1467,29 @@ contains
       class(array_type), intent(in) :: node
       character(len=*), intent(in) :: prefix
       character(len=1024) :: new_prefix
-      character(len=3) :: ownership_char
+      character(len=1) :: ownership_char
       ! ownership character
       character(len=20) :: node_addr
 
-      write(node_addr, '(I0)') loc(node)
-      print *, trim(prefix) // '└── [' // trim(node%operation) // &
-           '] @' // trim(adjustl(node_addr))
+      if(print_location_) then
+         write(node_addr, '(" @", I0)') loc(node)
+      else
+         node_addr = ''
+      end if
+      write(*,*) trim(prefix) // '└─ [' // trim(node%operation) // &
+           ']' // trim(adjustl(node_addr))
 
       ! Print left operand
       if(associated(node%left_operand))then
          if(node%owns_left_operand)then
-            ownership_char = '(*)'
+            ownership_char = '*'
          else
-            ownership_char = ''
+            ownership_char = ' '
          end if
          if(associated(node%right_operand))then
-            new_prefix = trim(prefix) // '    ├── L' // trim(ownership_char) // ': '
+            new_prefix = trim(prefix) // '   ├─' // ownership_char // 'L: '
          else
-            new_prefix = trim(prefix) // '    └── L' // trim(ownership_char) // ': '
+            new_prefix = trim(prefix) // '   └─' // ownership_char // 'L: '
          end if
          call print_tree(node%left_operand, new_prefix)
       end if
@@ -1486,11 +1497,11 @@ contains
       ! Print right operand
       if(associated(node%right_operand))then
          if(node%owns_right_operand)then
-            ownership_char = '(*)'
+            ownership_char = '*'
          else
-            ownership_char = ''
+            ownership_char = ' '
          end if
-         new_prefix = trim(prefix) // '    └── R' // trim(ownership_char) // ': '
+         new_prefix = trim(prefix) // '   └─' // ownership_char // 'R: '
          call print_tree(node%right_operand, new_prefix)
       end if
     end subroutine print_tree

@@ -311,8 +311,9 @@ module diffstruc__types
   end interface
 
   interface
-     module subroutine print_graph(this)
+     module subroutine print_graph(this, print_location)
        class(array_type), intent(in) :: this
+       logical, intent(in), optional :: print_location
      end subroutine print_graph
   end interface
 !-------------------------------------------------------------------------------
