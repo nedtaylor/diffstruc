@@ -12,15 +12,16 @@ contains
     class(array_type), intent(in), target :: a, b
     type(array_type), pointer :: c
 
-    integer :: i, j, s
+    integer :: i, s
 
     c => a%create_result(array_shape = [size(a%val,1) + size(b%val,1), size(a%val,2)])
     ! concatenate 1D array by using shape to swap dimensions
+    c%val = 0._real32
     do concurrent(s=1:size(a%val,2))
-       do concurrent(i=1:1, j=1:size(a%val,1))
+       do concurrent(i=1:size(a%val,1))
           c%val(i, s) = a%val(i, s)
        end do
-       do concurrent(i=1:1, j=1:size(b%val,1))
+       do concurrent(i=1:size(b%val,1))
           c%val( size(a%val,1) + i, s) = b%val( i, s)
        end do
     end do
@@ -67,7 +68,7 @@ contains
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
-    output = upstream_grad(1:this%left_operand%shape(1), :)
+    output = upstream_grad(1:size(this%left_operand%val,1), :)
 
   end subroutine get_partial_concat_left_val
 !-------------------------------------------------------------------------------
@@ -78,7 +79,7 @@ contains
     real(real32), dimension(:,:), intent(out) :: output
 
     output = upstream_grad( &
-         this%left_operand%shape(1)+1:size(upstream_grad,1), : &
+         size(this%left_operand%val,1)+1:size(upstream_grad,1), : &
     )
 
   end subroutine get_partial_concat_right_val
