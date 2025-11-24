@@ -2105,6 +2105,8 @@ contains
 
     c%get_partial_left => get_partial_divide_left
     c%get_partial_right => get_partial_divide_right
+    c%get_partial_left_val => get_partial_divide_left_val
+    c%get_partial_right_val => get_partial_divide_right_val
     if(a%requires_grad .or. b%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
@@ -2135,6 +2137,8 @@ contains
 
     c%get_partial_left => get_partial_divide_left
     c%get_partial_right => get_partial_divide_right
+    c%get_partial_left_val => get_partial_divide_left_val
+    c%get_partial_right_val => get_partial_divide_right_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -2165,6 +2169,8 @@ contains
 
     c%get_partial_left => get_partial_divide_left
     c%get_partial_right => get_partial_divide_right
+    c%get_partial_left_val => get_partial_divide_left_val
+    c%get_partial_right_val => get_partial_divide_right_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -2199,6 +2205,8 @@ contains
 
     c%get_partial_left => get_partial_divide_left
     c%get_partial_right => get_partial_divide_right
+    c%get_partial_left_val => get_partial_divide_left_val
+    c%get_partial_right_val => get_partial_divide_right_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -2259,6 +2267,46 @@ contains
     this%right_operand%is_temporary = right_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_divide_right
+!-------------------------------------------------------------------------------
+  subroutine get_partial_divide_left_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, s
+
+    if(this%right_operand%is_scalar)then
+       output = upstream_grad / this%right_operand%val(1,1)
+    elseif(size(upstream_grad,2).ne.size(output,2))then
+       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
+          output(i,s) = upstream_grad(i,s) / this%right_operand%val(i,1)
+       end do
+    else
+       output = upstream_grad / this%right_operand%val
+    end if
+  end subroutine get_partial_divide_left_val
+!-------------------------------------------------------------------------------
+  subroutine get_partial_divide_right_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, s
+
+    if(this%left_operand%is_scalar)then
+       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
+          output(i,s) = (-upstream_grad(i,s) * this%left_operand%val(1,1)) / &
+               (this%right_operand%val(i,1) * this%right_operand%val(i,1))
+       end do
+    else
+       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
+          output(i,s) = (-upstream_grad(i,s) * this%left_operand%val(i,1)) / &
+               (this%right_operand%val(i,1) * this%right_operand%val(i,1))
+       end do
+    end if
+  end subroutine get_partial_divide_right_val
 !###############################################################################
 
 
