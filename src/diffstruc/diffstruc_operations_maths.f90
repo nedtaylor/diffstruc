@@ -8,11 +8,15 @@ module diffstruc__operations_maths
 
   private
 
-  public :: sqrt, sign, sigmoid, gaussian
+  public :: sqrt, sign, sigmoid, gaussian, abs
 
 
   ! Operation interfaces
   !-----------------------------------------------------------------------------
+  interface abs
+     module procedure abs_array
+  end interface
+
   interface sqrt
      module procedure sqrt_array
   end interface
@@ -33,6 +37,49 @@ module diffstruc__operations_maths
 contains
 
 !###############################################################################
+  function abs_array(a) result(c)
+    !! Square root function for autodiff arrays
+    implicit none
+    class(array_type), intent(in), target :: a
+    type(array_type), pointer :: c
+
+    c => a%create_result()
+    c%val = abs(a%val)
+
+    c%get_partial_left => get_partial_abs
+    c%get_partial_left_val => get_partial_abs_val
+    if(a%requires_grad) then
+       c%requires_grad = .true.
+       c%is_forward = a%is_forward
+       c%operation = 'abs'
+       c%left_operand => a
+       c%owns_left_operand = a%is_temporary
+    end if
+  end function abs_array
+!-------------------------------------------------------------------------------
+  function get_partial_abs(this, upstream_grad) result(output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+
+    output = upstream_grad * sign(1._real32, this)
+
+  end function get_partial_abs
+!-------------------------------------------------------------------------------
+  subroutine get_partial_abs_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    output = sign(1._real32, this%val) * upstream_grad
+
+  end subroutine get_partial_abs_val
+!###############################################################################
+
+
+!###############################################################################
   function sqrt_array(a) result(c)
     !! Square root function for autodiff arrays
     implicit none
@@ -43,6 +90,7 @@ contains
     c%val = sqrt(a%val)
 
     c%get_partial_left => get_partial_sqrt
+    c%get_partial_left_val => get_partial_sqrt_val
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -61,6 +109,16 @@ contains
     output = upstream_grad / ( 2._real32 * this )
 
   end function get_partial_sqrt
+!-------------------------------------------------------------------------------
+  subroutine get_partial_sqrt_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    output = upstream_grad / ( 2._real32 * this%val )
+
+  end subroutine get_partial_sqrt_val
 !###############################################################################
 
 
