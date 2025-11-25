@@ -285,7 +285,7 @@ module diffstruc__types
   end interface
 
   interface
-     module subroutine set_requires_grad(this, requires_grad)
+     pure module subroutine set_requires_grad(this, requires_grad)
        class(array_type), intent(inout) :: this
        logical, intent(in) :: requires_grad
      end subroutine set_requires_grad

@@ -1413,7 +1413,7 @@ contains
 
 
 !###############################################################################
-  module subroutine set_requires_grad(this, requires_grad)
+  pure module subroutine set_requires_grad(this, requires_grad)
     !! Set the requires_grad flag
     implicit none
     class(array_type), intent(inout) :: this
