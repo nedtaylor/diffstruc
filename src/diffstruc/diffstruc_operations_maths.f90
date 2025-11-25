@@ -157,6 +157,7 @@ contains
     c%val = 1.0_real32 / (1.0_real32 + exp(-a%val))
 
     c%get_partial_left => get_partial_sigmoid
+    c%get_partial_left_val => get_partial_sigmoid_val
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -180,6 +181,15 @@ contains
     this%is_temporary = this_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_sigmoid
+!-------------------------------------------------------------------------------
+  subroutine get_partial_sigmoid_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    output = upstream_grad * this%val * (1.0_real32 - this%val)
+  end subroutine get_partial_sigmoid_val
 !###############################################################################
 
 
@@ -196,6 +206,7 @@ contains
     c%val = 1._real32/(sqrt(2*pi)*sigma) * exp( -0.5_real32 * ((a%val - mu)/sigma)**2 )
 
     c%get_partial_left => get_partial_gaussian
+    c%get_partial_left_val => get_partial_gaussian_val
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -235,6 +246,21 @@ contains
     this%is_temporary = this_is_temporary_local
     call output%assign_and_deallocate_source(ptr3)
   end function get_partial_gaussian
+!-------------------------------------------------------------------------------
+  subroutine get_partial_gaussian_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+    real(real32) :: coeff
+
+    coeff = - 1._real32 / ( sqrt(2._real32 * pi ) * this%right_operand%val(2,1)**3 )
+    output = upstream_grad * coeff * (this%val - this%right_operand%val(1,1)) * &
+         exp( -0.5_real32 * ( &
+              (this%val - this%right_operand%val(1,1)) / &
+              this%right_operand%val(2,1) &
+         )**2 )
+  end subroutine get_partial_gaussian_val
 !###############################################################################
 
 end module diffstruc__operations_maths
