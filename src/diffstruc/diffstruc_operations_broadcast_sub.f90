@@ -62,9 +62,9 @@ contains
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_concat_right
 !-------------------------------------------------------------------------------
-  subroutine get_partial_concat_left_val(this, upstream_grad, output)
+  pure subroutine get_partial_concat_left_val(this, upstream_grad, output)
     implicit none
-    class(array_type), intent(inout) :: this
+    class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
@@ -72,9 +72,9 @@ contains
 
   end subroutine get_partial_concat_left_val
 !-------------------------------------------------------------------------------
-  subroutine get_partial_concat_right_val(this, upstream_grad, output)
+  pure subroutine get_partial_concat_right_val(this, upstream_grad, output)
     implicit none
-    class(array_type), intent(inout) :: this
+    class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
@@ -316,9 +316,9 @@ contains
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_pack_mask
 !-------------------------------------------------------------------------------
-  subroutine get_partial_pack_mask_val(this, upstream_grad, output)
+  pure subroutine get_partial_pack_mask_val(this, upstream_grad, output)
     implicit none
-    class(array_type), intent(inout) :: this
+    class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
@@ -477,9 +477,9 @@ contains
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_pack_indices
 !-------------------------------------------------------------------------------
-  subroutine get_partial_pack_indices_val(this, upstream_grad, output)
+  pure subroutine get_partial_pack_indices_val(this, upstream_grad, output)
     implicit none
-    class(array_type), intent(inout) :: this
+    class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 

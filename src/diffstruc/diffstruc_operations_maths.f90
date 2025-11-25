@@ -67,9 +67,9 @@ contains
 
   end function get_partial_abs
 !-------------------------------------------------------------------------------
-  subroutine get_partial_abs_val(this, upstream_grad, output)
+  pure subroutine get_partial_abs_val(this, upstream_grad, output)
     implicit none
-    class(array_type), intent(inout) :: this
+    class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
@@ -110,9 +110,9 @@ contains
 
   end function get_partial_sqrt
 !-------------------------------------------------------------------------------
-  subroutine get_partial_sqrt_val(this, upstream_grad, output)
+  pure subroutine get_partial_sqrt_val(this, upstream_grad, output)
     implicit none
-    class(array_type), intent(inout) :: this
+    class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
@@ -182,9 +182,9 @@ contains
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_sigmoid
 !-------------------------------------------------------------------------------
-  subroutine get_partial_sigmoid_val(this, upstream_grad, output)
+  pure subroutine get_partial_sigmoid_val(this, upstream_grad, output)
     implicit none
-    class(array_type), intent(inout) :: this
+    class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
@@ -247,9 +247,9 @@ contains
     call output%assign_and_deallocate_source(ptr3)
   end function get_partial_gaussian
 !-------------------------------------------------------------------------------
-  subroutine get_partial_gaussian_val(this, upstream_grad, output)
+  pure subroutine get_partial_gaussian_val(this, upstream_grad, output)
     implicit none
-    class(array_type), intent(inout) :: this
+    class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
     real(real32) :: coeff

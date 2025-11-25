@@ -303,8 +303,8 @@ module diffstruc__types
        type(array_type) :: output
      end function get_partial
 
-     module subroutine get_partial_val(this, upstream_grad, output)
-       class(array_type), intent(inout) :: this
+     pure module subroutine get_partial_val(this, upstream_grad, output)
+       class(array_type), intent(in) :: this
        real(real32), dimension(:,:), intent(in) :: upstream_grad
        real(real32), dimension(:,:), intent(out) :: output
      end subroutine get_partial_val

@@ -1657,9 +1657,9 @@ contains
     output = upstream_grad
   end function get_partial_add
 !-------------------------------------------------------------------------------
-  subroutine get_partial_add_val(this, upstream_grad, output)
+  pure subroutine get_partial_add_val(this, upstream_grad, output)
     implicit none
-    class(array_type), intent(inout) :: this
+    class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
@@ -1827,9 +1827,9 @@ contains
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_negate
 !-------------------------------------------------------------------------------
-  subroutine get_partial_negate_val(this, upstream_grad, output)
+  pure subroutine get_partial_negate_val(this, upstream_grad, output)
     implicit none
-    class(array_type), intent(inout) :: this
+    class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
@@ -2048,9 +2048,9 @@ contains
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_multiply_right
 !-------------------------------------------------------------------------------
-  subroutine get_partial_multiply_left_val(this, upstream_grad, output)
+  pure subroutine get_partial_multiply_left_val(this, upstream_grad, output)
     implicit none
-    class(array_type), intent(inout) :: this
+    class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
@@ -2067,9 +2067,9 @@ contains
     end if
   end subroutine get_partial_multiply_left_val
 !-------------------------------------------------------------------------------
-  subroutine get_partial_multiply_right_val(this, upstream_grad, output)
+  pure subroutine get_partial_multiply_right_val(this, upstream_grad, output)
     implicit none
-    class(array_type), intent(inout) :: this
+    class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
@@ -2273,9 +2273,9 @@ contains
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_divide_right
 !-------------------------------------------------------------------------------
-  subroutine get_partial_divide_left_val(this, upstream_grad, output)
+  pure subroutine get_partial_divide_left_val(this, upstream_grad, output)
     implicit none
-    class(array_type), intent(inout) :: this
+    class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
@@ -2292,9 +2292,9 @@ contains
     end if
   end subroutine get_partial_divide_left_val
 !-------------------------------------------------------------------------------
-  subroutine get_partial_divide_right_val(this, upstream_grad, output)
+  pure subroutine get_partial_divide_right_val(this, upstream_grad, output)
     implicit none
-    class(array_type), intent(inout) :: this
+    class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
@@ -2476,9 +2476,9 @@ contains
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_power_exponent
 !-------------------------------------------------------------------------------
-  subroutine get_partial_power_base_val(this, upstream_grad, output)
+  pure subroutine get_partial_power_base_val(this, upstream_grad, output)
     implicit none
-    class(array_type), intent(inout) :: this
+    class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
@@ -2541,9 +2541,9 @@ contains
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_exp
 !-------------------------------------------------------------------------------
-  subroutine get_partial_exp_val(this, upstream_grad, output)
+  pure subroutine get_partial_exp_val(this, upstream_grad, output)
     implicit none
-    class(array_type), intent(inout) :: this
+    class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
@@ -2588,9 +2588,9 @@ contains
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_log
 !-------------------------------------------------------------------------------
-  subroutine get_partial_log_val(this, upstream_grad, output)
+  pure subroutine get_partial_log_val(this, upstream_grad, output)
     implicit none
-    class(array_type), intent(inout) :: this
+    class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
@@ -2691,10 +2691,9 @@ contains
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_mean
 !-------------------------------------------------------------------------------
-  subroutine get_partial_mean_val(this, upstream_grad, output)
-    !! Optimized gradient computation for mean operation
+  pure subroutine get_partial_mean_val(this, upstream_grad, output)
     implicit none
-    class(array_type), intent(inout) :: this
+    class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
@@ -2843,10 +2842,9 @@ contains
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_sum
 !-------------------------------------------------------------------------------
-  subroutine get_partial_sum_val(this, upstream_grad, output)
-    !! Optimized gradient computation for sum operation
+  pure subroutine get_partial_sum_val(this, upstream_grad, output)
     implicit none
-    class(array_type), intent(inout) :: this
+    class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
