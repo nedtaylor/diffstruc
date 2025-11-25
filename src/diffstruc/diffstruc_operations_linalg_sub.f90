@@ -392,6 +392,8 @@ contains
 
     c%get_partial_left => get_partial_dot_product_left
     c%get_partial_right => get_partial_dot_product_right
+    c%get_partial_left_val => get_partial_dot_product_left_val
+    c%get_partial_right_val => get_partial_dot_product_right_val
     c%is_sample_dependent = a%is_sample_dependent
     if(a%requires_grad .or. b%requires_grad) then
        c%requires_grad = .true.
@@ -441,6 +443,32 @@ contains
     this%left_operand%is_temporary = left_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_dot_product_right
+!-------------------------------------------------------------------------------
+  subroutine get_partial_dot_product_left_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, s
+
+    do concurrent(s=1:size(upstream_grad,2), i=1:size(this%right_operand%val,1))
+       output(i,s) = upstream_grad(1,s) * this%right_operand%val(i,s)
+    end do
+  end subroutine get_partial_dot_product_left_val
+!-------------------------------------------------------------------------------
+  subroutine get_partial_dot_product_right_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, s
+
+    do concurrent(s=1:size(upstream_grad,2), i=1:size(this%left_operand%val,1))
+       output(i,s) = upstream_grad(1,s) * this%left_operand%val(i,s)
+    end do
+  end subroutine get_partial_dot_product_right_val
 !###############################################################################
 
 

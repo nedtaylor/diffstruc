@@ -456,6 +456,7 @@ contains
 
     c%get_partial_left => get_partial_pack_indices
     c%get_partial_right => get_partial_unpack_indices
+    c%get_partial_left_val => get_partial_pack_indices_val
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -475,6 +476,31 @@ contains
     ptr => unpack(upstream_grad, this%indices, this%adj_ja(1,1), this%adj_ja(2,1))
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_pack_indices
+!-------------------------------------------------------------------------------
+  subroutine get_partial_pack_indices_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, s
+    integer :: dim, new_size
+
+    dim = this%adj_ja(1,1)
+    new_size = this%adj_ja(2,1)
+
+    output = 0.0_real32
+    if(dim.eq.1)then
+       do concurrent(i=1:size(this%indices,1), s=1:size(upstream_grad,2))
+          output(this%indices(i),s) = upstream_grad(i,s)
+       end do
+    elseif(dim.eq.2)then
+       do concurrent(i=1:size(upstream_grad,1), s=1:new_size)
+          output(i,this%indices(s)) = upstream_grad(i,s)
+       end do
+    end if
+
+  end subroutine get_partial_pack_indices_val
 !###############################################################################
 
 

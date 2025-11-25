@@ -2147,9 +2147,7 @@ contains
     end do
 
     c%get_partial_left => get_partial_divide_left
-    c%get_partial_right => get_partial_divide_right
     c%get_partial_left_val => get_partial_divide_left_val
-    c%get_partial_right_val => get_partial_divide_right_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -2178,9 +2176,7 @@ contains
     c => a%create_result()
     c%val = scalar / a%val
 
-    c%get_partial_left => get_partial_divide_left
     c%get_partial_right => get_partial_divide_right
-    c%get_partial_left_val => get_partial_divide_left_val
     c%get_partial_right_val => get_partial_divide_right_val
     if(a%requires_grad)then
        c%requires_grad = .true.
@@ -2215,9 +2211,7 @@ contains
     end do
 
     c%get_partial_left => get_partial_divide_left
-    c%get_partial_right => get_partial_divide_right
     c%get_partial_left_val => get_partial_divide_left_val
-    c%get_partial_right_val => get_partial_divide_right_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -2760,8 +2754,9 @@ contains
     end if
     c%indices = [dim, 1]
 
-    c%get_partial_left => get_partial_sum_reverse
-    c%get_partial_right => get_partial_sum_forward
+    c%get_partial_left => get_partial_sum
+    !c%get_partial_right => get_partial_sum_forward
+    c%get_partial_left_val => get_partial_sum_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -2797,7 +2792,7 @@ contains
        c%val(:,new_dim_index) = sum(a%val(:,:), dim=2)
     end if
 
-    c%get_partial_left => get_partial_sum_reverse
+    c%get_partial_left => get_partial_sum
     c%is_sample_dependent = a%is_sample_dependent
     if(a%requires_grad)then
        c%requires_grad = .true.
@@ -2809,35 +2804,69 @@ contains
     c%indices = [dim, new_dim_index]
   end function sum_array_output_array
 !-------------------------------------------------------------------------------
-  function get_partial_sum_reverse(this, upstream_grad) result(output)
+!   function get_partial_sum_reverse(this, upstream_grad) result(output)
+!     implicit none
+!     class(array_type), intent(inout) :: this
+!     type(array_type), intent(in) :: upstream_grad
+!     type(array_type) :: output
+!     type(array_type), pointer :: ptr
+
+!     ptr => spread( &
+!          upstream_grad, &
+!          dim=this%indices(1), &
+!          index=this%indices(2), &
+!          ncopies= size(this%left_operand%val, this%indices(1)) &
+!     )
+!     call output%assign_and_deallocate_source(ptr)
+!   end function get_partial_sum_reverse
+! !-------------------------------------------------------------------------------
+  function get_partial_sum(this, upstream_grad) result(output)
     implicit none
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
     type(array_type), pointer :: ptr
 
-    ptr => spread( &
-         upstream_grad, &
-         dim=this%indices(1), &
-         index=this%indices(2), &
-         ncopies= size(this%left_operand%val, this%indices(1)) &
-    )
+    if(this%is_forward)then
+       ptr => sum( &
+            upstream_grad, &
+            dim = this%indices(1) &
+       )
+    else
+       ptr => spread( &
+            upstream_grad, &
+            dim=this%indices(1), &
+            index=this%indices(2), &
+            ncopies= size(this%left_operand%val, this%indices(1)) &
+       )
+    end if
     call output%assign_and_deallocate_source(ptr)
-  end function get_partial_sum_reverse
+  end function get_partial_sum
 !-------------------------------------------------------------------------------
-  function get_partial_sum_forward(this, upstream_grad) result(output)
+  subroutine get_partial_sum_val(this, upstream_grad, output)
+    !! Optimized gradient computation for sum operation
     implicit none
     class(array_type), intent(inout) :: this
-    type(array_type), intent(in) :: upstream_grad
-    type(array_type) :: output
-    type(array_type), pointer :: ptr
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
 
-    ptr => sum( &
-         upstream_grad, &
-         dim = this%indices(1) &
-    )
-    call output%assign_and_deallocate_source(ptr)
-  end function get_partial_sum_forward
+    integer :: i, s, dim, n_rows, n_cols
+
+    ! Cache values to avoid repeated accesses
+    dim = this%indices(1)
+    n_rows = size(output, 1)
+    n_cols = size(output, 2)
+
+    if(dim.eq.1)then
+       do concurrent(s = 1:n_cols, i = 1:n_rows)
+          output(i,s) = upstream_grad(1,s)
+       end do
+    else if(dim.eq.2)then
+       do concurrent(s = 1:n_cols, i = 1:n_rows)
+          output(i,s) = upstream_grad(i,1)
+       end do
+    end if
+  end subroutine get_partial_sum_val
 !###############################################################################
 
 
