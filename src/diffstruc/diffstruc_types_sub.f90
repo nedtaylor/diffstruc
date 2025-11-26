@@ -2791,7 +2791,7 @@ contains
     end if
     c%indices = [dim, new_dim_index]
 
-    c%get_partial_left => get_partial_sum
+    c%get_partial_left => get_partial_sum_and_pad
     c%get_partial_left_val => get_partial_sum_and_pad_val
     c%is_sample_dependent = a%is_sample_dependent
     if(a%requires_grad)then
@@ -2866,6 +2866,31 @@ contains
        end do
     end if
   end subroutine get_partial_sum_val
+! !-------------------------------------------------------------------------------
+  function get_partial_sum_and_pad(this, upstream_grad) result(output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+    type(array_type), pointer :: ptr
+
+    if(this%is_forward)then
+       ptr => sum( &
+            upstream_grad, &
+            dim = this%indices(1), &
+            new_dim_index = this%indices(2), &
+            new_dim_size = size(this%val, this%indices(1)) &
+       )
+    else
+       ptr => spread( &
+            upstream_grad, &
+            dim=this%indices(1), &
+            index=this%indices(2), &
+            ncopies= size(this%left_operand%val, this%indices(1)) &
+       )
+    end if
+    call output%assign_and_deallocate_source(ptr)
+  end function get_partial_sum_and_pad
 !-------------------------------------------------------------------------------
   pure subroutine get_partial_sum_and_pad_val(this, upstream_grad, output)
     implicit none
