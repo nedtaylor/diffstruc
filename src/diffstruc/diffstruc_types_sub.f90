@@ -2766,7 +2766,7 @@ contains
 
   end function sum_array
 !-------------------------------------------------------------------------------
-  module function sum_array_output_array(a, dim, new_dim_index, new_dim_size) result(c)
+  module function sum_and_pad_array(a, dim, new_dim_index, new_dim_size) result(c)
     !! Sum values along a dimension and return an autodiff array
     implicit none
     class(array_type), intent(in), target :: a
@@ -2776,32 +2776,33 @@ contains
     type(array_type), pointer :: c
 
     if(size(a%shape) .ne. 1)then
-       call stop_program("sum_array_output_array: only 1D arrays can be used")
+       call stop_program("sum_and_pad_array: only 1D arrays can be used")
     end if
 
-    allocate(c)
     ! sum 1D array by using shape to swap dimensions
     if(dim.eq.1)then
-       call c%allocate(array_shape=[new_dim_size, size(a%val,2)])
+       c => a%create_result(array_shape=[new_dim_size, size(a%val,2)])
        c%val = 0.0_real32
        c%val(new_dim_index,:) = sum(a%val(:,:), dim=1)
     else if(dim.eq.2)then
-       call c%allocate(array_shape=[size(a%val,1), new_dim_size])
+       c => a%create_result(array_shape=[size(a%val,1), new_dim_size])
        c%val = 0.0_real32
        c%val(:,new_dim_index) = sum(a%val(:,:), dim=2)
     end if
+    c%indices = [dim, new_dim_index]
 
     c%get_partial_left => get_partial_sum
+    c%get_partial_left_val => get_partial_sum_and_pad_val
     c%is_sample_dependent = a%is_sample_dependent
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%operation = 'sum_array_output_array'
+       c%operation = 'sum_and_pad_array'
        c%left_operand => a
        c%owns_left_operand = a%is_temporary
     end if
     c%indices = [dim, new_dim_index]
-  end function sum_array_output_array
+  end function sum_and_pad_array
 !-------------------------------------------------------------------------------
 !   function get_partial_sum_reverse(this, upstream_grad) result(output)
 !     implicit none
@@ -2865,6 +2866,30 @@ contains
        end do
     end if
   end subroutine get_partial_sum_val
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_sum_and_pad_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, s, dim, n_rows, n_cols
+
+    ! Cache values to avoid repeated accesses
+    dim = this%indices(1)
+    n_rows = size(output, 1)
+    n_cols = size(output, 2)
+
+    if(dim.eq.1)then
+       do concurrent(s = 1:n_cols, i = 1:n_rows)
+          output(i,s) = upstream_grad(1,this%indices(2))
+       end do
+    else if(dim.eq.2)then
+       do concurrent(s = 1:n_cols, i = 1:n_rows)
+          output(i,s) = upstream_grad(this%indices(2),1)
+       end do
+    end if
+  end subroutine get_partial_sum_and_pad_val
 !###############################################################################
 
 

@@ -350,14 +350,14 @@ module diffstruc__types
        type(array_type), pointer :: c
      end function sum_array
 
-     module function sum_array_output_array(a, dim, new_dim_index, new_dim_size) &
+     module function sum_and_pad_array(a, dim, new_dim_index, new_dim_size) &
           result(c)
        class(array_type), intent(in), target :: a
        integer, intent(in) :: dim
        integer, intent(in) :: new_dim_index
        integer, intent(in) :: new_dim_size
        type(array_type), pointer :: c
-     end function sum_array_output_array
+     end function sum_and_pad_array
   end interface
 
 
