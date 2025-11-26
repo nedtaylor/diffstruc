@@ -177,7 +177,8 @@ contains
 
     this_is_temporary_local = this%is_temporary
     this%is_temporary = .false.
-    ptr => upstream_grad * this * (1.0_real32 - this)
+    ptr => 1._real32 - this
+    ptr => upstream_grad * this * ptr
     this%is_temporary = this_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_sigmoid

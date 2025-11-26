@@ -1994,10 +1994,13 @@ contains
        if(b(i,s))then
           c%val(i,s) = a%val(i,s)
        else
-          c%val(i,s) = 0.0_real32
+          c%val(i,s) = 0._real32
        end if
     end do
+    c%mask = b
 
+    c%get_partial_left => get_partial_multiply_logical_left
+    c%get_partial_left_val => get_partial_multiply_logical_left_val
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -2085,6 +2088,34 @@ contains
        output = upstream_grad * this%left_operand%val
     end if
   end subroutine get_partial_multiply_right_val
+!-------------------------------------------------------------------------------
+  function get_partial_multiply_logical_left(this, upstream_grad) result(output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+    type(array_type), pointer :: ptr
+
+    ptr => upstream_grad * this%mask
+    call output%assign_and_deallocate_source(ptr)
+  end function get_partial_multiply_logical_left
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_multiply_logical_left_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, s
+
+    do concurrent(s=1:size(output,2), i=1:size(output,1))
+       if(this%mask(i,s))then
+          output(i,s) = upstream_grad(i,s)
+       else
+          output(i,s) = 0._real32
+       end if
+    end do
+  end subroutine get_partial_multiply_logical_left_val
 !###############################################################################
 
 
