@@ -75,6 +75,12 @@ module diffstruc__types
      procedure(get_partial), pass(this), pointer :: get_partial_right => null()
      !! Pointer procedure for getting partial derivative wrt right operand
 
+     procedure(get_partial_val), pass(this), pointer :: get_partial_left_val => null()
+     !! Pointer procedure for getting partial derivative wrt left operand
+     procedure(get_partial_val), pass(this), pointer :: get_partial_right_val => null()
+     !! Pointer procedure for getting partial derivative wrt right operand
+
+
    contains
      procedure, pass(this) :: allocate => allocate_array
      !! Abstract procedure for allocating array
@@ -132,6 +138,22 @@ module diffstruc__types
           subtract_arrays, subtract_real2d, subtract_real1d, &
           subtract_scalar, negate_array
      !! Overloaded subtraction operator
+
+     procedure :: multiply_arrays, multiply_real2d, &
+          multiply_scalar, multiply_logical
+     generic, public :: operator(*) => &
+          multiply_arrays, multiply_real2d, &
+          multiply_scalar, multiply_logical
+     !! Overloaded multiplication operator
+
+     procedure :: divide_arrays, divide_scalar, divide_real1d
+     generic, public :: operator(/) => divide_arrays, divide_scalar, divide_real1d
+     !! Overloaded division operator
+
+     procedure :: power_arrays, power_real_scalar, power_int_scalar
+     generic, public :: operator(**) => &
+          power_arrays, power_real_scalar, power_int_scalar
+     !! Overloaded power operator
 
      procedure :: assign => assign_array
      generic, public :: assignment(=) => assign
@@ -263,7 +285,7 @@ module diffstruc__types
   end interface
 
   interface
-     module subroutine set_requires_grad(this, requires_grad)
+     pure module subroutine set_requires_grad(this, requires_grad)
        class(array_type), intent(inout) :: this
        logical, intent(in) :: requires_grad
      end subroutine set_requires_grad
@@ -280,11 +302,18 @@ module diffstruc__types
        type(array_type), intent(in) :: upstream_grad
        type(array_type) :: output
      end function get_partial
+
+     pure module subroutine get_partial_val(this, upstream_grad, output)
+       class(array_type), intent(in) :: this
+       real(real32), dimension(:,:), intent(in) :: upstream_grad
+       real(real32), dimension(:,:), intent(out) :: output
+     end subroutine get_partial_val
   end interface
 
   interface
-     module subroutine print_graph(this)
+     module subroutine print_graph(this, print_location)
        class(array_type), intent(in) :: this
+       logical, intent(in), optional :: print_location
      end subroutine print_graph
   end interface
 !-------------------------------------------------------------------------------
@@ -321,14 +350,14 @@ module diffstruc__types
        type(array_type), pointer :: c
      end function sum_array
 
-     module function sum_array_output_array(a, dim, new_dim_index, new_dim_size) &
+     module function sum_and_pad_array(a, dim, new_dim_index, new_dim_size) &
           result(c)
        class(array_type), intent(in), target :: a
        integer, intent(in) :: dim
        integer, intent(in) :: new_dim_index
        integer, intent(in) :: new_dim_size
        type(array_type), pointer :: c
-     end function sum_array_output_array
+     end function sum_and_pad_array
   end interface
 
 
@@ -406,6 +435,63 @@ module diffstruc__types
        class(array_type), intent(in), target :: a
        type(array_type), pointer :: c
      end function negate_array
+
+     module function multiply_arrays(a, b) result(c)
+       class(array_type), intent(in), target :: a, b
+       type(array_type), pointer :: c
+     end function multiply_arrays
+
+     module function multiply_real2d(a, b) result(c)
+       class(array_type), intent(in), target :: a
+       real(real32), dimension(:,:), intent(in) :: b
+       type(array_type), pointer :: c
+     end function multiply_real2d
+
+     module function multiply_scalar(a, scalar) result(c)
+       class(array_type), intent(in), target :: a
+       real(real32), intent(in) :: scalar
+       type(array_type), pointer :: c
+     end function multiply_scalar
+
+     module function multiply_logical(a, b) result(c)
+       class(array_type), intent(in), target :: a
+       logical, dimension(:,:), intent(in) :: b
+       type(array_type), pointer :: c
+     end function multiply_logical
+
+     module function divide_arrays(a, b) result(c)
+       class(array_type), intent(in), target :: a, b
+       type(array_type), pointer :: c
+     end function divide_arrays
+
+     module function divide_scalar(a, scalar) result(c)
+       class(array_type), intent(in), target :: a
+       real(real32), intent(in) :: scalar
+       type(array_type), pointer :: c
+     end function divide_scalar
+
+     module function divide_real1d(a, b) result(c)
+       class(array_type), intent(in), target :: a
+       real(real32), dimension(:), intent(in) :: b
+       type(array_type), pointer :: c
+     end function divide_real1d
+
+     module function power_arrays(a, b) result(c)
+       class(array_type), intent(in), target :: a, b
+       type(array_type), pointer :: c
+     end function power_arrays
+
+     module function power_real_scalar(a, scalar) result(c)
+       class(array_type), intent(in), target :: a
+       real(real32), intent(in) :: scalar
+       type(array_type), pointer :: c
+     end function power_real_scalar
+
+     module function power_int_scalar(a, scalar) result(c)
+       class(array_type), intent(in), target :: a
+       integer, intent(in) :: scalar
+       type(array_type), pointer :: c
+     end function power_int_scalar
   end interface
 
 
@@ -442,87 +528,30 @@ module diffstruc__types
 
 
   interface operator(*)
-     module function multiply_arrays(a, b) result(c)
-       class(array_type), intent(in), target :: a, b
-       type(array_type), pointer :: c
-     end function multiply_arrays
-
-     module function multiply_real2d(a, b) result(c)
-       class(array_type), intent(in), target :: a
-       real(real32), dimension(:,:), intent(in) :: b
-       type(array_type), pointer :: c
-     end function multiply_real2d
-
      module function real2d_multiply(a, b) result(c)
        real(real32), dimension(:,:), intent(in) :: a
        class(array_type), intent(in), target :: b
        type(array_type), pointer :: c
      end function real2d_multiply
 
-     module function multiply_scalar(a, scalar) result(c)
-       class(array_type), intent(in), target :: a
-       real(real32), intent(in) :: scalar
-       type(array_type), pointer :: c
-     end function multiply_scalar
-
      module function scalar_multiply(scalar, a) result(c)
        real(real32), intent(in) :: scalar
        class(array_type), intent(in), target :: a
        type(array_type), pointer :: c
      end function scalar_multiply
-
-     module function multiply_logical(a, b) result(c)
-       class(array_type), intent(in), target :: a
-       logical, dimension(:,:), intent(in) :: b
-       type(array_type), pointer :: c
-     end function multiply_logical
   end interface
 
 
   interface operator(/)
-     module function divide_arrays(a, b) result(c)
-       class(array_type), intent(in), target :: a, b
-       type(array_type), pointer :: c
-     end function divide_arrays
-
-     module function divide_scalar(a, scalar) result(c)
-       class(array_type), intent(in), target :: a
-       real(real32), intent(in) :: scalar
-       type(array_type), pointer :: c
-     end function divide_scalar
-
      module function scalar_divide(scalar, a) result(c)
        real(real32), intent(in) :: scalar
        class(array_type), intent(in), target :: a
        type(array_type), pointer :: c
      end function scalar_divide
-
-     module function divide_real1d(a, b) result(c)
-       class(array_type), intent(in), target :: a
-       real(real32), dimension(:), intent(in) :: b
-       type(array_type), pointer :: c
-     end function divide_real1d
   end interface
 
 
   interface operator(**)
-     module function power_arrays(a, b) result(c)
-       class(array_type), intent(in), target :: a, b
-       type(array_type), pointer :: c
-     end function power_arrays
-
-     module function power_real_scalar(a, scalar) result(c)
-       class(array_type), intent(in), target :: a
-       real(real32), intent(in) :: scalar
-       type(array_type), pointer :: c
-     end function power_real_scalar
-
-     module function power_int_scalar(a, scalar) result(c)
-       class(array_type), intent(in), target :: a
-       integer, intent(in) :: scalar
-       type(array_type), pointer :: c
-     end function power_int_scalar
-
      module function scalar_power(scalar, a) result(c)
        real(real32), intent(in) :: scalar
        class(array_type), intent(in), target :: a

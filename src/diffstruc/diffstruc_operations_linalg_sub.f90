@@ -48,6 +48,8 @@ contains
     c%is_sample_dependent = .true.
     c%get_partial_left => get_partial_matmul_left
     c%get_partial_right => get_partial_matmul_right
+    c%get_partial_left_val => get_partial_matmul_left_val
+    c%get_partial_right_val => get_partial_matmul_right_val
     if(a%requires_grad .or. b%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
@@ -77,6 +79,8 @@ contains
     c%is_sample_dependent = a%is_sample_dependent
     c%get_partial_left => get_partial_matmul_left
     c%get_partial_right => get_partial_matmul_right
+    c%get_partial_left_val => get_partial_matmul_left_val
+    c%get_partial_right_val => get_partial_matmul_right_val
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -114,6 +118,8 @@ contains
     c%is_sample_dependent = b%is_sample_dependent
     c%get_partial_left => get_partial_matmul_left
     c%get_partial_right => get_partial_matmul_right
+    c%get_partial_left_val => get_partial_matmul_left_val
+    c%get_partial_right_val => get_partial_matmul_right_val
     if(b%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = b%is_forward
@@ -196,6 +202,96 @@ contains
     call output%assign_and_deallocate_source(ptr)
 
   end function get_partial_matmul_right
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_matmul_left_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, j, s, m, n, num_elements, num_batches
+
+    num_batches = size(upstream_grad, 2)
+
+    if(size(this%right_operand%shape).eq.2)then
+       m = this%right_operand%shape(1)
+       n = this%right_operand%shape(2)
+       block
+         real(real32), dimension(m, n) :: temp
+         if(this%right_operand%is_sample_dependent)then
+            do concurrent(s=1:num_batches)
+               temp = reshape(this%right_operand%val(:,s), [m, n])
+               output(:,s) = matmul(upstream_grad(:,s), transpose(temp))
+            end do
+         else
+            temp = reshape(this%right_operand%val(:,1), [m, n])
+            do concurrent(s=1:num_batches)
+               output(:,s) = matmul(upstream_grad(:,s), transpose(temp))
+            end do
+         end if
+       end block
+    else
+       num_elements = size(upstream_grad,1)
+       if(this%right_operand%is_sample_dependent)then
+          do concurrent(s=1:num_batches, i=1:num_elements, &
+               j=1:size(this%right_operand%val,1))
+             output(i + (j-1)*num_elements,s) = &
+                  upstream_grad(i,s) * this%right_operand%val(j,s)
+          end do
+       else
+          do concurrent(s=1:num_batches, i=1:num_elements, &
+               j=1:size(this%right_operand%val,1))
+             output(i + (j-1)*num_elements,s) = &
+                  upstream_grad(i,s) * this%right_operand%val(j,1)
+          end do
+       end if
+    end if
+
+  end subroutine get_partial_matmul_left_val
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_matmul_right_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, j, s, m, n, num_elements, num_batches
+
+    num_batches = size(upstream_grad, 2)
+
+    if(size(this%left_operand%shape).eq.2)then
+       m = this%left_operand%shape(1)
+       n = this%left_operand%shape(2)
+       block
+         real(real32), dimension(m, n) :: temp
+          if(this%left_operand%is_sample_dependent)then
+             do concurrent(s=1:num_batches)
+                temp = reshape(this%left_operand%val(:,s), [m, n])
+                output(:,s) = matmul(transpose(temp), upstream_grad(:,s))
+             end do
+          else
+             temp = reshape(this%left_operand%val(:,1), [m, n])
+             do concurrent(s=1:num_batches)
+                output(:,s) = matmul(transpose(temp), upstream_grad(:,s))
+             end do
+          end if
+       end block
+    else
+       num_elements = size(this%left_operand%val,1)
+       if(this%left_operand%is_sample_dependent)then
+          do concurrent(s=1:num_batches, i=1:num_elements, j=1:size(upstream_grad,1))
+             output(i + (j-1)*num_elements,s) = &
+                  this%left_operand%val(i,s) * upstream_grad(j,s)
+          end do
+       else
+          do concurrent(s=1:num_batches, i=1:num_elements, j=1:size(upstream_grad,1))
+             output(i + (j-1)*num_elements,s) = &
+                  this%left_operand%val(i,1) * upstream_grad(j,s)
+          end do
+       end if
+    end if
+
+  end subroutine get_partial_matmul_right_val
 !###############################################################################
 
 
@@ -302,6 +398,8 @@ contains
 
     c%get_partial_left => get_partial_dot_product_left
     c%get_partial_right => get_partial_dot_product_right
+    c%get_partial_left_val => get_partial_dot_product_left_val
+    c%get_partial_right_val => get_partial_dot_product_right_val
     c%is_sample_dependent = a%is_sample_dependent
     if(a%requires_grad .or. b%requires_grad) then
        c%requires_grad = .true.
@@ -351,6 +449,32 @@ contains
     this%left_operand%is_temporary = left_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_dot_product_right
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_dot_product_left_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, s
+
+    do concurrent(s=1:size(upstream_grad,2), i=1:size(this%right_operand%val,1))
+       output(i,s) = upstream_grad(1,s) * this%right_operand%val(i,s)
+    end do
+  end subroutine get_partial_dot_product_left_val
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_dot_product_right_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, s
+
+    do concurrent(s=1:size(upstream_grad,2), i=1:size(this%left_operand%val,1))
+       output(i,s) = upstream_grad(1,s) * this%left_operand%val(i,s)
+    end do
+  end subroutine get_partial_dot_product_right_val
 !###############################################################################
 
 
@@ -407,7 +531,5 @@ contains
 
 ! !   end function get_partial_transpose_right
 !###############################################################################
-
-
 
 end submodule diffstruc__operations_linalg_sub

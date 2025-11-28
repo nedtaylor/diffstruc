@@ -52,7 +52,7 @@ The library has the following dependencies
 - [fpm](https://github.com/fortran-lang/fpm)
 
 The library has been developed and tested using the following compilers:
-- gfortran -- gcc 15.2.0
+- gfortran -- gcc 14.3.0, 15.2.0
 - ifx -- ifx 2025.2.0
 
 > **_NOTE:_** diffstruc is known to be incompatible with all versions of the gfortran compiler below `14.3.0` due to issues with the calling of the `final` procedure of `array_type`.

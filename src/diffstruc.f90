@@ -17,9 +17,10 @@ module diffstruc
        operator(.concat.), operator(.ltrim.), operator(.rtrim.), &
        operator(.index.), reverse_index, &
        pack, unpack
-  use diffstruc__operations_comparison, only: operator(.lt.), operator(.gt.), merge
+  use diffstruc__operations_comparison, only: &
+       operator(.lt.), operator(.gt.), operator(.le.), operator(.ge.), merge
   use diffstruc__operations_reduction, only: maxval, max
-  use diffstruc__operations_maths, only: sqrt, sign, sigmoid, gaussian
+  use diffstruc__operations_maths, only: sqrt, sign, sigmoid, gaussian, abs
   implicit none
 
   private
@@ -39,8 +40,8 @@ module diffstruc
   public :: operator(.concat.), operator(.ltrim.), operator(.rtrim.), &
        operator(.index.), reverse_index, &
        pack, unpack
-  public :: operator(.lt.), operator(.gt.), merge
+  public :: operator(.lt.), operator(.gt.), operator(.le.), operator(.ge.), merge
   public :: maxval, max
-  public :: sqrt, sign, sigmoid, gaussian
+  public :: sqrt, sign, sigmoid, gaussian, abs
 
 end module diffstruc

@@ -61,7 +61,7 @@ extensions = [
 ]
 
 extlinks = {
-    'git': ('https://github.com/ExeQuantCode/RAFFLE/blob/' + git_branch + '/%s', 'git: %s')
+    'git': ('https://github.com/nedtaylor/diffstruc/blob/' + git_branch + '/%s', 'git: %s')
 }
 
 intersphinx_mapping = {

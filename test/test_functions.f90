@@ -97,8 +97,8 @@ program test_functions
 
   call grad1%nullify_graph(ignore_ownership=.true.)
   call grad2%nullify_graph(ignore_ownership=.false.)
-  call hessian1%nullify_graph(ignore_ownership=.true.)
-  call hessian2%nullify_graph(ignore_ownership=.true.)
+  call hessian1%nullify_graph(ignore_ownership=.false.)
+  call hessian2%nullify_graph(ignore_ownership=.false.)
   write(*,*) "=== Example 2 Complete ==="
 
 
@@ -118,7 +118,7 @@ program test_functions
   write(*,*) "  d^2f/dx1dx1 =", hessian1%val(:,1)
 
   call grad1%nullify_graph(ignore_ownership=.true.)
-  call hessian1%nullify_graph(ignore_ownership=.true.)
+  call hessian1%nullify_graph(ignore_ownership=.false.)
   write(*,*) "=== Example 3 Complete ==="
 
 
@@ -165,7 +165,7 @@ program test_functions
      write(*,*) "  dLoss/dx2 =", x%grad%val(2,1)
   end if
 
-  call loss%nullify_graph(ignore_ownership=.false.)
+  call loss%nullify_graph(ignore_ownership=.true.)
   write(*,*) "=== Example 5 Complete ==="
 
 
@@ -179,7 +179,7 @@ program test_functions
   write(*,*) "  df/dx1 =", du_dx%val(:,1)
   write(*,*) "  d²f/dx1² =", d2u_dx2%val(:,1)
 
-  call du_dx%nullify_graph(ignore_ownership=.false.)
+  call du_dx%nullify_graph(ignore_ownership=.true.)
   call d2u_dx2%nullify_graph(ignore_ownership=.false.)
   write(*,*) "=== Example 6 Complete ==="
 
