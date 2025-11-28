@@ -20,6 +20,10 @@ contains
     class(*), dimension(..), intent(in), optional :: source
     !! Source array
 
+    ! Local variables
+    integer :: i, j
+    !! Loop indices
+
     if(allocated(this%val).or.this%allocated)then
        call stop_program("Trying to allocate already allocated array values")
        return
@@ -40,7 +44,9 @@ contains
                 call stop_program('Source shape not provided')
                 return
              end if
-             this%val(:,:) = source
+             do concurrent(i=1:size(this%val,1), j=1:size(this%val,2))
+                this%val(i,j) = source
+             end do
           type is (array_type)
              if(present(array_shape))then
                 if(any(array_shape.ne.shape(source%val)))then
