@@ -1,7 +1,7 @@
 module diffstruc__operations_linalg
   !! This module contains linear algebra operations for the diffstruc library.
   use coreutils, only: real32
-  use diffstruc__types, only: array_type, operator(*)
+  use diffstruc__types, only: array_type
   implicit none
 
   private
