@@ -14,7 +14,7 @@ module diffstruc
        dot_product, operator(.dot.), &
        transpose
   use diffstruc__operations_broadcast, only: &
-       operator(.concat.), operator(.ltrim.), operator(.rtrim.), &
+       concat, slice_left, slice_right, ltrim, rtrim, &
        operator(.index.), reverse_index, &
        pack, unpack
   use diffstruc__operations_comparison, only: &
@@ -37,7 +37,7 @@ module diffstruc
        outer_product, operator(.outer.), &
        dot_product, operator(.dot.), &
        transpose
-  public :: operator(.concat.), operator(.ltrim.), operator(.rtrim.), &
+  public :: concat, slice_left, slice_right, ltrim, rtrim, &
        operator(.index.), reverse_index, &
        pack, unpack
   public :: operator(.lt.), operator(.gt.), operator(.le.), operator(.ge.), merge

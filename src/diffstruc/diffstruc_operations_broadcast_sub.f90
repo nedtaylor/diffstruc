@@ -6,25 +6,49 @@ submodule(diffstruc__operations_broadcast) diffstruc__operations_broadcast_sub
 contains
 
 !###############################################################################
-  module function concat_arrays(a, b) result(c)
+  module function concat_arrays(a, b, dim) result(c)
     !! Concatenate two autodiff arrays along the first dimension
     implicit none
     class(array_type), intent(in), target :: a, b
+    integer, intent(in), optional :: dim
     type(array_type), pointer :: c
 
     integer :: i, s
+    integer :: dim_
 
-    c => a%create_result(array_shape = [size(a%val,1) + size(b%val,1), size(a%val,2)])
+    if(present(dim)) then
+       dim_ = dim
+    else
+       dim_ = 1
+    end if
+
     ! concatenate 1D array by using shape to swap dimensions
-    c%val = 0._real32
-    do concurrent(s=1:size(a%val,2))
-       do concurrent(i=1:size(a%val,1))
-          c%val(i, s) = a%val(i, s)
+    if(dim_.eq.1)then
+       c => a%create_result(array_shape = &
+            [size(a%val,1) + size(b%val,1), size(a%val,2)])
+       c%val = 0._real32
+       do concurrent(s=1:size(a%val,2))
+          do concurrent(i=1:size(a%val,1))
+             c%val(i, s) = a%val(i, s)
+          end do
+          do concurrent(i=1:size(b%val,1))
+             c%val( size(a%val,1) + i, s) = b%val( i, s)
+          end do
        end do
-       do concurrent(i=1:size(b%val,1))
-          c%val( size(a%val,1) + i, s) = b%val( i, s)
+    else
+       c => a%create_result(array_shape = &
+            [size(a%val,1), size(a%val,2) + size(b%val,2)])
+       c%val = 0._real32
+       do concurrent(s=1:size(a%val,1))
+          do concurrent(i=1:size(a%val,2))
+             c%val(s, i) = a%val(s, i)
+          end do
+          do concurrent(i=1:size(b%val,2))
+             c%val( s, size(a%val,2) + i) = b%val( s, i)
+          end do
        end do
-    end do
+    end if
+    c%indices = [ dim_ ]
 
     c%get_partial_left => get_partial_concat_left
     c%get_partial_right => get_partial_concat_right
@@ -47,7 +71,7 @@ contains
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
 
-    output = upstream_grad .ltrim. this%left_operand%shape(1)
+    output = slice_left(upstream_grad, this%left_operand%shape(1), this%indices(1))
 
   end function get_partial_concat_left
 !-------------------------------------------------------------------------------
@@ -58,7 +82,7 @@ contains
     type(array_type) :: output
     type(array_type), pointer :: ptr
 
-    ptr => upstream_grad .rtrim. this%right_operand%shape(1)
+    ptr => slice_right(upstream_grad, this%right_operand%shape(1), this%indices(1))
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_concat_right
 !-------------------------------------------------------------------------------
@@ -68,7 +92,11 @@ contains
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
-    output = upstream_grad(1:size(this%left_operand%val,1), :)
+    if(this%indices(1).eq.1)then
+       output = upstream_grad(1:size(this%left_operand%val,1), :)
+    else
+       output = upstream_grad(:, 1:size(this%left_operand%val,2))
+    end if
 
   end subroutine get_partial_concat_left_val
 !-------------------------------------------------------------------------------
@@ -78,64 +106,140 @@ contains
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
-    output = upstream_grad( &
-         size(this%left_operand%val,1)+1:size(upstream_grad,1), : &
-    )
+    if(this%indices(1).eq.1)then
+       output = upstream_grad( &
+            size(this%left_operand%val,1)+1:size(upstream_grad,1), : &
+       )
+    else
+       output = upstream_grad(:, &
+            size(this%left_operand%val,2)+1:size(upstream_grad,2) &
+       )
+    end if
 
   end subroutine get_partial_concat_right_val
 !###############################################################################
 
 
 !###############################################################################
-  module function ltrim_array(a, b) result(c)
+  module function slice_left_array(a, b, dim) result(c)
     !! Left trim an autodiff array
     implicit none
     class(array_type), intent(in), target :: a
     integer, intent(in) :: b
+    integer, intent(in), optional :: dim
     type(array_type), pointer :: c
 
-    integer :: i, j, s
+    integer :: s
+    integer :: dim_
 
-    c => a%create_result(array_shape = [b, size(a%val,2)])
+    if(present(dim)) then
+       dim_ = dim
+    else
+       dim_ = 1
+    end if
+
     ! left trim 1D array by using shape to swap dimensions
-    do concurrent(s=1:size(a%val,2))
-       c%val( :, s) = a%val( 1:b, s)
-    end do
+    if(dim_.eq.1)then
+       c => a%create_result(array_shape = [b, size(a%val,2)])
+       do concurrent(s=1:size(a%val,2))
+          c%val( :, s) = a%val( 1:b, s)
+       end do
+    else
+       c => a%create_result(array_shape = [size(a%val,1), b])
+       do concurrent(s=1:size(a%val,1))
+          c%val( s, : ) = a%val( s, 1:b)
+       end do
+    end if
+    c%indices = [ dim_, b ]
 
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
-       c%operation = 'ltrim'
+       c%operation = 'slice_left'
        c%left_operand => a
        c%owns_left_operand = a%is_temporary
     end if
+  end function slice_left_array
+!###############################################################################
+
+
+!###############################################################################
+  module function slice_right_array(a, b, dim) result(c)
+    !! Right trim an autodiff array
+    implicit none
+    class(array_type), intent(in), target :: a
+    integer, intent(in) :: b
+    integer, intent(in), optional :: dim
+    type(array_type), pointer :: c
+
+    integer :: s
+    integer :: dim_
+
+    if(present(dim)) then
+       dim_ = dim
+    else
+       dim_ = 1
+    end if
+
+    ! right trim 1D array by using shape to swap dimensions
+    if(dim_.eq.1)then
+       c => a%create_result(array_shape = [b, size(a%val,2)])
+       do concurrent(s=1:size(a%val,2))
+          c%val( :, s) = a%val( size(a%val,1)-b+1:size(a%val,1), s)
+       end do
+    else
+       c => a%create_result(array_shape = [size(a%val,1), b])
+       do concurrent(s=1:size(a%val,1))
+          c%val( s, : ) = a%val( s, size(a%val,2)-b+1:size(a%val,2))
+       end do
+    end if
+    c%indices = [ dim_, b ]
+
+    if(a%requires_grad) then
+       c%requires_grad = .true.
+       c%is_forward = a%is_forward
+       c%operation = 'slice_right'
+       c%left_operand => a
+       c%owns_left_operand = a%is_temporary
+    end if
+  end function slice_right_array
+!###############################################################################
+
+
+!###############################################################################
+  module function ltrim_array(a, b, dim) result(c)
+    !! Left trim an autodiff array
+    implicit none
+    class(array_type), intent(in), target :: a
+    integer, intent(in) :: b
+    integer, intent(in), optional :: dim
+    type(array_type), pointer :: c
+
+    if(present(dim)) then
+       c => slice_right_array(a, size(a%val, dim) - b, dim)
+    else
+       c => slice_right_array(a, size(a%val, 1) - b, 1)
+    end if
+
   end function ltrim_array
 !###############################################################################
 
 
 !###############################################################################
-  module function rtrim_array(a, b) result(c)
+  module function rtrim_array(a, b, dim) result(c)
     !! Right trim an autodiff array
     implicit none
     class(array_type), intent(in), target :: a
     integer, intent(in) :: b
+    integer, intent(in), optional :: dim
     type(array_type), pointer :: c
 
-    integer :: i, j, s
-
-    c => a%create_result(array_shape = [b, size(a%val,2)])
-    ! right trim 1D array by using shape to swap dimensions
-    do concurrent(s=1:size(a%val,2))
-       c%val( :, s) = a%val( size(a%val,1)-b+1:size(a%val,1), s)
-    end do
-
-    if(a%requires_grad) then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward
-       c%operation = 'rtrim'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+    if(present(dim)) then
+       c => slice_left_array(a, size(a%val, dim) - b, dim)
+    else
+       c => slice_left_array(a, size(a%val, 1) - b, 1)
     end if
+
   end function rtrim_array
 !###############################################################################
 
