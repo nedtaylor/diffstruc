@@ -340,6 +340,11 @@ module diffstruc__types
        integer, intent(in) :: dim
        type(array_type), pointer :: c
      end function mean_array
+
+     module function mean_all_array(a) result(c)
+       class(array_type), intent(in), target :: a
+       type(array_type), pointer :: c
+     end function mean_all_array
   end interface
 
 
@@ -349,6 +354,11 @@ module diffstruc__types
        integer, intent(in) :: dim
        type(array_type), pointer :: c
      end function sum_array
+
+     module function sum_all_array(a) result(c)
+       class(array_type), intent(in), target :: a
+       type(array_type), pointer :: c
+     end function sum_all_array
 
      module function sum_and_pad_array(a, dim, new_dim_index, new_dim_size) &
           result(c)
