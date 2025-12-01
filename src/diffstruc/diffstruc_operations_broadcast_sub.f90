@@ -15,6 +15,7 @@ contains
 
     integer :: i, s
     integer :: dim_
+    integer, dimension(:), allocatable :: input_shape
 
     if(present(dim)) then
        dim_ = dim
@@ -24,8 +25,22 @@ contains
 
     ! concatenate 1D array by using shape to swap dimensions
     if(dim_.eq.1)then
+       if(size(a%val,2).ne.size(b%val,2)) then
+          call stop_program( &
+               "concat: arrays must have the same size in non-concat dimension" &
+          )
+          return
+       elseif(size(a%shape).ne.size(b%shape)) then
+          call stop_program( &
+               "concat: arrays must have the same number of dimensions" &
+          )
+          return
+       end if
+       input_shape = a%shape
+       input_shape(size(input_shape)) = &
+            a%shape(size(input_shape)) + b%shape(size(input_shape))
        c => a%create_result(array_shape = &
-            [size(a%val,1) + size(b%val,1), size(a%val,2)])
+            [input_shape, size(a%val,2)])
        c%val = 0._real32
        do concurrent(s=1:size(a%val,2))
           do concurrent(i=1:size(a%val,1))
@@ -35,9 +50,15 @@ contains
              c%val( size(a%val,1) + i, s) = b%val( i, s)
           end do
        end do
-    else
+    elseif(dim_.eq.2)then
+       if(size(a%val,1).ne.size(b%val,1)) then
+          call stop_program( &
+               "concat: arrays must have the same size in non-concat dimension" &
+          )
+          return
+       end if
        c => a%create_result(array_shape = &
-            [size(a%val,1), size(a%val,2) + size(b%val,2)])
+            [a%shape, size(a%val,2) + size(b%val,2)])
        c%val = 0._real32
        do concurrent(s=1:size(a%val,1))
           do concurrent(i=1:size(a%val,2))
@@ -47,6 +68,9 @@ contains
              c%val( s, size(a%val,2) + i) = b%val( s, i)
           end do
        end do
+    else
+       call stop_program("concat: only 1 or 2 dimensions are supported")
+       return
     end if
     c%indices = [ dim_ ]
 
