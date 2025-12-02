@@ -7,31 +7,52 @@ module diffstruc__operations_broadcast
 
   private
 
-  public :: operator(.concat.), operator(.ltrim.), operator(.rtrim.), &
+  public :: concat, slice_left, slice_right, ltrim, rtrim, &
        operator(.index.), reverse_index, &
        pack, unpack
 
   ! Operation interfaces
   !-----------------------------------------------------------------------------
-  interface operator(.concat.)
-     module function concat_arrays(a, b) result(c)
+  interface concat
+     module function concat_arrays(a, b, dim) result(c)
        class(array_type), intent(in), target :: a, b
+       integer, intent(in), optional :: dim
        type(array_type), pointer :: c
      end function concat_arrays
   end interface
 
-  interface operator(.ltrim.)
-     module function ltrim_array(a, b) result(c)
+  interface slice_left
+     module function slice_left_array(a, b, dim) result(c)
        class(array_type), intent(in), target :: a
        integer, intent(in) :: b
+       integer, intent(in), optional :: dim
+       type(array_type), pointer :: c
+     end function slice_left_array
+  end interface
+
+  interface slice_right
+     module function slice_right_array(a, b, dim) result(c)
+       class(array_type), intent(in), target :: a
+       integer, intent(in) :: b
+       integer, intent(in), optional :: dim
+       type(array_type), pointer :: c
+     end function slice_right_array
+  end interface
+
+  interface ltrim
+     module function ltrim_array(a, b, dim) result(c)
+       class(array_type), intent(in), target :: a
+       integer, intent(in) :: b
+       integer, intent(in), optional :: dim
        type(array_type), pointer :: c
      end function ltrim_array
   end interface
 
-  interface operator(.rtrim.)
-     module function rtrim_array(a, b) result(c)
+  interface rtrim
+     module function rtrim_array(a, b, dim) result(c)
        class(array_type), intent(in), target :: a
        integer, intent(in) :: b
+       integer, intent(in), optional :: dim
        type(array_type), pointer :: c
      end function rtrim_array
   end interface

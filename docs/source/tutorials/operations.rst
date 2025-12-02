@@ -39,7 +39,7 @@ Operation Summary Table
      - ``.lt.``, ``.gt.``, ``merge``
      - Element-wise comparisons
    * - Broadcast
-     - ``spread``, ``.concat.``, ``.ltrim.``, ``.rtrim.``, ``.index.``, ``reverse_index``
+     - ``spread``, ``concat``, ``slice_left``, ``slice_right``, ``ltrim``, ``rtrim``, ``.index.``, ``reverse_index``
      - Broadcasting and indexing
    * - Other
      - ``sign``, ``sqrt``, ``sigmoid``, ``gaussian``

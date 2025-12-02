@@ -2697,6 +2697,42 @@ contains
 
   end function mean_array
 !-------------------------------------------------------------------------------
+  function mean_all_array(a) result(c)
+    !! Compute mean value of all elements in an autodiff array
+    implicit none
+    class(array_type), intent(in), target :: a
+    type(array_type), pointer :: c
+
+    integer :: i, s, n_rows, n_cols
+    real(real32) :: rtmp1, inv_count
+
+    n_rows = size(a%val, 1)
+    n_cols = size(a%val, 2)
+
+    c => a%create_result(array_shape = [1, 1])
+    rtmp1 = real(n_rows * n_cols, real32)
+    inv_count = 1.0_real32 / rtmp1
+
+    c%val(1,1) = 0.0_real32
+    do concurrent(s = 1:n_cols, i = 1:n_rows)
+       c%val(1,1) = c%val(1,1) + a%val(i,s)
+    end do
+    c%val(1,1) = c%val(1,1) * inv_count
+
+    c%indices = [1, 1]
+
+    c%get_partial_left => get_partial_mean_all
+    c%get_partial_left_val => get_partial_mean_all_val
+    if(a%requires_grad)then
+       c%requires_grad = .true.
+       c%is_forward = a%is_forward
+       c%operation = 'mean_all_array'
+       c%left_operand => a
+       c%owns_left_operand = a%is_temporary
+    end if
+
+  end function mean_all_array
+!-------------------------------------------------------------------------------
   function get_partial_mean(this, upstream_grad) result(output)
     implicit none
     class(array_type), intent(inout) :: this
@@ -2747,6 +2783,56 @@ contains
        end do
     end if
   end subroutine get_partial_mean_val
+!-------------------------------------------------------------------------------
+  function get_partial_mean_all(this, upstream_grad) result(output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+
+    real(real32) :: rtmp1
+    type(array_type), pointer :: ptr
+
+    ! Calculate the number of elements that were averaged
+    rtmp1 = real(product(shape(this%left_operand%val)), real32)
+
+    if(this%is_forward)then
+       ptr => sum( upstream_grad ) / rtmp1
+    else
+       ptr => spread( &
+            upstream_grad / rtmp1, &
+            dim=1, &
+            index=1, &
+            ncopies= size(this%left_operand%val, 1) &
+       )
+       ptr => spread( &
+            ptr, &
+            dim=2, &
+            index=1, &
+            ncopies= size(this%left_operand%val, 2) &
+       )
+    end if
+    call output%assign_and_deallocate_source(ptr)
+  end function get_partial_mean_all
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_mean_all_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, s, n_rows, n_cols
+    real(real32) :: inv_count
+
+    ! Cache values to avoid repeated accesses
+    n_rows = size(output, 1)
+    n_cols = size(output, 2)
+    inv_count = 1.0_real32 / real(product(shape(this%left_operand%val)), real32)
+
+    do concurrent(s = 1:n_cols, i = 1:n_rows)
+       output(i,s) = upstream_grad(1,1) * inv_count
+    end do
+  end subroutine get_partial_mean_all_val
 !###############################################################################
 
 
@@ -2796,6 +2882,37 @@ contains
     end if
 
   end function sum_array
+!-------------------------------------------------------------------------------
+  module function sum_all_array(a) result(c)
+    !! Sum all elements in an autodiff array
+    implicit none
+    class(array_type), intent(in), target :: a
+    type(array_type), pointer :: c
+
+    integer :: i, s, n_rows, n_cols
+
+    n_rows = size(a%val, 1)
+    n_cols = size(a%val, 2)
+
+    c => a%create_result(array_shape=[1, 1])
+    c%val(1,1) = 0.0_real32
+    do concurrent(s = 1:n_cols, i = 1:n_rows)
+       c%val(1,1) = c%val(1,1) + a%val(i,s)
+    end do
+
+    c%indices = [1, 1]
+
+    c%get_partial_left => get_partial_sum_all
+    c%get_partial_left_val => get_partial_sum_all_val
+    if(a%requires_grad)then
+       c%requires_grad = .true.
+       c%is_forward = a%is_forward
+       c%operation = 'sum_all_array'
+       c%left_operand => a
+       c%owns_left_operand = a%is_temporary
+    end if
+
+  end function sum_all_array
 !-------------------------------------------------------------------------------
   module function sum_and_pad_array(a, dim, new_dim_index, new_dim_size) result(c)
     !! Sum values along a dimension and return an autodiff array
@@ -2897,7 +3014,50 @@ contains
        end do
     end if
   end subroutine get_partial_sum_val
-! !-------------------------------------------------------------------------------
+!-------------------------------------------------------------------------------
+  function get_partial_sum_all(this, upstream_grad) result(output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+    type(array_type), pointer :: ptr
+
+    if(this%is_forward)then
+       ptr => sum( upstream_grad )
+    else
+       ptr => spread( &
+            upstream_grad, &
+            dim=1, &
+            index=1, &
+            ncopies= size(this%left_operand%val, 1) &
+       )
+       ptr => spread( &
+            ptr, &
+            dim=2, &
+            index=1, &
+            ncopies= size(this%left_operand%val, 2) &
+       )
+    end if
+    call output%assign_and_deallocate_source(ptr)
+  end function get_partial_sum_all
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_sum_all_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, s, n_rows, n_cols
+
+    ! Cache values to avoid repeated accesses
+    n_rows = size(output, 1)
+    n_cols = size(output, 2)
+
+    do concurrent(s = 1:n_cols, i = 1:n_rows)
+       output(i,s) = upstream_grad(1,1)
+    end do
+  end subroutine get_partial_sum_all_val
+!-------------------------------------------------------------------------------
   function get_partial_sum_and_pad(this, upstream_grad) result(output)
     implicit none
     class(array_type), intent(inout) :: this
