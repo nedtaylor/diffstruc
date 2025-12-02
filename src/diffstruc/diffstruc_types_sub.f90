@@ -404,6 +404,10 @@ contains
     !! String for rank
 
 
+    if(.not.this%allocated .or. .not.allocated(this%val))then
+       call print_warning("Trying to extract from unallocated array")
+       return
+    end if
     select rank(output)
     rank(1)
        output = reshape(this%val, [ product(this%shape) * size(this%val,2) ])
