@@ -68,12 +68,18 @@ message(STATUS "coreutils home directory: ${coreutils_DIR}")
 message(STATUS "coreutils include directory: ${coreutils_INCLUDE_DIRS}")
 message(STATUS "coreutils source directory: ${coreutils_BUILD_DIRS}")
 
-# Enable testing for THIS project only, after dependencies are loaded
-enable_testing()
+# Only enable testing and options when this is the main project
+if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
+  enable_testing()
 
-# set options for building tests and examples
-option(BUILD_TESTS "Build the unit tests" ON)
-option(BUILD_EXAMPLES "Build the examples" ON)
+  # set options for building tests and examples
+  option(BUILD_TESTS "Build the unit tests" ON)
+  option(BUILD_EXAMPLES "Build the examples" ON)
+else()
+  # When used as a dependency, disable tests by default
+  set(BUILD_TESTS OFF)
+  set(BUILD_EXAMPLES OFF)
+endif()
 
 # Define the sources
 set(SRC_DIR src)
@@ -181,8 +187,8 @@ target_compile_options(${PROJECT_NAME} PUBLIC "$<$<CONFIG:Parallel_Dev>:${DEVFLA
 add_dependencies(${PROJECT_NAME} coreutils)
 target_link_libraries(${PROJECT_NAME} coreutils)
 
-# include the build test directory
-if(BUILD_TESTS)
+# include the build test directory only if this is the main project
+if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME AND BUILD_TESTS)
   add_subdirectory(test)
 endif()
 
