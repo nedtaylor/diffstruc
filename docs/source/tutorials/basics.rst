@@ -50,13 +50,31 @@ The main components of ``array_type`` are:
 * ``is_temporary`` - Flag indicating if this is a temporary computation result
 * ``operation`` - Character string indicating the operation that produced this variable
 
+Data Storage Convention
+~~~~~~~~~~~~~~~~~~~~~~~
+
 Critically, the data is stored in the ``val`` component, which is a ``real`` 2D array of shape :math:`(E, S)`, where :math:`E` is the total number of elements per sample (i.e., product of shape dimensions) and :math:`S` is the batch size.
 Let's take the example of a 4D array representing an image batch with height :math:`H`, width :math:`W`, channels :math:`C`, and batch size :math:`N`.
 We expect the shape to be :math:`(H, W, C, N)`.
 However, in ``array_type``, this is flattened to a 2D array with shape :math:`(H \cdot W \cdot C, N)`.
 The indexing :math:`E` follows **column-major order** (Fortran-style), meaning that the first dimension :math:`H` varies fastest when iterating through the array.
 
-If you are just interested in getting the data values, you can directly access the ``val`` component or by using the ``extract()`` type-bound procedure.
+To set the values of an ``array_type``, you can directly access the ``val`` component or by using the ``set()`` type-bound procedure.
+Note, like any Fortran array, you must ensure that the shape matches when setting values.
+Ensure that you allocate the array with the correct shape before setting values, otherwise you may encounter shape mismatch errors.
+An example of setting the values of a 2D array (with a single sample index) is shown below:
+
+.. code-block:: fortran
+
+   type(array_type) :: x
+   real :: new_values(2,3,1)
+   call x%allocate([2, 3, 1])  ! Allocate a 2D array of shape [2, 3]
+   new_values = reshape([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape(new_values))  ! New values in column-major order
+   call x%set(new_values)      ! Set the values
+   write(*,*) 'Shape:', x%shape
+   write(*,*) 'Values:', x%val(:, 1)  ! Accessing val directly
+
+To access the data values, you can directly access the ``val`` component or by using the ``extract()`` type-bound procedure.
 An example of accessing the values of a 2D array (with a single sample index) is shown below:
 
 .. code-block:: fortran
