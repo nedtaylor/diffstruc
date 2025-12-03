@@ -34,8 +34,8 @@ Basic Structure
    write(*,*) x%val(:, 1)  ! First sample in batch
 
 Unless working with neural networks (i.e., via `athena <https://github.com/nedtaylor/athena>`_), you will typically set ``batch_size = 1`` for most applications.
-What this means is that, for most use cases, the final dimension of the array shape will be set to 1, indicating a single batch of data.
-An ``array_shape`` argument of dimension ``[n, m, 1]`` corresponds to a 2D array of size ``n x m``.
+What this means is that, for most use cases, the final dimension of the array shape will be set to 1, indicating a single data sample.
+An ``array_shape`` argument of dimension ``[n, m, 1]`` corresponds to a 2D array of size :math:`n \times m`.
 ``array_type`` currently supports array ranks of up to 5 (i.e., shapes like ``[d1, d2, d3, d4, d5, batch_size]``).
 
 Key Components
@@ -44,10 +44,33 @@ Key Components
 The main components of ``array_type`` are:
 
 * ``val`` - The actual array values
+* ``shape`` - The shape of the data for each sample (excluding batch size)
 * ``requires_grad`` - Flag to enable gradient tracking
 * ``grad`` - Pointer to the gradient (derivative) array
 * ``is_temporary`` - Flag indicating if this is a temporary computation result
 * ``operation`` - Character string indicating the operation that produced this variable
+
+Critically, the data is stored in the ``val`` component, which is a ``real`` 2D array of shape :math:`(E, S)`, where :math:`E` is the total number of elements per sample (i.e., product of shape dimensions) and :math:`S` is the batch size.
+Let's take the example of a 4D array representing an image batch with height :math:`H`, width :math:`W`, channels :math:`C`, and batch size :math:`N`.
+We expect the shape to be :math:`(H, W, C, N)`.
+However, in ``array_type``, this is flattened to a 2D array with shape :math:`(H \cdot W \cdot C, N)`.
+The indexing :math:`E` follows **column-major order** (Fortran-style), meaning that the first dimension :math:`H` varies fastest when iterating through the array.
+
+If you are just interested in getting the data values, you can directly access the ``val`` component or by using the ``extract()`` type-bound procedure.
+An example of accessing the values of a 2D array (with a single sample index) is shown below:
+
+.. code-block:: fortran
+
+   type(array_type) :: x
+   real, allocatable :: x_data(:,:,:)
+   call x%allocate([2, 3, 1], source=1.0)
+   write(*,*) 'Shape:', x%shape
+   write(*,*) 'Number of samples:', size(x%val, 2)
+   write(*,*) x%val(:, 1)        ! Accessing val directly
+   call x%extract(x_data)        ! Using extract() procedure
+   write(*,*) x_data(:, :, 1)    ! Accessing extracted data
+
+Note that the extracted values are in the original multi-dimensional shape, and only contain the data, not any gradient information.
 
 
 Worked Example
