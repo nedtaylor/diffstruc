@@ -164,6 +164,15 @@ module diffstruc__types
   end type array_type
 
 
+  ! Constructor interface
+  !-----------------------------------------------------------------------------
+  interface array_type
+     module function constructor() result(this)
+       type(array_type) :: this
+     end function constructor
+  end interface array_type
+
+
   ! Interfaces
   !-----------------------------------------------------------------------------
   interface

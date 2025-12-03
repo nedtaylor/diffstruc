@@ -8,6 +8,18 @@ submodule(diffstruc__types) diffstruc__types_submodule
 contains
 
 !###############################################################################
+  module function constructor() result(this)
+    !! Constructor for array_type
+    implicit none
+
+    ! Return value
+    type(array_type) :: this
+
+  end function constructor
+!###############################################################################
+
+
+!###############################################################################
   module subroutine allocate_array(this, array_shape, source)
     !! Allocate array
     implicit none
