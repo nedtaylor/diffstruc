@@ -237,4 +237,51 @@ contains
   end subroutine get_partial_gaussian_val
 !###############################################################################
 
+
+!###############################################################################
+  module function log10_array(a) result(c)
+    !! Natural logarithm function for autodiff arrays
+    implicit none
+    class(array_type), intent(in), target :: a
+    type(array_type), pointer :: c
+
+    c => a%create_result()
+    c%val = log10(a%val)
+
+    c%get_partial_left => get_partial_log10
+    c%get_partial_left_val => get_partial_log10_val
+    if(a%requires_grad)then
+       c%requires_grad = .true.
+       c%is_forward = a%is_forward
+       c%operation = 'log10'
+       c%left_operand => a
+       c%owns_left_operand = a%is_temporary
+    end if
+  end function log10_array
+!-------------------------------------------------------------------------------
+  function get_partial_log10(this, upstream_grad) result(output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+    logical :: left_is_temporary_local
+    type(array_type), pointer :: ptr
+
+    left_is_temporary_local = this%left_operand%is_temporary
+    this%left_operand%is_temporary = .false.
+    ptr => upstream_grad / ( this%left_operand * log(10._real32) )
+    this%left_operand%is_temporary = left_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
+  end function get_partial_log10
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_log10_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    output = upstream_grad / ( this%left_operand%val * log(10._real32) )
+  end subroutine get_partial_log10_val
+!###############################################################################
+
 end submodule diffstruc__operations_maths_sub

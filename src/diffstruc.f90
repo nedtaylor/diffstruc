@@ -16,11 +16,11 @@ module diffstruc
   use diffstruc__operations_broadcast, only: &
        concat, slice_left, slice_right, ltrim, rtrim, &
        operator(.index.), reverse_index, &
-       pack, unpack
+       pack, unpack, reshape
   use diffstruc__operations_comparison, only: &
        operator(.lt.), operator(.gt.), operator(.le.), operator(.ge.), merge
   use diffstruc__operations_reduction, only: maxval, max
-  use diffstruc__operations_maths, only: sqrt, sign, sigmoid, gaussian, abs
+  use diffstruc__operations_maths, only: sqrt, sign, sigmoid, gaussian, abs, log10
   implicit none
 
   private
@@ -39,9 +39,9 @@ module diffstruc
        transpose
   public :: concat, slice_left, slice_right, ltrim, rtrim, &
        operator(.index.), reverse_index, &
-       pack, unpack
+       pack, unpack, reshape
   public :: operator(.lt.), operator(.gt.), operator(.le.), operator(.ge.), merge
   public :: maxval, max
-  public :: sqrt, sign, sigmoid, gaussian, abs
+  public :: sqrt, sign, sigmoid, gaussian, abs, log10
 
 end module diffstruc

@@ -7,7 +7,7 @@ module diffstruc__operations_maths
 
   private
 
-  public :: sqrt, sign, sigmoid, gaussian, abs
+  public :: sqrt, sign, sigmoid, gaussian, abs, log10
 
 
   ! Operation interfaces
@@ -47,6 +47,13 @@ module diffstruc__operations_maths
        real(real32), intent(in) :: mu, sigma
        type(array_type), pointer :: c
      end function gaussian_array
+  end interface
+
+  interface log10
+     module function log10_array(a) result(c)
+       class(array_type), intent(in), target :: a
+       type(array_type), pointer :: c
+     end function log10_array
   end interface
 
 end module diffstruc__operations_maths

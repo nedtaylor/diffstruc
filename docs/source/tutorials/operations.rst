@@ -27,7 +27,7 @@ Operation Summary Table
      - ``tanh``
      - Common in neural networks
    * - Exponential
-     - ``exp``, ``log``
+     - ``exp``, ``log``, ``log10``
      - log is natural logarithm
    * - Linear Algebra
      - ``dot_product``, ``outer_product``, ``matmul``, ``transpose``
@@ -39,7 +39,7 @@ Operation Summary Table
      - ``.lt.``, ``.gt.``, ``merge``
      - Element-wise comparisons
    * - Broadcast
-     - ``spread``, ``concat``, ``slice_left``, ``slice_right``, ``ltrim``, ``rtrim``, ``.index.``, ``reverse_index``
+     - ``spread``, ``concat``, ``slice_left``, ``slice_right``, ``ltrim``, ``rtrim``, ``.index.``, ``reverse_index``, ``pack``, ``unpack``, ``reshape``
      - Broadcasting and indexing
    * - Other
      - ``sign``, ``sqrt``, ``sigmoid``, ``gaussian``
@@ -64,6 +64,22 @@ The interface for the ``get_partial_left`` and ``get_partial_right`` functions a
        type(array_type) :: output
      end function get_partial
   end interface
+
+The interface for the ``get_partial_left_val`` and ``get_partial_right_val`` functions are:
+
+.. code-block:: fortran
+
+  interface
+     pure subroutine get_partial_val(this, upstream_grad, output)
+       class(array_type), intent(in) :: this
+       real(real32), dimension(:,:), intent(in) :: upstream_grad
+       real(real32), dimension(:,:), intent(out) :: output
+     end subroutine get_partial_val
+  end interface
+
+The former set are used for forward mode differentiation, while the latter are used exclusively for reverse mode differentiation.
+A future release may use ``get_partial`` for reverse mode also (if a computational graph needs to be built during reverse mode traversal), but for now it is only used in forward mode.
+The reason that some operations in diffstruc still define a ``get_partial`` function is a legacy reason in case this reverse mode graph building needs to be reintroduced in the future.
 
 Depending on the operation, you might only need to define one of these (priority is given to the left operand if only one is defined).
 
@@ -100,6 +116,7 @@ Focus on the parts marked with comments.
       !!-----------------------------------------------
 
       c%get_partial_left => get_partial_left_custom_op
+      c%get_partial_left_val => get_partial_left_custom_op_val
       if(a%requires_grad) then
         c%requires_grad = .true.
         c%is_forward = a%is_forward
@@ -136,7 +153,21 @@ Focus on the parts marked with comments.
       call output%assign_and_deallocate_source(ptr)
     end function get_partial_left_custom_op
 
+
+    pure subroutine get_partial_left_custom_op_val(this, upstream_grad, output)
+      implicit none
+      class(array_type), intent(in) :: this
+      real(real32), dimension(:,:), intent(in) :: upstream_grad
+      real(real32), dimension(:,:), intent(out) :: output
+
+      !!-----------------------------------------------
+      !! YOUR CUSTOM PARTIAL DERIVATIVE
+      !!-----------------------------------------------
+      output = -upstream_grad * sin( this%left_operand%val )
+      !!-----------------------------------------------
+    end subroutine get_partial_left_custom_op_val
+
   end module custom_operations
 
-For one with two operands, you would similarly define ``get_partial_right_custom_op`` and associate the ``right_operand`` pointer of the result.
+For one with two operands, you would similarly define ``get_partial_right_custom_op``, ``get_partial_right_custom_op_val``, and associate the ``right_operand`` pointer of the result.
 For how this works, see the built-in matmul operation in the source code (:git:`diffstruc_operations_linalg_sub.f90<src/diffstruc/diffstruc_operations_linalg_sub.f90>`)

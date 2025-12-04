@@ -9,7 +9,7 @@ module diffstruc__operations_broadcast
 
   public :: concat, slice_left, slice_right, ltrim, rtrim, &
        operator(.index.), reverse_index, &
-       pack, unpack
+       pack, unpack, reshape
 
   ! Operation interfaces
   !-----------------------------------------------------------------------------
@@ -106,6 +106,14 @@ module diffstruc__operations_broadcast
        integer, intent(in) :: new_size, dim
        type(array_type), pointer :: c
      end function unpack_indices_array
+  end interface
+
+  interface reshape
+     module function reshape_array(a, new_shape) result(c)
+       class(array_type), intent(in), target :: a
+       integer, dimension(:), intent(in) :: new_shape
+       type(array_type), pointer :: c
+     end function reshape_array
   end interface
 
 end module diffstruc__operations_broadcast

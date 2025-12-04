@@ -684,4 +684,55 @@ contains
   end function get_partial_unpack_indices
 !###############################################################################
 
+
+!###############################################################################
+  module function reshape_array(a, new_shape) result(c)
+    !! Reshape an autodiff array
+    implicit none
+    class(array_type), intent(in), target :: a
+    integer, dimension(:), intent(in) :: new_shape
+    type(array_type), pointer :: c
+
+    integer :: s
+
+    c => a%create_result(array_shape = [ new_shape, size(a%val,2) ])
+    do concurrent(s=1:size(a%val,2))
+       c%val(:, s) = a%val(:, s)
+    end do
+    c%indices = a%shape
+
+    c%get_partial_left => get_partial_reshape
+    c%get_partial_left_val => get_partial_reshape_val
+    if(a%requires_grad) then
+       c%requires_grad = .true.
+       c%is_forward = a%is_forward
+       c%operation = 'reshape'
+       c%left_operand => a
+       c%owns_left_operand = a%is_temporary
+    end if
+  end function reshape_array
+!-------------------------------------------------------------------------------
+  function get_partial_reshape(this, upstream_grad) result(output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+    type(array_type), pointer :: ptr
+
+    ptr => reshape( &
+         upstream_grad, new_shape = this%indices &
+    )
+    call output%assign_and_deallocate_source(ptr)
+  end function get_partial_reshape
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_reshape_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    output = upstream_grad
+  end subroutine get_partial_reshape_val
+!###############################################################################
+
 end submodule diffstruc__operations_broadcast_sub
