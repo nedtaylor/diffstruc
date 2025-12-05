@@ -2713,7 +2713,7 @@ contains
 
   end function mean_array
 !-------------------------------------------------------------------------------
-  function mean_all_array(a) result(c)
+  module function mean_all_array(a) result(c)
     !! Compute mean value of all elements in an autodiff array
     implicit none
     class(array_type), intent(in), target :: a
