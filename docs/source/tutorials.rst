@@ -3,8 +3,6 @@ Tutorials
 
 These tutorials will guide you through using diffstruc for automatic differentiation in Fortran.
 
-Overview
---------
 
 The tutorials are organised to build your understanding progressively:
 
@@ -15,8 +13,6 @@ The tutorials are organised to build your understanding progressively:
 5. **Operations** - Learn about the supported mathematical operations and how to define custom ones
 6. **Memory Management** - Learn how to manage memory effectively when using diffstruc
 
-Prerequisites
--------------
 
 Before starting these tutorials, make sure you have:
 
@@ -28,11 +24,35 @@ Before starting these tutorials, make sure you have:
 
 .. toctree::
    :maxdepth: 2
-   :caption: Tutorial Contents:
+   :caption: Basics of Automatic Differentiation:
 
    tutorials/basics
+
+
+.. toctree::
+   :maxdepth: 2
+   :caption: 1st order Derivatives:
+
    tutorials/forward_mode
    tutorials/reverse_mode
+
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Higher-Order Derivatives:
+
    tutorials/higher_order
+
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Supported Operations and Custom Definitions:
+
    tutorials/operations
+
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Memory Management:
+
    tutorials/memory_management

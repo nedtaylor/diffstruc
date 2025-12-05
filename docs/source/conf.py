@@ -34,6 +34,9 @@ def run_ford(app):
 def setup(app):
     app.connect("builder-inited", run_ford)
 
+def setup(app):
+    app.add_css_file('custom.css')
+
 # -- Project information
 
 project = 'diffstruc'
@@ -61,7 +64,7 @@ extensions = [
 ]
 
 extlinks = {
-    'git': ('https://github.com/ExeQuantCode/RAFFLE/blob/' + git_branch + '/%s', 'git: %s')
+    'git': ('https://github.com/nedtaylor/diffstruc/blob/' + git_branch + '/%s', 'git: %s')
 }
 
 intersphinx_mapping = {

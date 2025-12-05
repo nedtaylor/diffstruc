@@ -220,8 +220,7 @@ For high-order derivatives with large arrays, memory can become limiting.
 * $n$-th order derivative requires $n$ forward passes
 * Cost likely increases greater than that due to the growing computation graph that must be traversed multiple times
 
-Best Practices
-~~~~~~~~~~~~~~
+It is advisable to:
 
 1. Clean up intermediate results promptly
 2. Consider numerical methods for very high orders (>3)

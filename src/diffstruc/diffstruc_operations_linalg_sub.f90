@@ -13,12 +13,15 @@ contains
     type(array_type), pointer :: c
 
     integer :: s
+    character(len=128) :: err_msg
     real(real32), pointer :: temp(:,:)
 
     if(.not.a%is_sample_dependent)then
        if(size(b%shape).ne.1)then
-          call stop_program( &
-               'Matrix multiplication not implemented for these shapes yet' )
+          write(err_msg,'("Matrix multiplication not implemented for array ''b'' &
+               &rank: ",I0)') size(b%shape)
+          call stop_program(err_msg)
+          return
        end if
        c => a%create_result(array_shape=[a%shape(1), size(b%val,2)])
        temp(1:a%shape(1), 1:a%shape(2)) => a%val
@@ -27,8 +30,10 @@ contains
        end do
     elseif(.not.b%is_sample_dependent)then
        if(size(a%shape).ne.1)then
-          call stop_program( &
-               'Matrix multiplication not implemented for these shapes yet' )
+          write(err_msg,'("Matrix multiplication not implemented for array ''a'' &
+               &rank: ",I0)') size(a%shape)
+          call stop_program(err_msg)
+          return
        end if
        c => b%create_result(array_shape=[b%shape(2), size(a%val,2)])
        temp(1:b%shape(1), 1:b%shape(2)) => b%val
@@ -43,6 +48,8 @@ contains
     c%is_sample_dependent = .true.
     c%get_partial_left => get_partial_matmul_left
     c%get_partial_right => get_partial_matmul_right
+    c%get_partial_left_val => get_partial_matmul_left_val
+    c%get_partial_right_val => get_partial_matmul_right_val
     if(a%requires_grad .or. b%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
@@ -72,6 +79,8 @@ contains
     c%is_sample_dependent = a%is_sample_dependent
     c%get_partial_left => get_partial_matmul_left
     c%get_partial_right => get_partial_matmul_right
+    c%get_partial_left_val => get_partial_matmul_left_val
+    c%get_partial_right_val => get_partial_matmul_right_val
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -109,6 +118,8 @@ contains
     c%is_sample_dependent = b%is_sample_dependent
     c%get_partial_left => get_partial_matmul_left
     c%get_partial_right => get_partial_matmul_right
+    c%get_partial_left_val => get_partial_matmul_left_val
+    c%get_partial_right_val => get_partial_matmul_right_val
     if(b%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = b%is_forward
@@ -142,15 +153,15 @@ contains
     this%right_operand%is_temporary = .false.
     if(size(this%right_operand%shape).eq.2)then
        if(this%is_forward)then
-          ptr => upstream_grad .mmul. this%right_operand
+          ptr => matmul( upstream_grad, this%right_operand )
        else
-          ptr => upstream_grad .mmul. transpose(this%right_operand)
+          ptr => matmul( upstream_grad, transpose(this%right_operand) )
        end if
     elseif(size(upstream_grad%shape).eq.2)then
        if(this%is_forward)then
-          ptr => upstream_grad .mmul. this%right_operand
+          ptr => matmul( upstream_grad, this%right_operand )
        else
-          ptr => transpose(upstream_grad) .mmul. this%right_operand
+          ptr => matmul( transpose(upstream_grad), this%right_operand )
        end if
     else
        ptr => upstream_grad .outer. this%right_operand
@@ -174,15 +185,15 @@ contains
     this%left_operand%is_temporary = .false.
     if(size(this%left_operand%shape).eq.2)then
        if(this%is_forward)then
-          ptr => this%left_operand .mmul. upstream_grad
+          ptr => matmul(this%left_operand, upstream_grad)
        else
-          ptr => transpose(this%left_operand) .mmul. upstream_grad
+          ptr => matmul(transpose(this%left_operand), upstream_grad)
        end if
     elseif(size(upstream_grad%shape).eq.2)then
        if(this%is_forward)then
-          ptr => this%left_operand .mmul. upstream_grad
+          ptr => matmul(this%left_operand, upstream_grad)
        else
-          ptr => this%left_operand .mmul. transpose(upstream_grad)
+          ptr => matmul(this%left_operand, transpose(upstream_grad))
        end if
     else
        ptr => this%left_operand .outer. upstream_grad
@@ -191,6 +202,96 @@ contains
     call output%assign_and_deallocate_source(ptr)
 
   end function get_partial_matmul_right
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_matmul_left_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, j, s, m, n, num_elements, num_batches
+
+    num_batches = size(upstream_grad, 2)
+
+    if(size(this%right_operand%shape).eq.2)then
+       m = this%right_operand%shape(1)
+       n = this%right_operand%shape(2)
+       block
+         real(real32), dimension(m, n) :: temp
+         if(this%right_operand%is_sample_dependent)then
+            do concurrent(s=1:num_batches)
+               temp = reshape(this%right_operand%val(:,s), [m, n])
+               output(:,s) = matmul(upstream_grad(:,s), transpose(temp))
+            end do
+         else
+            temp = reshape(this%right_operand%val(:,1), [m, n])
+            do concurrent(s=1:num_batches)
+               output(:,s) = matmul(upstream_grad(:,s), transpose(temp))
+            end do
+         end if
+       end block
+    else
+       num_elements = size(upstream_grad,1)
+       if(this%right_operand%is_sample_dependent)then
+          do concurrent(s=1:num_batches, i=1:num_elements, &
+               j=1:size(this%right_operand%val,1))
+             output(i + (j-1)*num_elements,s) = &
+                  upstream_grad(i,s) * this%right_operand%val(j,s)
+          end do
+       else
+          do concurrent(s=1:num_batches, i=1:num_elements, &
+               j=1:size(this%right_operand%val,1))
+             output(i + (j-1)*num_elements,s) = &
+                  upstream_grad(i,s) * this%right_operand%val(j,1)
+          end do
+       end if
+    end if
+
+  end subroutine get_partial_matmul_left_val
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_matmul_right_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, j, s, m, n, num_elements, num_batches
+
+    num_batches = size(upstream_grad, 2)
+
+    if(size(this%left_operand%shape).eq.2)then
+       m = this%left_operand%shape(1)
+       n = this%left_operand%shape(2)
+       block
+         real(real32), dimension(m, n) :: temp
+          if(this%left_operand%is_sample_dependent)then
+             do concurrent(s=1:num_batches)
+                temp = reshape(this%left_operand%val(:,s), [m, n])
+                output(:,s) = matmul(transpose(temp), upstream_grad(:,s))
+             end do
+          else
+             temp = reshape(this%left_operand%val(:,1), [m, n])
+             do concurrent(s=1:num_batches)
+                output(:,s) = matmul(transpose(temp), upstream_grad(:,s))
+             end do
+          end if
+       end block
+    else
+       num_elements = size(this%left_operand%val,1)
+       if(this%left_operand%is_sample_dependent)then
+          do concurrent(s=1:num_batches, i=1:num_elements, j=1:size(upstream_grad,1))
+             output(i + (j-1)*num_elements,s) = &
+                  this%left_operand%val(i,s) * upstream_grad(j,s)
+          end do
+       else
+          do concurrent(s=1:num_batches, i=1:num_elements, j=1:size(upstream_grad,1))
+             output(i + (j-1)*num_elements,s) = &
+                  this%left_operand%val(i,1) * upstream_grad(j,s)
+          end do
+       end if
+    end if
+
+  end subroutine get_partial_matmul_right_val
 !###############################################################################
 
 
@@ -203,6 +304,13 @@ contains
 
     integer :: i, j, s
 
+    ! check shapes
+    if(size(a%shape).ne.1 .or. size(b%shape).ne.1)then
+       call stop_program("dot_product_arrays: only 1D arrays supported")
+    elseif(size(a%val,2).ne.size(b%val,2))then
+       call stop_program("dot_product_arrays: array length mismatch")
+    end if
+
     c => a%create_result(array_shape = [size(a%val,1), size(b%val,1), size(a%val,2)])
     ! outer product 1D array by using shape to swap dimensions
     do concurrent(s=1:size(a%val,2))
@@ -211,6 +319,9 @@ contains
        end do
     end do
 
+    c%get_partial_left => get_partial_outer_product_left
+    c%get_partial_right => get_partial_outer_product_right
+    c%is_sample_dependent = a%is_sample_dependent
     if(a%requires_grad .or. b%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
@@ -235,7 +346,7 @@ contains
     if(this%is_forward)then
        ptr => upstream_grad .outer. this%right_operand
     else
-       ptr => upstream_grad .mmul. this%right_operand
+       ptr => matmul(upstream_grad, this%right_operand)
     end if
     this%right_operand%is_temporary = right_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
@@ -256,11 +367,114 @@ contains
     else
        ! mathematically should be ptr => transpose(upstream_grad) .mmul. this%left_operand
        ! but for how we store vectors, this SHOULD BE equivalent
-       ptr => this%left_operand .mmul. upstream_grad
+       ptr => matmul(this%left_operand, upstream_grad)
     end if
     this%left_operand%is_temporary = left_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_outer_product_right
+!###############################################################################
+
+
+!###############################################################################
+  module function dot_product_arrays(a, b) result(c)
+    !! Dot product of two autodiff arrays
+    implicit none
+    class(array_type), intent(in), target :: a, b
+    type(array_type), pointer :: c
+
+    integer :: s
+
+    ! check shapes
+    if(size(a%shape).ne.1 .or. size(b%shape).ne.1)then
+       call stop_program("dot_product_arrays: only 1D arrays supported")
+    elseif(any(shape(a%val).ne.shape(b%val)))then
+       call stop_program("dot_product_arrays: array length mismatch")
+    end if
+
+    c => a%create_result(array_shape = [1, size(a%val,2)])
+    do concurrent(s=1:size(a%val,2))
+       c%val(1,s) = dot_product(a%val(:,s), b%val(:,s))
+    end do
+
+    c%get_partial_left => get_partial_dot_product_left
+    c%get_partial_right => get_partial_dot_product_right
+    c%get_partial_left_val => get_partial_dot_product_left_val
+    c%get_partial_right_val => get_partial_dot_product_right_val
+    c%is_sample_dependent = a%is_sample_dependent
+    if(a%requires_grad .or. b%requires_grad) then
+       c%requires_grad = .true.
+       c%is_forward = a%is_forward .or. b%is_forward
+       c%operation = 'dot_product'
+       c%left_operand => a
+       c%right_operand => b
+       c%owns_left_operand = a%is_temporary
+       c%owns_right_operand = b%is_temporary
+    end if
+  end function dot_product_arrays
+!-------------------------------------------------------------------------------
+  function get_partial_dot_product_left(this, upstream_grad) result(output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+    logical :: right_is_temporary_local
+    type(array_type), pointer :: ptr
+
+    right_is_temporary_local = this%right_operand%is_temporary
+    this%right_operand%is_temporary = .false.
+    if(this%is_forward)then
+       ptr => dot_product(upstream_grad, this%right_operand)
+    else
+       ptr => upstream_grad * this%right_operand
+    end if
+    this%right_operand%is_temporary = right_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
+  end function get_partial_dot_product_left
+!-------------------------------------------------------------------------------
+  function get_partial_dot_product_right(this, upstream_grad) result(output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+    logical :: left_is_temporary_local
+    type(array_type), pointer :: ptr
+
+    left_is_temporary_local = this%left_operand%is_temporary
+    this%left_operand%is_temporary = .false.
+    if(this%is_forward)then
+       ptr => dot_product(this%left_operand, upstream_grad)
+    else
+       ptr => upstream_grad * this%left_operand
+    end if
+    this%left_operand%is_temporary = left_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
+  end function get_partial_dot_product_right
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_dot_product_left_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, s
+
+    do concurrent(s=1:size(upstream_grad,2), i=1:size(this%right_operand%val,1))
+       output(i,s) = upstream_grad(1,s) * this%right_operand%val(i,s)
+    end do
+  end subroutine get_partial_dot_product_left_val
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_dot_product_right_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, s
+
+    do concurrent(s=1:size(upstream_grad,2), i=1:size(this%left_operand%val,1))
+       output(i,s) = upstream_grad(1,s) * this%left_operand%val(i,s)
+    end do
+  end subroutine get_partial_dot_product_right_val
 !###############################################################################
 
 
@@ -317,7 +531,5 @@ contains
 
 ! !   end function get_partial_transpose_right
 !###############################################################################
-
-
 
 end submodule diffstruc__operations_linalg_sub

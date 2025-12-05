@@ -1,7 +1,8 @@
-Getting Started: The Basics
-===========================
+Automatic Differentiation using ``array_type``
+==============================================
 
 This tutorial introduces the fundamental concepts of using diffstruc for automatic differentiation.
+Specifically, it explores the ``array_type`` derived type, which is central to diffstruc's functionality.
 
 What is Automatic Differentiation?
 -----------------------------------
@@ -33,8 +34,8 @@ Basic Structure
    write(*,*) x%val(:, 1)  ! First sample in batch
 
 Unless working with neural networks (i.e., via `athena <https://github.com/nedtaylor/athena>`_), you will typically set ``batch_size = 1`` for most applications.
-What this means is that, for most use cases, the final dimension of the array shape will be set to 1, indicating a single batch of data.
-An ``array_shape`` argument of dimension ``[n, m, 1]`` corresponds to a 2D array of size ``n x m``.
+What this means is that, for most use cases, the final dimension of the array shape will be set to 1, indicating a single data sample.
+An ``array_shape`` argument of dimension ``[n, m, 1]`` corresponds to a 2D array of size :math:`n \times m`.
 ``array_type`` currently supports array ranks of up to 5 (i.e., shapes like ``[d1, d2, d3, d4, d5, batch_size]``).
 
 Key Components
@@ -43,9 +44,51 @@ Key Components
 The main components of ``array_type`` are:
 
 * ``val`` - The actual array values
+* ``shape`` - The shape of the data for each sample (excluding batch size)
 * ``requires_grad`` - Flag to enable gradient tracking
 * ``grad`` - Pointer to the gradient (derivative) array
 * ``is_temporary`` - Flag indicating if this is a temporary computation result
+* ``operation`` - Character string indicating the operation that produced this variable
+
+Data Storage Convention
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Critically, the data is stored in the ``val`` component, which is a ``real`` 2D array of shape :math:`(E, S)`, where :math:`E` is the total number of elements per sample (i.e., product of shape dimensions) and :math:`S` is the batch size.
+Let's take the example of a 4D array representing an image batch with height :math:`H`, width :math:`W`, channels :math:`C`, and batch size :math:`N`.
+We expect the shape to be :math:`(H, W, C, N)`.
+However, in ``array_type``, this is flattened to a 2D array with shape :math:`(H \cdot W \cdot C, N)`.
+The indexing :math:`E` follows **column-major order** (Fortran-style), meaning that the first dimension :math:`H` varies fastest when iterating through the array.
+
+To set the values of an ``array_type``, you can directly access the ``val`` component or by using the ``set()`` type-bound procedure.
+Note, like any Fortran array, you must ensure that the shape matches when setting values.
+Ensure that you allocate the array with the correct shape before setting values, otherwise you may encounter shape mismatch errors.
+An example of setting the values of a 2D array (with a single sample index) is shown below:
+
+.. code-block:: fortran
+
+   type(array_type) :: x
+   real :: new_values(2,3,1)
+   call x%allocate([2, 3, 1])  ! Allocate a 2D array of shape [2, 3]
+   new_values = reshape([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape(new_values))  ! New values in column-major order
+   call x%set(new_values)      ! Set the values
+   write(*,*) 'Shape:', x%shape
+   write(*,*) 'Values:', x%val(:, 1)  ! Accessing val directly
+
+To access the data values, you can directly access the ``val`` component or by using the ``extract()`` type-bound procedure.
+An example of accessing the values of a 2D array (with a single sample index) is shown below:
+
+.. code-block:: fortran
+
+   type(array_type) :: x
+   real, allocatable :: x_data(:,:,:)
+   call x%allocate([2, 3, 1], source=1.0)
+   write(*,*) 'Shape:', x%shape
+   write(*,*) 'Number of samples:', size(x%val, 2)
+   write(*,*) x%val(:, 1)        ! Accessing val directly
+   call x%extract(x_data)        ! Using extract() procedure
+   write(*,*) x_data(:, :, 1)    ! Accessing extracted data
+
+Note that the extracted values are in the original multi-dimensional shape, and only contain the data, not any gradient information.
 
 
 Worked Example
@@ -97,10 +140,7 @@ A full code example is provided below.
    df/dx = 2x =    6.00000000
 
 
-.. _:
-
-In-depth Explanation
-~~~~~~~~~~~~~~~~~~~~~
+We now break down each step:
 
 1. **Initialise the input**
 
@@ -231,7 +271,38 @@ is_temporary Flag
    x%is_temporary = .false.  ! Explicit variable
    f => x ** 2               ! f%is_temporary = .true. (automatic)
 
+Graph Visualisation
+-------------------
 
+You can visualise computation graphs using the ``print_graph()`` procedure.
+
+.. code-block:: fortran
+
+   call f%print_graph()
+
+This will output a representation of the computation graph to the console, showing the operations and dependencies involved in computing ``f``.
+An example output for the function ``f => x ** 4 + x ** 2 * y`` would look like:
+
+.. code-block:: text
+
+   --- Computation Graph Tree ---
+   └── [add] @5484082544
+      ├── L(*):└── [power_scalar] @5484108400
+      ├── L(*):    ├── L:└── [none] @4330881024
+      ├── L(*):    └── R(*):└── [none] @5484083920
+      └── R(*):└── [multiply] @5484138304
+      └── R(*):    ├── L(*):└── [power_scalar] @5484126400
+      └── R(*):    ├── L(*):    ├── L:└── [none] @4330881024
+      └── R(*):    ├── L(*):    └── R(*):└── [none] @5484097808
+      └── R(*):    └── R:└── [none] @4330881640
+   --- End Graph ---
+
+The square brackets indicate the operation type, and the tree structure shows how each operation depends on its inputs.
+``L`` and ``R`` denote the left and right operands, respectively, whilst ``(*)`` indicates that the variable is owned by its parent node (instead of being a pointer to an external variable).
+The memory addresses (e.g., ``@5484082544``) are included for reference, which is obtained from the Fortran ``loc()`` intrinsic function.
+It can be seen that the memory address ``@4330881024`` appears multiple times, which corresponds to the variable ``x``.
+An operation with the ``[none]`` type indicates a leaf node in the graph (i.e., an input variable).
+It can be seen that the variables ``x`` and ``y`` are leaf nodes and are not owned by any parent node; this is specified by setting ``is_temporary = .false.`` for these variables.
 
 Common Issues
 -------------

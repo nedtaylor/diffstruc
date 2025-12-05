@@ -9,14 +9,18 @@ module diffstruc
   use diffstruc__operations_trig, only: sin, cos, tan
   use diffstruc__operations_hyp, only: tanh
   use diffstruc__operations_linalg, only: &
-       matmul, operator(.mmul.), outer_product, operator(.outer.), transpose
+       matmul, operator(.mmul.), &
+       outer_product, operator(.outer.), &
+       dot_product, operator(.dot.), &
+       transpose
   use diffstruc__operations_broadcast, only: &
-       operator(.concat.), operator(.ltrim.), operator(.rtrim.), &
+       concat, slice_left, slice_right, ltrim, rtrim, &
        operator(.index.), reverse_index, &
-       pack, unpack
-  use diffstruc__operations_comparison, only: operator(.lt.), operator(.gt.), merge
+       pack, unpack, reshape
+  use diffstruc__operations_comparison, only: &
+       operator(.lt.), operator(.gt.), operator(.le.), operator(.ge.), merge
   use diffstruc__operations_reduction, only: maxval, max
-  use diffstruc__operations_maths, only: sqrt, sign, sigmoid, gaussian
+  use diffstruc__operations_maths, only: sqrt, sign, sigmoid, gaussian, abs, log10
   implicit none
 
   private
@@ -29,12 +33,15 @@ module diffstruc
   public :: sum, mean, spread, unspread, exp, log
   public :: sin, cos, tan
   public :: tanh
-  public :: matmul, operator(.mmul.), outer_product, operator(.outer.), transpose
-  public :: operator(.concat.), operator(.ltrim.), operator(.rtrim.), &
+  public :: matmul, operator(.mmul.), &
+       outer_product, operator(.outer.), &
+       dot_product, operator(.dot.), &
+       transpose
+  public :: concat, slice_left, slice_right, ltrim, rtrim, &
        operator(.index.), reverse_index, &
-       pack, unpack
-  public :: operator(.lt.), operator(.gt.), merge
+       pack, unpack, reshape
+  public :: operator(.lt.), operator(.gt.), operator(.le.), operator(.ge.), merge
   public :: maxval, max
-  public :: sqrt, sign, sigmoid, gaussian
+  public :: sqrt, sign, sigmoid, gaussian, abs, log10
 
 end module diffstruc

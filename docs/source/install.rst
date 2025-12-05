@@ -30,18 +30,28 @@ Required Dependencies
 To build and use diffstruc, you need:
 
 1. **A Fortran Compiler** (compatible with Fortran 2018 or later)
-2. **Fortran Package Manager (fpm)** - https://github.com/fortran-lang/fpm
+2. A Fortran build system; we recommend using:
+
+   a. **Fortran Package Manager (fpm)** - https://github.com/fortran-lang/fpm
+   b. Alt. **CMake** - https://cmake.org
+
+3. **coreutils** - (dependency handled automatically by fpm) https://github.com/nedtaylor/coreutils
 
 .. important::
    diffstruc is known to be **incompatible** with all versions of the gfortran compiler below ``14.3.0`` due to issues with the calling of the ``final`` procedure of ``array_type``.
+
+fpm is the recommended build system for diffstruc due to its simplicity and ease of use with Fortran projects.
+
+coreutils is a lightweight Fortran library that provides essential precision types, mathematical constants, and utility functions.
+The installation of coreutils is managed automatically by fpm when building diffstruc.
 
 Supported Compilers
 ~~~~~~~~~~~~~~~~~~~
 
 The library has been developed and tested with:
 
-* **gfortran** -- GCC 15.2.0
-* **ifx** -- Intel Fortran Compiler 2025.2.0
+* **gfortran** -- GCC 15.2.0, 14.3.0
+* **ifx** -- Intel Fortran Compiler 2025.2.0, 2025.3.0
 
 Installing Dependencies
 -----------------------
@@ -97,9 +107,13 @@ Installing a Fortran Compiler
 
 Download from the `Intel oneAPI website <https://www.intel.com/content/www/us/en/developer/tools/oneapi/fortran-compiler.html>`_.
 
+Installing coreutils
+~~~~~~~~~~~~~~~~~~~~
 
-Building diffstruc
-------------------
+coreutils will be installed automatically by fpm or CMake when you build diffstruc, so no manual installation is necessary.
+
+Building diffstruc with fpm
+---------------------------
 
 Once you have installed the prerequisites, building diffstruc is straightforward using fpm.
 
@@ -126,8 +140,30 @@ For development and debugging, you can build without the release profile:
 This compiles faster but without optimizations.
 
 
+Building diffstruc with CMake
+-----------------------------
+
+An alternative to fpm is to use CMake for building diffstruc.
+
+In the repository main directory, create a build directory and run CMake:
+
+.. code-block:: bash
+
+   mkdir build
+   cd build
+   cmake ..
+   cmake --build .
+   make install
+
+This will compile the library using CMake's default settings.
+The library files will be installed to the default local location (usually ``~/.local/``).
+
+
 Testing the Installation
 ------------------------
+
+Testing with fpm
+~~~~~~~~~~~~~~~~
 
 To verify that diffstruc has been installed correctly and works as expected, run the test suite:
 
@@ -146,6 +182,18 @@ If all tests pass, your installation is successful!
 
 .. note::
    Some tests may take a few minutes to complete, especially memory stress tests with many iterations.
+
+Testing with CMake
+~~~~~~~~~~~~~~~~~~
+
+If you built diffstruc using CMake, you can run the tests as follows:
+
+.. code-block:: bash
+
+   cd build
+   ctest
+
+This will execute the test suite and report any failures.
 
 
 Using diffstruc in Your Project
@@ -175,6 +223,27 @@ Then in your Fortran code:
      ! Your code here...
    end program my_program
 
+With CMake
+~~~~~~~~~~
+
+If you are using CMake for your Fortran project, you can include diffstruc by adding the following to your ``CMakeLists.txt``:
+
+.. code-block:: cmake
+
+   include(FetchContent)
+   FetchContent_Declare(
+      diffstruc
+      GIT_REPOSITORY https://github.com/nedtaylor/diffstruc.git
+      GIT_TAG        development
+      FIND_PACKAGE_ARGS NAMES diffstruc
+   )
+   FetchContent_MakeAvailable(diffstruc)
+   find_package(diffstruc REQUIRED)
+
+   add_dependencies(${PROJECT_NAME} diffstruc)
+   target_link_libraries(${PROJECT_NAME} diffstruc)
+
+Then in your Fortran code, you can use diffstruc as shown above.
 
 Quick Start Example
 --------------------
