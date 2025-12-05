@@ -412,6 +412,8 @@ contains
     !! Output array
 
     ! Local variables
+    integer :: rank_output
+    !! Rank of output array
     character(len=10) :: rank_str
     !! String for rank
 
@@ -422,19 +424,16 @@ contains
     end if
     select rank(output)
     rank(1)
+       rank_output = 1
        output = reshape(this%val, [ product(this%shape) * size(this%val,2) ])
     rank(2)
+       rank_output = 2
        output = this%val
     rank default
-       if(size(this%shape,1) + 1 .ne.rank(output))then
-          write(rank_str,'(I0)') rank(output)
-          call print_warning( &
-               "Output data rank mismatch, expected rank "//trim(adjustl(rank_str)) &
-          )
-          return
-       end if
+       rank_output = -1
        select rank(output)
        rank(3)
+          rank_output = 3
           output = reshape( &
                this%val, &
                [ &
@@ -444,6 +443,7 @@ contains
                ] &
           )
        rank(4)
+          rank_output = 4
           output = reshape( &
                this%val, &
                [ &
@@ -454,6 +454,7 @@ contains
                ] &
           )
        rank(5)
+          rank_output = 5
           output = reshape( &
                this%val, &
                [ &
@@ -466,6 +467,17 @@ contains
           )
        end select
     end select
+
+    if(rank_output.eq.-1)then
+       write(*,*) "Error: Unable to extract array with rank greater than 5"
+       return
+    elseif(rank_output .ne. size(this%shape,1) + 1)then
+       write(rank_str,'(I0)') rank_output
+       call print_warning( &
+            "Output data rank mismatch, expected rank "//trim(adjustl(rank_str)) &
+       )
+       return
+    end if
 
   end subroutine extract_array
 !###############################################################################
