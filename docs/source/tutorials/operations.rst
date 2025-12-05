@@ -12,7 +12,7 @@ Operation Summary Table
 
 .. list-table::
    :header-rows: 1
-   :widths: 20 30 50
+   :widths: 20 50 40
 
    * - Category
      - Operations
