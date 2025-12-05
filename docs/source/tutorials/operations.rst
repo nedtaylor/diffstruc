@@ -36,7 +36,7 @@ Operation Summary Table
      - ``sum``, ``mean``, ``unspread``, ``max``, ``maxval``
      - Collapse dimensions
    * - Comparison
-     - ``.lt.``, ``.gt.``, ``merge``
+     - ``.lt.``, ``.le.``, ``.gt.``, ``.ge.`` ``merge``
      - Element-wise comparisons
    * - Broadcast
      - ``spread``, ``concat``, ``slice_left``, ``slice_right``, ``ltrim``, ``rtrim``, ``.index.``, ``reverse_index``, ``pack``, ``unpack``, ``reshape``
