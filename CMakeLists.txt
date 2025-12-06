@@ -156,6 +156,12 @@ target_link_libraries(${PROJECT_NAME} PUBLIC)
 
 # replace ".f90" with ".mod"
 string(REGEX REPLACE "\\.[^.]*$" ".mod" MODULE_FILES "${SRC_FILES}")
+# remove directory path from module files
+foreach(i ${MODULE_FILES})
+    get_filename_component(fname ${i} NAME)
+    list(APPEND MODULE_FILES_CLEAN ${fname})
+endforeach()
+set(MODULE_FILES ${MODULE_FILES_CLEAN})
 
 # installation
 install(FILES ${MODULE_DIR}/${MODULE_FILES} DESTINATION include)
