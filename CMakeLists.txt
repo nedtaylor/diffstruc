@@ -35,19 +35,6 @@ set(CMAKE_Fortran_STANDARD 2018)
 # set language
 enable_language(Fortran)
 
-# set coverage compiler flags
-if (CMAKE_BUILD_TYPE MATCHES "Debug*" OR CMAKE_BUILD_TYPE MATCHES "Dev*")
-  list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
-  set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
-  if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
-      include(CodeCoverage)
-      setup_target_for_coverage_gcovr_html(
-        NAME coverage
-        EXECUTABLE ctest
-        EXCLUDE "${PROJECT_SOURCE_DIR}/test/*")
-  endif()
-endif()
-
 # set up the coreutils dependency
 include(FetchContent)
 # Disable testing for dependencies - both standard variables
@@ -169,6 +156,12 @@ target_link_libraries(${PROJECT_NAME} PUBLIC)
 
 # replace ".f90" with ".mod"
 string(REGEX REPLACE "\\.[^.]*$" ".mod" MODULE_FILES "${SRC_FILES}")
+# remove directory path from module files
+foreach(i ${MODULE_FILES})
+    get_filename_component(fname ${i} NAME)
+    list(APPEND MODULE_FILES_CLEAN ${fname})
+endforeach()
+set(MODULE_FILES ${MODULE_FILES_CLEAN})
 
 # installation
 install(FILES ${MODULE_DIR}/${MODULE_FILES} DESTINATION include)
@@ -190,10 +183,4 @@ target_link_libraries(${PROJECT_NAME} coreutils)
 # include the build test directory only if this is the main project
 if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME AND BUILD_TESTS)
   add_subdirectory(test)
-endif()
-
-# add coverage compiler flags
-if ( ( CMAKE_Fortran_COMPILER MATCHES ".*gfortran.*" OR CMAKE_Fortran_COMPILER MATCHES ".*gcc.*" ) AND
-     ( CMAKE_BUILD_TYPE MATCHES "Debug*" OR CMAKE_BUILD_TYPE MATCHES "Dev*" ) )
-  append_coverage_compiler_flags()
 endif()

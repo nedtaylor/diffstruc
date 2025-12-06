@@ -182,12 +182,12 @@ module diffstruc__types
        class(*), dimension(..), intent(in), optional :: source
      end subroutine allocate_array
 
-     module recursive subroutine deallocate_array(this, keep_shape)
+     recursive module subroutine deallocate_array(this, keep_shape)
        class(array_type), intent(inout) :: this
        logical, intent(in), optional :: keep_shape
      end subroutine deallocate_array
 
-     module recursive subroutine finalise_array(this)
+     recursive module subroutine finalise_array(this)
        type(array_type), intent(inout) :: this
      end subroutine finalise_array
   end interface
@@ -211,7 +211,7 @@ module diffstruc__types
        logical, intent(in), optional :: owns_left_operand, owns_right_operand
      end subroutine assign_and_deallocate_source
 
-     module recursive subroutine assign_array(this, input)
+     recursive module subroutine assign_array(this, input)
        class(array_type), intent(out), target :: this
        type(array_type), intent(in) :: input
      end subroutine assign_array
@@ -248,7 +248,7 @@ module diffstruc__types
 
 
   interface
-     module recursive subroutine reset_graph(this)
+     recursive module subroutine reset_graph(this)
        !! Reset the gradients of this array
        class(array_type), intent(inout) :: this
      end subroutine reset_graph
@@ -264,14 +264,14 @@ module diffstruc__types
        class(array_type), intent(inout) :: this
      end subroutine zero_grad
 
-     module recursive subroutine zero_all_grads(this)
+     recursive module subroutine zero_all_grads(this)
        !! Zero the gradients of this array
        class(array_type), intent(inout) :: this
      end subroutine zero_all_grads
   end interface
 
   interface
-     module recursive function get_ptr_from_id(this, id) result(ptr)
+     recursive module function get_ptr_from_id(this, id) result(ptr)
        use iso_c_binding
        class(array_type), intent(in), target :: this
        integer, intent(in) :: id

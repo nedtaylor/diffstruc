@@ -108,7 +108,7 @@ contains
 
 
 !###############################################################################
-  module recursive subroutine deallocate_array(this, keep_shape)
+  recursive module subroutine deallocate_array(this, keep_shape)
     !! Deallocate array
     implicit none
 
@@ -144,7 +144,7 @@ contains
 
 
 !###############################################################################
-  module recursive subroutine finalise_array(this)
+  recursive module subroutine finalise_array(this)
     !! Finalise array - clean up memory safely
     implicit none
     type(array_type), intent(inout) :: this
@@ -218,7 +218,7 @@ contains
 
 
 !###############################################################################
-  module recursive subroutine assign_array(this, input)
+  recursive module subroutine assign_array(this, input)
     !! Assign the array
     implicit none
 
@@ -1001,7 +1001,7 @@ contains
 
 
 !###############################################################################
-  module recursive subroutine zero_all_grads(this)
+  recursive module subroutine zero_all_grads(this)
     !! Zero the gradients of this array
     implicit none
     class(array_type), intent(inout) :: this
@@ -1039,7 +1039,7 @@ contains
 
 
 !###############################################################################
-  module recursive subroutine reset_graph(this)
+  recursive module subroutine reset_graph(this)
     !! Reset the gradient graph of this array
     implicit none
     class(array_type), intent(inout) :: this
@@ -1382,7 +1382,7 @@ contains
 
 
 !###############################################################################
-  module recursive function get_ptr_from_id(this, id) result(ptr)
+  recursive module function get_ptr_from_id(this, id) result(ptr)
     use iso_c_binding
     implicit none
     class(array_type), intent(in), target :: this
