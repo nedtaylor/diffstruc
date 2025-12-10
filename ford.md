@@ -10,6 +10,7 @@ display: public
          private
 source: true
 graph: true
+search: true
 md_extensions: markdown.extensions.toc
 coloured_edges: true
 sort: permission-alpha
@@ -19,5 +20,6 @@ creation_date: %Y-%m-%d %H:%M %z
 project_github: https://github.com/nedtaylor/diffstruc
 project_download: https://github.com/nedtaylor/diffstruc/releases
 github: https://github.com/nedtaylor
+externalize: true
 
 {!README.md!}
