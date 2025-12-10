@@ -9,11 +9,12 @@ import shutil
 
 def run_ford(app):
     """Run FORD to generate Fortran API documentation"""
-    ford_dir = os.path.abspath(os.path.join(app.confdir, "..", "ford"))
-    project_file = os.path.join(ford_dir, "ford_project.yml")
+    ford_dir = os.path.abspath(os.path.join(app.confdir, "..", ".."))
+    ford_otuput = os.path.join(app.confdir, "_static", "ford")
+    project_file = os.path.join(ford_dir, "ford.md")
 
     print(f"Running FORD with config: {project_file}")
-    result = subprocess.run(["ford", project_file], cwd=ford_dir, capture_output=True, text=True)
+    result = subprocess.run(["ford", project_file, "-o", ford_otuput], cwd=ford_dir, capture_output=True, text=True)
 
     if result.returncode != 0:
         print(f"FORD output:\n{result.stdout}")
@@ -21,21 +22,9 @@ def run_ford(app):
     else:
         print("FORD documentation generated successfully")
 
-    # Copy FORD output to Sphinx static directory so it's included in the build
-    ford_output = os.path.join(ford_dir, "output")
-    sphinx_static = os.path.join(app.confdir, "_static", "ford")
-
-    if os.path.exists(ford_output):
-        if os.path.exists(sphinx_static):
-            shutil.rmtree(sphinx_static)
-        shutil.copytree(ford_output, sphinx_static)
-        print(f"Copied FORD output to {sphinx_static}")
-
-def setup(app):
-    app.connect("builder-inited", run_ford)
-
 def setup(app):
     app.add_css_file('custom.css')
+    app.connect("builder-inited", run_ford)
 
 # -- Project information
 
