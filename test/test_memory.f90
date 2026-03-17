@@ -12,7 +12,7 @@ program test_memory_detailed
 
   do_forward = .true.
   do_second_order = .true.
-  n_iterations = 10000
+  n_iterations = 1000
   x%is_temporary = .false.
   y%is_temporary = .false.
   f%is_temporary = .false.

@@ -2,6 +2,19 @@ submodule(diffstruc__operations_linalg) diffstruc__operations_linalg_sub
   !! Submodule containing implementations of linear algebra operations
   use coreutils, only: stop_program
 
+#ifdef USE_BLAS
+  interface
+     subroutine sgemm(transa, transb, m, n, k, alpha, A, lda, B, ldb, &
+          beta, C, ldc)
+       import :: real32
+       character(len=1), intent(in) :: transa, transb
+       integer, intent(in) :: m, n, k, lda, ldb, ldc
+       real(real32), intent(in) :: alpha, beta
+       real(real32), intent(in) :: A(lda,*), B(ldb,*)
+       real(real32), intent(inout) :: C(ldc,*)
+     end subroutine sgemm
+  end interface
+#endif
 
 contains
 
@@ -12,7 +25,7 @@ contains
     class(array_type), intent(in), target :: a, b
     type(array_type), pointer :: c
 
-    integer :: s
+    integer :: s, m, k, n, num_samples
     character(len=128) :: err_msg
     real(real32), pointer :: temp(:,:)
 
@@ -23,9 +36,21 @@ contains
           call stop_program(err_msg)
           return
        end if
-       c => a%create_result(array_shape=[a%shape(1), size(b%val,2)])
-       temp(1:a%shape(1), 1:a%shape(2)) => a%val
+       ! C(m, S) = A(m, k) * B(k, S) where A is the weight matrix
+       m = a%shape(1)
+       k = a%shape(2)
+       num_samples = size(b%val, 2)
+       c => a%create_result(array_shape=[m, num_samples])
+       temp(1:m, 1:k) => a%val
+#ifdef USE_BLAS
+       ! sgemm: C = alpha * A * B + beta * C
+       ! m = rows of A and C, n = columns of B and C, k = cols of A / rows of B
+       ! lda = m (leading dim of A), ldb = k (leading dim of B), ldc = m
+       call sgemm('N', 'N', m, num_samples, k, &
+            1.0_real32, temp, m, b%val, k, 0.0_real32, c%val, m)
+#else
        c%val = matmul(temp, b%val)
+#endif
     elseif(.not.b%is_sample_dependent)then
        if(size(a%shape).ne.1)then
           write(err_msg,'("Matrix multiplication not implemented for array ''a'' &
@@ -33,9 +58,22 @@ contains
           call stop_program(err_msg)
           return
        end if
-       c => b%create_result(array_shape=[b%shape(2), size(a%val,2)])
-       temp(1:b%shape(1), 1:b%shape(2)) => b%val
+       ! C(n, S) = B^T(n, k) * A(k, S) where B is the weight matrix
+       k = b%shape(1)
+       n = b%shape(2)
+       num_samples = size(a%val, 2)
+       c => b%create_result(array_shape=[n, num_samples])
+       temp(1:k, 1:n) => b%val
+#ifdef USE_BLAS
+       ! sgemm: C = alpha * op(A) * B + beta * C with transa='T'
+       ! Computes C(n, S) = temp^T(n, k) * a%val(k, S)
+       ! m = n (rows of result), n_arg = S, k = k (shared dim)
+       ! lda = k (leading dim of temp before transpose), ldb = k, ldc = n
+       call sgemm('T', 'N', n, num_samples, k, &
+            1.0_real32, temp, k, a%val, k, 0.0_real32, c%val, n)
+#else
        c%val = matmul(transpose(temp), a%val)
+#endif
     else
        write(0,*) "NOT SURE WHAT TO DO YET"
        stop 0
@@ -59,16 +97,31 @@ contains
 !-------------------------------------------------------------------------------
   module function matmul_real2d(a, b) result(c)
     !! Matrix multiplication of a real array and an autodiff array
+    !! Computes C = a * b where a is autodiff (vector per sample) and b is a
+    !! real 2D matrix. Equivalent to C(:,s) = b^T * a(:,s) for each sample s.
     implicit none
     class(array_type), intent(in), target :: a
     real(real32), dimension(:,:), intent(in) :: b
     type(array_type), pointer :: c
     type(array_type), pointer :: b_array
 
-    integer :: s, i
+    integer :: s, i, rows, cols, num_samples
 
-    c => a%create_result(array_shape = [size(b,2), size(a%val,2)])
+    rows = size(b, 1)
+    cols = size(b, 2)
+    num_samples = size(a%val, 2)
+
+    c => a%create_result(array_shape = [cols, num_samples])
+#ifdef USE_BLAS
+    ! C(cols, S) = b^T(cols, rows) * a%val(rows, S)
+    ! sgemm: transa='T' transposes b in-place, no temporary needed
+    ! m = cols, n = S, k = rows
+    ! lda = rows (leading dim of b before transpose), ldb = rows, ldc = cols
+    call sgemm('T', 'N', cols, num_samples, rows, &
+         1.0_real32, b, rows, a%val, rows, 0.0_real32, c%val, cols)
+#else
     c%val = matmul(transpose(b), a%val)
+#endif
 
     c%is_sample_dependent = a%is_sample_dependent
     c%get_partial_left => get_partial_matmul_left
@@ -93,17 +146,31 @@ contains
   end function matmul_real2d
 !-------------------------------------------------------------------------------
   module function real2d_matmul(a, b) result(c)
-    !! Matrix multiplication of two autodiff arrays
+    !! Matrix multiplication of a real 2D matrix and an autodiff array
+    !! Computes C = a * b where a is a real matrix and b is autodiff
     implicit none
     real(real32), dimension(:,:), intent(in) :: a
     class(array_type), intent(in), target :: b
     type(array_type), pointer :: c
     type(array_type), pointer :: a_array
 
-    integer :: s, i
+    integer :: s, i, m, k, num_samples
 
-    c => b%create_result(array_shape = [size(a,1), size(b%val,2)])
+    m = size(a, 1)
+    k = size(a, 2)
+    num_samples = size(b%val, 2)
+
+    c => b%create_result(array_shape = [m, num_samples])
+#ifdef USE_BLAS
+    ! C(m, S) = a(m, k) * b%val(k, S)
+    ! sgemm: standard C = alpha * A * B, no transposes
+    ! m = m, n = S, k = k
+    ! lda = m, ldb = k, ldc = m
+    call sgemm('N', 'N', m, num_samples, k, &
+         1.0_real32, a, m, b%val, k, 0.0_real32, c%val, m)
+#else
     c%val = matmul(a, b%val)
+#endif
 
     c%is_sample_dependent = b%is_sample_dependent
     c%get_partial_left => get_partial_matmul_left
@@ -191,7 +258,16 @@ contains
 
   end function get_partial_matmul_right
 !-------------------------------------------------------------------------------
+#ifdef USE_BLAS
+  subroutine get_partial_matmul_left_val(this, upstream_grad, output)
+#else
   pure subroutine get_partial_matmul_left_val(this, upstream_grad, output)
+#endif
+    !! Compute gradient w.r.t. left operand for matmul in reverse mode.
+    !!
+    !! For C = A * B (where A is the left operand):
+    !!   dL/dA = dL/dC * B^T  (2D case, equivalent to B * dL/dC in flat storage)
+    !!   dL/dA = upstream_grad (x) right_operand  (outer product case)
     implicit none
     class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
@@ -205,6 +281,10 @@ contains
        m = this%right_operand%shape(1)
        n = this%right_operand%shape(2)
        if(this%right_operand%is_sample_dependent)then
+          ! Per-sample: weight matrix varies per sample.
+          ! output(:,s) = W_s * upstream_grad(:,s) where W_s = reshape(right%val(:,s), [m,n])
+          ! Equivalent to dL/dA_flat = dL/dC * B_s^T per sample.
+          ! Uses intrinsic matmul — BLAS overhead not worthwhile for per-sample vectors.
           block
             real(real32), dimension(m, n) :: temp
             do s = 1, num_batches
@@ -213,11 +293,32 @@ contains
             end do
           end block
        else
+          ! Non-sample-dependent: single batch operation across all samples.
+          ! output(m, S) = W(m, n) * upstream_grad(n, S)
+          ! Mathematically: dL/dA = dL/dC * B^T for each sample, batched.
+#ifdef USE_BLAS
+          block
+            real(real32), pointer :: W(:,:)
+            ! Pointer view avoids reshape: right_operand%val(:,1) is column-major
+            ! contiguous (m, n) data. No copy needed.
+            W(1:m, 1:n) => this%right_operand%val(:,1)
+            ! sgemm: C = alpha * A * B + beta * C
+            ! A = W(m, n), B = upstream_grad(n, S), C = output(m, S)
+            ! m_arg = m (rows of W and output)
+            ! n_arg = num_batches (columns of upstream_grad and output)
+            ! k = n (columns of W / rows of upstream_grad)
+            ! lda = m (leading dim of W), ldb = n, ldc = m
+            call sgemm('N', 'N', m, num_batches, n, &
+                 1.0_real32, W, m, upstream_grad, n, &
+                 0.0_real32, output, m)
+          end block
+#else
           block
             real(real32), dimension(m, n) :: temp
             temp = reshape(this%right_operand%val(:,1), [m, n])
             output = matmul(temp, upstream_grad)
           end block
+#endif
        end if
     else
        ! Outer product case: output(i + (j-1)*num_el, s) = grad(i,s) * right(j,s)
@@ -225,8 +326,8 @@ contains
        num_rhs = size(this%right_operand%val,1)
        if(this%right_operand%is_sample_dependent)then
           do concurrent(s = 1:num_batches, j = 1:num_rhs)
-                output((j-1)*num_elements+1:j*num_elements, s) = &
-                     this%right_operand%val(j,s) * upstream_grad(:,s)
+             output((j-1)*num_elements+1:j*num_elements, s) = &
+                  this%right_operand%val(j,s) * upstream_grad(:,s)
           end do
        else
           do j = 1, num_rhs
@@ -238,7 +339,16 @@ contains
 
   end subroutine get_partial_matmul_left_val
 !-------------------------------------------------------------------------------
+#ifdef USE_BLAS
+  subroutine get_partial_matmul_right_val(this, upstream_grad, output)
+#else
   pure subroutine get_partial_matmul_right_val(this, upstream_grad, output)
+#endif
+    !! Compute gradient w.r.t. right operand for matmul in reverse mode.
+    !!
+    !! For C = A * B (where B is the right operand):
+    !!   dL/dB = A^T * dL/dC  (2D case)
+    !!   dL/dB = left_operand (x) upstream_grad  (outer product case)
     implicit none
     class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
@@ -252,6 +362,11 @@ contains
        m = this%left_operand%shape(1)
        n = this%left_operand%shape(2)
        if(this%left_operand%is_sample_dependent)then
+          ! Per-sample: weight matrix varies per sample.
+          ! output(:,s) = W_s^T * upstream_grad(:,s)
+          ! where W_s = reshape(left%val(:,s), [m, n])
+          ! Mathematically: dL/dB_flat = A_s^T * dL/dC per sample.
+          ! Uses intrinsic matmul — BLAS overhead not worthwhile for per-sample vectors.
           block
             real(real32), dimension(m, n) :: temp
             do s = 1, num_batches
@@ -260,11 +375,32 @@ contains
             end do
           end block
        else
+          ! Non-sample-dependent: single batch operation across all samples.
+          ! output(n, S) = W^T(n, m) * upstream_grad(m, S)
+          ! Mathematically: dL/dB = A^T * dL/dC for each sample, batched.
+#ifdef USE_BLAS
+          block
+            real(real32), pointer :: W(:,:)
+            ! Pointer view avoids reshape and transpose: left_operand%val(:,1) is
+            ! column-major contiguous (m, n) data. SGEMM transposes in-place.
+            W(1:m, 1:n) => this%left_operand%val(:,1)
+            ! sgemm: C = alpha * A^T * B + beta * C
+            ! A = W(m, n), transposed to W^T(n, m); B = upstream_grad(m, S)
+            ! m_arg = n (rows of W^T and output)
+            ! n_arg = num_batches (columns of upstream_grad and output)
+            ! k = m (columns of W^T / rows of upstream_grad)
+            ! lda = m (leading dim of W before transpose), ldb = m, ldc = n
+            call sgemm('T', 'N', n, num_batches, m, &
+                 1.0_real32, W, m, upstream_grad, m, &
+                 0.0_real32, output, n)
+          end block
+#else
           block
             real(real32), dimension(n, m) :: temp_t
             temp_t = transpose(reshape(this%left_operand%val(:,1), [m, n]))
             output = matmul(temp_t, upstream_grad)
           end block
+#endif
        end if
     else
        ! Outer product case: output(i + (j-1)*num_el, s) = left(i,s) * grad(j,s)

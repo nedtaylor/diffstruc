@@ -9,6 +9,7 @@ copyright = "Copyright 2025, diffstruc contributors"
 [preprocess]
 [preprocess.cpp]
 suffixes = ["F90", "f90"]
+macros = ["USE_BLAS"]   # remove or set to [] to disable BLAS acceleration
 
 [library]
 source-dir="src"
@@ -20,3 +21,6 @@ coreutils = { git = "https://github.com/nedtaylor/coreutils" }
 implicit-typing = false
 implicit-external = false
 source-form = "free"
+
+[build]
+link=["blas", "lapack"]
