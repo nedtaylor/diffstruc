@@ -312,7 +312,11 @@ module diffstruc__types
        type(array_type) :: output
      end function get_partial
 
+#ifdef USE_BLAS
+     module subroutine get_partial_val(this, upstream_grad, output)
+#else
      pure module subroutine get_partial_val(this, upstream_grad, output)
+#endif
        class(array_type), intent(in) :: this
        real(real32), dimension(:,:), intent(in) :: upstream_grad
        real(real32), dimension(:,:), intent(out) :: output
