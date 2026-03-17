@@ -837,7 +837,7 @@ contains
   recursive subroutine accumulate_gradient_single( &
        array, parent, upstream_grad, num_samples, is_left_operand, depth &
   )
-    !! Accumulate gradient for array
+    !! Accumulate gradient for array - optimized with fused direction+sum
     implicit none
     class(array_type), intent(inout) :: array
     class(array_type), intent(inout) :: parent
@@ -848,8 +848,8 @@ contains
 
     integer :: s, i, n_elem
     real(real32), dimension(size(array%val, 1), num_samples) :: grad
-    real(real32), dimension(size(grad,1),1) :: out_grad
-    logical :: has_direction
+    real(real32), dimension(size(array%val, 1), 1) :: out_grad
+    logical :: has_direction, needs_recurse
 
     ! Cache array dimension to avoid repeated calls
     n_elem = size(array%val, 1)
@@ -861,23 +861,69 @@ contains
        call parent%get_partial_right_val(upstream_grad, grad)
     end if
 
-    ! Apply directional derivative in-place
+    ! Check direction once
     has_direction = allocated(array%direction)
     if(has_direction) has_direction = (size(array%direction).gt.0)
 
-    if(has_direction)then
-       ! In-place multiplication by direction
-       do concurrent( s = 1 : num_samples, i = 1 : n_elem )
-          grad(i, s) = grad(i, s) * array%direction(i)
-       end do
+    ! Check if recursion needed (determines whether we need out_grad separately)
+    needs_recurse = associated(array%left_operand) .or. &
+         associated(array%right_operand)
+
+    ! Fast path: leaf node with existing gradient — direct accumulation
+    ! Avoids out_grad temporary; column-wise access for cache-friendly stride-1
+    if(.not. needs_recurse .and. associated(array%grad))then
+       array%grad%is_temporary = .true.
+       if(num_samples .eq. 1)then
+          if(has_direction)then
+             do concurrent( i = 1 : n_elem )
+                array%grad%val(i,1) = array%grad%val(i,1) + &
+                     grad(i,1) * array%direction(i)
+             end do
+          else
+             do concurrent( i = 1 : n_elem )
+                array%grad%val(i,1) = array%grad%val(i,1) + grad(i,1)
+             end do
+          end if
+       else if(.not. has_direction)then
+          ! Column-wise: stride-1 access in inner loop (cache-friendly)
+          ! Avoids out_grad temporary entirely
+          do concurrent( s = 1 : num_samples, i = 1 : n_elem )
+             array%grad%val(i,1) = array%grad%val(i,1) + grad(i,s)
+          end do
+       else
+          ! Direction case: column-wise sum into out_grad, then apply direction
+          out_grad(:,1) = grad(:,1)
+          do concurrent( s = 2 : num_samples, i = 1 : n_elem )
+             out_grad(i,1) = out_grad(i,1) + grad(i,s)
+          end do
+          do concurrent( i = 1 : n_elem )
+             array%grad%val(i,1) = array%grad%val(i,1) + &
+                  out_grad(i,1) * array%direction(i)
+          end do
+       end if
+       return
     end if
 
-    ! Sum reduction
-    if(num_samples.eq.1)then
-       ! Direct assignment when only one sample
-       out_grad(:,1) = grad(:,1)
+    ! General path: compute out_grad with cache-friendly column-wise reduction
+    if(num_samples .eq. 1)then
+       if(has_direction)then
+          do concurrent( i = 1 : n_elem )
+             out_grad(i,1) = grad(i,1) * array%direction(i)
+          end do
+       else
+          out_grad(:,1) = grad(:,1)
+       end if
     else
-       out_grad(:,1) = sum(grad, dim=2)
+       ! Column-wise sum: stride-1 inner loop for cache-friendly access
+       out_grad(:,1) = grad(:,1)
+       do concurrent( s = 2 : num_samples, i = 1 : n_elem )
+          out_grad(i,1) = out_grad(i,1) + grad(i,s)
+       end do
+       if(has_direction)then
+          do concurrent( i = 1 : n_elem )
+             out_grad(i,1) = out_grad(i,1) * array%direction(i)
+          end do
+       end if
     end if
 
     ! Accumulate gradient
@@ -900,7 +946,7 @@ contains
     end if
 
     ! Recurse if needed
-    if(associated(array%left_operand).or.associated(array%right_operand))then
+    if(needs_recurse)then
        call reverse_mode(array, out_grad, depth+1)
     end if
   end subroutine accumulate_gradient_single
@@ -911,7 +957,7 @@ contains
   recursive subroutine accumulate_gradient_samples( &
        array, parent, upstream_grad, num_samples, is_left_operand, depth &
   )
-    !! Accumulate gradient for array - optimized version with reduced allocations
+    !! Accumulate gradient for array - optimized with fused direction+accumulate
     implicit none
     class(array_type), intent(inout) :: array
     class(array_type), intent(inout) :: parent
@@ -922,7 +968,7 @@ contains
 
     integer :: s, i, n_elem, n_samples_actual
     real(real32), dimension(size(array%val, 1), num_samples) :: grad
-    logical :: has_direction
+    logical :: has_direction, needs_recurse
 
     ! Cache array dimensions
     n_elem = size(array%val, 1)
@@ -934,12 +980,42 @@ contains
        call parent%get_partial_right_val(upstream_grad, grad)
     end if
 
-    ! Apply directional derivative in-place
+    ! Check direction once
     has_direction = allocated(array%direction)
     if(has_direction) has_direction = (size(array%direction).gt.0)
 
+    ! Check recursion need
+    needs_recurse = associated(array%left_operand) .or. &
+         associated(array%right_operand)
+
+    ! Leaf node fast path: fuse direction into accumulation, skip grad modification
+    if(.not. needs_recurse .and. has_direction)then
+       if(.not. associated(array%grad))then
+          allocate(array%grad)
+          call array%grad%allocate(array_shape=[array%shape, size(array%val,2)])
+          do concurrent( s = 1 : num_samples, i = 1 : n_elem )
+             array%grad%val(i,s) = grad(i,s) * array%direction(i)
+          end do
+          array%grad%is_scalar = array%is_scalar
+          array%grad%is_sample_dependent = array%is_sample_dependent
+          array%grad%requires_grad = .not. array%is_scalar
+          array%grad%grad => null()
+          array%grad%owns_gradient = .false.
+          array%owns_gradient = .true.
+          array%grad%is_temporary = array%is_temporary
+       else
+          array%grad%is_temporary = .true.
+          n_samples_actual = size(array%grad%val, 2)
+          do concurrent( s = 1 : n_samples_actual, i = 1 : n_elem )
+             array%grad%val(i,s) = array%grad%val(i,s) + &
+                  grad(i,s) * array%direction(i)
+          end do
+       end if
+       return
+    end if
+
+    ! Apply directional derivative in-place (needed for recursion)
     if(has_direction)then
-       ! In-place multiplication by direction
        do concurrent( s = 1 : num_samples, i = 1 : n_elem )
           grad(i, s) = grad(i, s) * array%direction(i)
        end do
@@ -961,14 +1037,13 @@ contains
        ! In-place addition to avoid temporary array creation
        array%grad%is_temporary = .true.
        n_samples_actual = size(array%grad%val, 2)
-
        do concurrent( s = 1 : n_samples_actual, i = 1 : n_elem )
           array%grad%val(i,s) = array%grad%val(i,s) + grad(i,s)
        end do
     end if
 
     ! Recurse if needed
-    if(associated(array%left_operand).or.associated(array%right_operand))then
+    if(needs_recurse)then
        call reverse_mode(array, grad, depth+1)
     end if
   end subroutine accumulate_gradient_samples
