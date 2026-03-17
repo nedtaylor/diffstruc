@@ -39,6 +39,7 @@ contains
     c%val = sin(a%val)
 
     c%get_partial_left => get_partial_sin
+    c%get_partial_left_val => get_partial_sin_val
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -62,6 +63,15 @@ contains
     this%left_operand%is_temporary = left_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_sin
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_sin_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    output = upstream_grad * cos(this%left_operand%val)
+  end subroutine get_partial_sin_val
 !###############################################################################
 
 
@@ -76,6 +86,7 @@ contains
     c%val = cos(a%val)
 
     c%get_partial_left => get_partial_cos
+    c%get_partial_left_val => get_partial_cos_val
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -99,6 +110,15 @@ contains
     this%left_operand%is_temporary = left_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_cos
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_cos_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    output = -upstream_grad * sin(this%left_operand%val)
+  end subroutine get_partial_cos_val
 !###############################################################################
 
 
@@ -113,6 +133,7 @@ contains
     c%val = tan(a%val)
 
     c%get_partial_left => get_partial_tan
+    c%get_partial_left_val => get_partial_tan_val
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -136,6 +157,21 @@ contains
     this%left_operand%is_temporary = left_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_tan
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_tan_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    real(real32) :: cos_val
+    integer :: i, s
+
+    do concurrent(s = 1:size(upstream_grad,2), i = 1:size(upstream_grad,1))
+       cos_val = cos(this%left_operand%val(i,s))
+       output(i,s) = upstream_grad(i,s) / (cos_val * cos_val)
+    end do
+  end subroutine get_partial_tan_val
 !###############################################################################
 
 end module diffstruc__operations_trig

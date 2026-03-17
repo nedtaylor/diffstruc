@@ -70,7 +70,7 @@ contains
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
-    output = upstream_grad * (1._real32 - this%val ** 2._real32)
+    output = upstream_grad * (1._real32 - this%val * this%val)
   end subroutine get_partial_tanh_val
 !###############################################################################
 
@@ -86,7 +86,7 @@ contains
 
     c => a%create_result()
     do concurrent(s = 1:size(a%val, 2), i = 1:size(a%val,1))
-      c%val(i,s) = 1._real32 - (a%val(i,s) ** 2._real32)
+      c%val(i,s) = 1._real32 - a%val(i,s) * a%val(i,s)
     end do
 
     c%get_partial_left => get_partial_tanh_reverse
