@@ -62,6 +62,7 @@ if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
   # set options for building tests and examples
   option(BUILD_TESTS "Build the unit tests" ON)
   option(BUILD_EXAMPLES "Build the examples" ON)
+  option(USE_BLAS "Use BLAS for optimised matrix operations" OFF)
 else()
   # When used as a dependency, disable tests by default
   set(BUILD_TESTS OFF)
@@ -152,6 +153,14 @@ set(MODULE_DIR ${CMAKE_BUILD_PREFIX}/mod)
 set_target_properties(${PROJECT_NAME} PROPERTIES Fortran_MODULE_DIRECTORY ${MODULE_DIR})
 target_link_libraries(${PROJECT_NAME} PUBLIC)
 
+# optionally enable BLAS
+if(USE_BLAS)
+  find_package(BLAS REQUIRED)
+  target_compile_definitions(${PROJECT_NAME} PUBLIC USE_BLAS)
+  target_link_libraries(${PROJECT_NAME} PUBLIC ${BLAS_LIBRARIES})
+  message(STATUS "BLAS enabled: ${BLAS_LIBRARIES}")
+endif()
+
 
 
 # replace ".f90" with ".mod"
@@ -178,7 +187,7 @@ target_compile_options(${PROJECT_NAME} PUBLIC "$<$<CONFIG:Parallel_Dev>:${DEVFLA
 
 # add library dependencies
 add_dependencies(${PROJECT_NAME} coreutils)
-target_link_libraries(${PROJECT_NAME} coreutils)
+target_link_libraries(${PROJECT_NAME} PUBLIC coreutils)
 
 # include the build test directory only if this is the main project
 if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME AND BUILD_TESTS)
