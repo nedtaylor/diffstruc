@@ -4,6 +4,7 @@ submodule(diffstruc__operations_maths) diffstruc__operations_maths_sub
   use diffstruc__types, only: &
        operator(+), operator(-), operator(*), operator(/), operator(**), exp
 
+  real(real32), parameter :: inv_log10 = 1.0_real32 / log(10._real32)
 
 contains
 
@@ -87,7 +88,7 @@ contains
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
-    output = upstream_grad / ( 2._real32 * this%val )
+    output = upstream_grad * (0.5_real32 / this%val)
 
   end subroutine get_partial_sqrt_val
 !###############################################################################
@@ -269,7 +270,7 @@ contains
 
     left_is_temporary_local = this%left_operand%is_temporary
     this%left_operand%is_temporary = .false.
-    ptr => upstream_grad / ( this%left_operand * log(10._real32) )
+    ptr => upstream_grad * inv_log10 / this%left_operand
     this%left_operand%is_temporary = left_is_temporary_local
     call output%assign_and_deallocate_source(ptr)
   end function get_partial_log10
@@ -280,7 +281,7 @@ contains
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
-    output = upstream_grad / ( this%left_operand%val * log(10._real32) )
+    output = upstream_grad * inv_log10 / this%left_operand%val
   end subroutine get_partial_log10_val
 !###############################################################################
 

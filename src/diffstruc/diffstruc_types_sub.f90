@@ -872,18 +872,12 @@ contains
        end do
     end if
 
-    ! Sum reduction - optimized to avoid creating temporary arrays
+    ! Sum reduction
     if(num_samples.eq.1)then
        ! Direct assignment when only one sample
-       out_grad = grad
-    else
-       ! Manual sum to avoid intrinsic overhead, alternative reduction is mean()
        out_grad(:,1) = grad(:,1)
-       do s = 2, num_samples
-          do concurrent( i = 1 : n_elem )
-             out_grad(i,1) = out_grad(i,1) + grad(i,s)
-          end do
-       end do
+    else
+       out_grad(:,1) = sum(grad, dim=2)
     end if
 
     ! Accumulate gradient
@@ -1090,8 +1084,17 @@ contains
        end if
     end do
     ! no slot -> grow (double capacity)
-    src_map = [ src_map, array_ptr() ]
-    dst_map = [ dst_map, array_ptr() ]
+    newcap = n
+    block
+      type(array_ptr) :: src_tmp(n), dst_tmp(n)
+      src_tmp = src_map
+      dst_tmp = dst_map
+      deallocate(src_map, dst_map)
+      allocate(src_map(n + newcap))
+      allocate(dst_map(n + newcap))
+      src_map(1:n) = src_tmp
+      dst_map(1:n) = dst_tmp
+    end block
     ! store at next free
     src_map(n+1)%p => src_ptr
     dst_map(n+1)%p => dst_ptr
@@ -1115,8 +1118,16 @@ contains
           return
        end if
     end do
-    ! no slot -> grow
-    map = [ map, array_ptr() ]
+    ! no slot -> grow (double capacity)
+    block
+      type(array_ptr) :: tmp(n)
+      integer :: newcap
+      newcap = n
+      tmp = map
+      deallocate(map)
+      allocate(map(n + newcap))
+      map(1:n) = tmp
+    end block
     map(n+1)%p => ptr
   end subroutine single_map_add
 !-------------------------------------------------------------------------------
@@ -2688,24 +2699,14 @@ contains
        rtmp1 = real(n_rows, real32)
        inv_count = 1.0_real32 / rtmp1
 
-       ! Manual reduction to avoid temporary arrays from sum()
-       c%val(1,:) = 0.0_real32
-       do concurrent(s = 1:n_cols, i = 1:n_rows)
-          c%val(1,s) = c%val(1,s) + a%val(i,s)
-       end do
-       c%val(1,:) = c%val(1,:) * inv_count
+       c%val(1,:) = sum(a%val, dim=1) * inv_count
 
     else if(dim.eq.2)then
        c => a%create_result(array_shape = [a%shape, 1])
        rtmp1 = real(n_cols, real32)
        inv_count = 1.0_real32 / rtmp1
 
-       ! Manual reduction to avoid temporary arrays from sum()
-       c%val(:,1) = 0.0_real32
-       do concurrent(s = 1:n_rows, i = 1:n_cols)
-          c%val(s,1) = c%val(s,1) + a%val(s,i)
-       end do
-       c%val(:,1) = c%val(:,1) * inv_count
+       c%val(:,1) = sum(a%val, dim=2) * inv_count
 
        c%is_sample_dependent = .false.
     else
@@ -2741,11 +2742,7 @@ contains
     rtmp1 = real(n_rows * n_cols, real32)
     inv_count = 1.0_real32 / rtmp1
 
-    c%val(1,1) = 0.0_real32
-    do concurrent(s = 1:n_cols, i = 1:n_rows)
-       c%val(1,1) = c%val(1,1) + a%val(i,s)
-    end do
-    c%val(1,1) = c%val(1,1) * inv_count
+    c%val(1,1) = sum(a%val) * inv_count
 
     c%indices = [1, 1]
 
@@ -2880,18 +2877,10 @@ contains
 
     if(dim.eq.1)then
        c => a%create_result(array_shape=[1, n_cols])
-       ! Manual reduction to avoid temporary arrays from sum()
-       c%val(1,:) = 0.0_real32
-       do concurrent(s = 1:n_cols, i = 1:n_rows)
-          c%val(1,s) = c%val(1,s) + a%val(i,s)
-       end do
+       c%val(1,:) = sum(a%val, dim=1)
     else if(dim.eq.2)then
        c => a%create_result(array_shape=[a%shape, 1])
-       ! Manual reduction to avoid temporary arrays from sum()
-       c%val(:,1) = 0.0_real32
-       do concurrent(s = 1:n_rows, i = 1:n_cols)
-          c%val(s,1) = c%val(s,1) + a%val(s,i)
-       end do
+       c%val(:,1) = sum(a%val, dim=2)
        c%is_sample_dependent = .false.
     else
        call stop_program("sum_array: only 1 or 2 dimensions are supported")
@@ -2923,10 +2912,7 @@ contains
     n_cols = size(a%val, 2)
 
     c => a%create_result(array_shape=[1, 1])
-    c%val(1,1) = 0.0_real32
-    do concurrent(s = 1:n_cols, i = 1:n_rows)
-       c%val(1,1) = c%val(1,1) + a%val(i,s)
-    end do
+    c%val(1,1) = sum(a%val)
 
     c%indices = [1, 1]
 

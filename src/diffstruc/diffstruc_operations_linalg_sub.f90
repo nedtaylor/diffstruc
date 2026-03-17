@@ -25,9 +25,7 @@ contains
        end if
        c => a%create_result(array_shape=[a%shape(1), size(b%val,2)])
        temp(1:a%shape(1), 1:a%shape(2)) => a%val
-       do concurrent(s=1:size(b%val,2))
-          c%val(:,s) = matmul(temp, b%val(:,s))
-       end do
+       c%val = matmul(temp, b%val)
     elseif(.not.b%is_sample_dependent)then
        if(size(a%shape).ne.1)then
           write(err_msg,'("Matrix multiplication not implemented for array ''a'' &
@@ -37,9 +35,7 @@ contains
        end if
        c => b%create_result(array_shape=[b%shape(2), size(a%val,2)])
        temp(1:b%shape(1), 1:b%shape(2)) => b%val
-       do concurrent(s=1:size(a%val,2))
-          c%val(:,s) = matmul(a%val(:,s), temp)
-       end do
+       c%val = matmul(transpose(temp), a%val)
     else
        write(0,*) "NOT SURE WHAT TO DO YET"
        stop 0
@@ -72,9 +68,7 @@ contains
     integer :: s, i
 
     c => a%create_result(array_shape = [size(b,2), size(a%val,2)])
-    do concurrent(s=1:size(a%val,2))
-       c%val(:,s) = matmul(a%val(:,s), b)
-    end do
+    c%val = matmul(transpose(b), a%val)
 
     c%is_sample_dependent = a%is_sample_dependent
     c%get_partial_left => get_partial_matmul_left
@@ -93,9 +87,7 @@ contains
     b_array%shape = shape(b)
     b_array%requires_grad = .false.
     call b_array%allocate(array_shape=[size(b,1), size(b,2), 1])
-    do i = 1, size(b,2)
-       b_array%val((i-1)*size(b,1)+1:i*size(b,1), 1) = b(:,i)
-    end do
+    b_array%val(:,1) = reshape(b, [size(b,1)*size(b,2)])
     c%right_operand => b_array
     c%owns_right_operand = .true.
   end function matmul_real2d
@@ -111,9 +103,7 @@ contains
     integer :: s, i
 
     c => b%create_result(array_shape = [size(a,1), size(b%val,2)])
-    do concurrent(s=1:size(b%val,2))
-       c%val(:,s) = matmul(a, b%val(:,s))
-    end do
+    c%val = matmul(a, b%val)
 
     c%is_sample_dependent = b%is_sample_dependent
     c%get_partial_left => get_partial_matmul_left
@@ -132,9 +122,7 @@ contains
     a_array%shape = shape(a)
     a_array%requires_grad = .false.
     call a_array%allocate(array_shape=[size(a,1), size(a,2), 1])
-    do i = 1, size(a,2)
-       a_array%val((i-1)*size(a,1)+1:i*size(a,1), 1) = a(:,i)
-    end do
+    a_array%val(:,1) = reshape(a, [size(a,1)*size(a,2)])
     c%left_operand => a_array
     c%owns_left_operand = .true.
   end function real2d_matmul
@@ -209,40 +197,41 @@ contains
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
-    integer :: i, j, s, m, n, num_elements, num_batches
+    integer :: i, j, s, m, n, num_elements, num_batches, num_rhs
 
     num_batches = size(upstream_grad, 2)
 
     if(size(this%right_operand%shape).eq.2)then
        m = this%right_operand%shape(1)
        n = this%right_operand%shape(2)
-       block
-         real(real32), dimension(m, n) :: temp
-         if(this%right_operand%is_sample_dependent)then
-            do concurrent(s=1:num_batches)
+       if(this%right_operand%is_sample_dependent)then
+          block
+            real(real32), dimension(m, n) :: temp
+            do s = 1, num_batches
                temp = reshape(this%right_operand%val(:,s), [m, n])
                output(:,s) = matmul(upstream_grad(:,s), transpose(temp))
             end do
-         else
+          end block
+       else
+          block
+            real(real32), dimension(m, n) :: temp
             temp = reshape(this%right_operand%val(:,1), [m, n])
-            do concurrent(s=1:num_batches)
-               output(:,s) = matmul(upstream_grad(:,s), transpose(temp))
-            end do
-         end if
-       end block
+            output = matmul(temp, upstream_grad)
+          end block
+       end if
     else
+       ! Outer product case: output(i + (j-1)*num_el, s) = grad(i,s) * right(j,s)
        num_elements = size(upstream_grad,1)
+       num_rhs = size(this%right_operand%val,1)
        if(this%right_operand%is_sample_dependent)then
-          do concurrent(s=1:num_batches, i=1:num_elements, &
-               j=1:size(this%right_operand%val,1))
-             output(i + (j-1)*num_elements,s) = &
-                  upstream_grad(i,s) * this%right_operand%val(j,s)
+          do concurrent(s = 1:num_batches, j = 1:num_rhs)
+                output((j-1)*num_elements+1:j*num_elements, s) = &
+                     this%right_operand%val(j,s) * upstream_grad(:,s)
           end do
        else
-          do concurrent(s=1:num_batches, i=1:num_elements, &
-               j=1:size(this%right_operand%val,1))
-             output(i + (j-1)*num_elements,s) = &
-                  upstream_grad(i,s) * this%right_operand%val(j,1)
+          do j = 1, num_rhs
+             output((j-1)*num_elements+1:j*num_elements, :) = &
+                  this%right_operand%val(j, 1) * upstream_grad
           end do
        end if
     end if
@@ -255,38 +244,41 @@ contains
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
-    integer :: i, j, s, m, n, num_elements, num_batches
+    integer :: i, j, s, m, n, num_elements, num_batches, num_upstream
 
     num_batches = size(upstream_grad, 2)
 
     if(size(this%left_operand%shape).eq.2)then
        m = this%left_operand%shape(1)
        n = this%left_operand%shape(2)
-       block
-         real(real32), dimension(m, n) :: temp
-          if(this%left_operand%is_sample_dependent)then
-             do concurrent(s=1:num_batches)
-                temp = reshape(this%left_operand%val(:,s), [m, n])
-                output(:,s) = matmul(transpose(temp), upstream_grad(:,s))
-             end do
-          else
-             temp = reshape(this%left_operand%val(:,1), [m, n])
-             do concurrent(s=1:num_batches)
-                output(:,s) = matmul(transpose(temp), upstream_grad(:,s))
-             end do
-          end if
-       end block
-    else
-       num_elements = size(this%left_operand%val,1)
        if(this%left_operand%is_sample_dependent)then
-          do concurrent(s=1:num_batches, i=1:num_elements, j=1:size(upstream_grad,1))
-             output(i + (j-1)*num_elements,s) = &
-                  this%left_operand%val(i,s) * upstream_grad(j,s)
+          block
+            real(real32), dimension(m, n) :: temp
+            do s = 1, num_batches
+               temp = reshape(this%left_operand%val(:,s), [m, n])
+               output(:,s) = matmul(transpose(temp), upstream_grad(:,s))
+            end do
+          end block
+       else
+          block
+            real(real32), dimension(n, m) :: temp_t
+            temp_t = transpose(reshape(this%left_operand%val(:,1), [m, n]))
+            output = matmul(temp_t, upstream_grad)
+          end block
+       end if
+    else
+       ! Outer product case: output(i + (j-1)*num_el, s) = left(i,s) * grad(j,s)
+       num_elements = size(this%left_operand%val,1)
+       num_upstream = size(upstream_grad, 1)
+       if(this%left_operand%is_sample_dependent)then
+          do concurrent(s = 1:num_batches, j = 1:num_upstream)
+             output((j-1)*num_elements+1:j*num_elements, s) = &
+                  upstream_grad(j,s) * this%left_operand%val(:,s)
           end do
        else
-          do concurrent(s=1:num_batches, i=1:num_elements, j=1:size(upstream_grad,1))
-             output(i + (j-1)*num_elements,s) = &
-                  this%left_operand%val(i,1) * upstream_grad(j,s)
+          do concurrent(s=1:num_batches, j=1:num_upstream)
+             output((j-1)*num_elements+1:j*num_elements, s) = &
+                  this%left_operand%val(:, 1) * upstream_grad(j, s)
           end do
        end if
     end if
