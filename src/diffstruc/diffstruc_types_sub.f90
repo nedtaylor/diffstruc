@@ -1804,9 +1804,15 @@ contains
     integer :: i, s
 
     c => a%create_result()
-    do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
-       c%val(i,s) = a%val(i,s) - b%val(i,s)
-    end do
+    if(.not.b%is_sample_dependent)then
+       do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
+          c%val(i,s) = a%val(i,s) - b%val(i,1)
+       end do
+    else
+       do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
+          c%val(i,s) = a%val(i,s) - b%val(i,s)
+       end do
+    end if
 
     c%get_partial_left => get_partial_add
     c%get_partial_right => get_partial_negate
@@ -2242,7 +2248,12 @@ contains
 
     integer :: i, s
 
-    if(all(shape(a%val) .eq. shape(b%val)))then
+    if(.not.b%is_sample_dependent)then
+       c => a%create_result()
+       do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
+          c%val(i,s) = a%val(i,s) / b%val(i,1)
+       end do
+    elseif(all(shape(a%val) .eq. shape(b%val)))then
        c => a%create_result()
        c%val = a%val / b%val
     elseif(size(a%val,1).ne.size(b%val,1).and.size(a%val,2).eq.size(b%val,2))then
