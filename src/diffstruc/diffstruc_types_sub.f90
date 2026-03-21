@@ -2181,6 +2181,10 @@ contains
 
     if(this%right_operand%is_scalar)then
        output = upstream_grad * this%right_operand%val(1,1)
+    elseif(.not.this%right_operand%is_sample_dependent)then
+       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
+          output(i,s) = upstream_grad(i,s) * this%right_operand%val(i,1)
+       end do
     elseif(size(upstream_grad,2).ne.size(output,2))then
        do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
           output(i,s) = upstream_grad(i,s) * this%right_operand%val(i,1)
@@ -2439,6 +2443,10 @@ contains
 
     if(this%right_operand%is_scalar)then
        output = upstream_grad / this%right_operand%val(1,1)
+    elseif(.not.this%right_operand%is_sample_dependent)then
+       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
+          output(i,s) = upstream_grad(i,s) / this%right_operand%val(i,1)
+       end do
     elseif(size(upstream_grad,2).ne.size(output,2))then
        do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
           output(i,s) = upstream_grad(i,s) / this%right_operand%val(i,1)
@@ -2461,10 +2469,20 @@ contains
           output(i,s) = (-upstream_grad(i,s) * this%left_operand%val(1,1)) / &
                (this%right_operand%val(i,1) * this%right_operand%val(i,1))
        end do
-    else
+    elseif(.not.this%left_operand%is_sample_dependent)then
        do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
           output(i,s) = (-upstream_grad(i,s) * this%left_operand%val(i,1)) / &
                (this%right_operand%val(i,1) * this%right_operand%val(i,1))
+       end do
+    elseif(.not.this%right_operand%is_sample_dependent)then
+       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
+          output(i,s) = (-upstream_grad(i,s) * this%left_operand%val(i,s)) / &
+               (this%right_operand%val(i,1) * this%right_operand%val(i,1))
+       end do
+    else
+       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
+          output(i,s) = (-upstream_grad(i,s) * this%left_operand%val(i,s)) / &
+               (this%right_operand%val(i,s) * this%right_operand%val(i,s))
        end do
     end if
   end subroutine get_partial_divide_right_val
