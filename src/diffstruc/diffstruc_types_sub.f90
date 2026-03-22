@@ -1987,6 +1987,11 @@ contains
        do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
           c%val(i,s) = a%val(i,s) * b%val(i,1)
        end do
+    elseif(.not.a%is_sample_dependent)then
+       c => b%create_result()
+       do concurrent(s = 1:size(b%val,2), i = 1:size(b%val,1))
+          c%val(i,s) = a%val(1,1) * b%val(i,s)
+       end do
     elseif(size(a%val,1).ne.size(b%val,1).and.size(a%val,2).eq.size(b%val,2))then
        if(size(a%val,1) .eq. 1)then
           c => b%create_result()
@@ -2181,6 +2186,10 @@ contains
 
     if(this%right_operand%is_scalar)then
        output = upstream_grad * this%right_operand%val(1,1)
+    elseif(.not.this%left_operand%is_sample_dependent)then
+       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
+          output(i,s) = upstream_grad(i,s) * this%right_operand%val(i,1)
+       end do
     elseif(.not.this%right_operand%is_sample_dependent)then
        do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
           output(i,s) = upstream_grad(i,s) * this%right_operand%val(i,1)
@@ -2204,6 +2213,14 @@ contains
 
     if(this%left_operand%is_scalar)then
        output = upstream_grad * this%left_operand%val(1,1)
+    elseif(.not.this%left_operand%is_sample_dependent)then
+       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
+          output(i,s) = upstream_grad(i,s) * this%left_operand%val(i,1)
+       end do
+    elseif(.not.this%right_operand%is_sample_dependent)then
+       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
+          output(i,s) = upstream_grad(i,s) * this%left_operand%val(i,1)
+       end do
     elseif(size(upstream_grad,2).ne.size(output,2))then
        do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
           output(i,s) = upstream_grad(i,s) * this%left_operand%val(i,1)
