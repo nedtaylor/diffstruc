@@ -847,14 +847,22 @@ contains
     integer, intent(in) :: depth
 
     integer :: s, i, n_elem
+#ifdef __flang__
+    real(real32), dimension(:, :), allocatable :: grad
+    real(real32), dimension(:, :), allocatable :: out_grad
+#else
     real(real32), dimension(size(array%val, 1), num_samples) :: grad
     real(real32), dimension(size(array%val, 1), 1) :: out_grad
+#endif
     logical :: has_direction, needs_recurse
 
     ! Cache array dimension to avoid repeated calls
     n_elem = size(array%val, 1)
 
     ! Compute partial derivative
+#ifdef __flang__
+    allocate(grad(n_elem, num_samples))
+#endif
     if(is_left_operand)then
        call parent%get_partial_left_val(upstream_grad, grad)
     else
@@ -892,6 +900,9 @@ contains
           end do
        else
           ! Direction case: column-wise sum into out_grad, then apply direction
+#ifdef __flang__
+          allocate(out_grad(n_elem, 1))
+#endif
           out_grad(:,1) = grad(:,1)
           do concurrent( s = 2 : num_samples, i = 1 : n_elem )
              out_grad(i,1) = out_grad(i,1) + grad(i,s)
@@ -905,6 +916,9 @@ contains
     end if
 
     ! General path: compute out_grad with cache-friendly column-wise reduction
+#ifdef __flang__
+    allocate(out_grad(n_elem, 1))
+#endif
     if(num_samples .eq. 1)then
        if(has_direction)then
           do concurrent( i = 1 : n_elem )
