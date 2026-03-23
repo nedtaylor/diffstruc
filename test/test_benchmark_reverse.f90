@@ -88,7 +88,7 @@ program test_benchmark_reverse
      !--- Backward A ---
      call cpu_time(t0)
      do r = 1, N_REV
-        y => (W * x + b) ** 2._real32
+        y => squared(W * x + b)
         loss => sum(y)
         loss%is_temporary = .false.
         call loss%grad_reverse(reset_graph=.true.)
@@ -254,7 +254,7 @@ program test_benchmark_reverse
      !--- Backward C ---
      call cpu_time(t0)
      do r = 1, N_REV
-        y => (a1 + a2) ** 2._real32
+        y => squared(a1 + a2)
         loss => sum(y)
         loss%is_temporary = .false.
         call loss%grad_reverse(reset_graph=.true.)
