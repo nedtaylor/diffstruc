@@ -53,6 +53,18 @@ The library has been developed and tested with:
 * **gfortran** -- GCC 15.2.0, 14.3.0
 * **ifx** -- Intel Fortran Compiler 2025.2.0, 2025.3.0
 
+.. _compiler-note-temporaries:
+
+Compiler Note: Bracketed Expressions and Temporaries
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+   For some compilers, expressions that use brackets to group intermediate results
+   may cause compiler-generated temporaries to be created. This can lead to issues
+   that result in breakage due to incorrect pointer associations.
+
+   For further details and recommended practices to avoid these issues,
+   see the :ref:`compiler-note-temporaries-ops` note in the operations tutorial.
+
 Installing Dependencies
 -----------------------
 
