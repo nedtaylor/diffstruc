@@ -20,7 +20,8 @@ module diffstruc
   use diffstruc__operations_comparison, only: &
        operator(.lt.), operator(.gt.), operator(.le.), operator(.ge.), merge
   use diffstruc__operations_reduction, only: maxval, max
-  use diffstruc__operations_maths, only: sqrt, sign, sigmoid, gaussian, abs, log10
+  use diffstruc__operations_maths, only: sqrt, sign, sigmoid, gaussian, abs, &
+       log10, squared, cubed
   implicit none
 
   private
@@ -42,6 +43,6 @@ module diffstruc
        pack, unpack, reshape
   public :: operator(.lt.), operator(.gt.), operator(.le.), operator(.ge.), merge
   public :: maxval, max
-  public :: sqrt, sign, sigmoid, gaussian, abs, log10
+  public :: sqrt, sign, sigmoid, gaussian, abs, log10, squared, cubed
 
 end module diffstruc

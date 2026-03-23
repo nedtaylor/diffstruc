@@ -285,4 +285,98 @@ contains
   end subroutine get_partial_log10_val
 !###############################################################################
 
+
+!###############################################################################
+  module function squared_array(a) result(c)
+    !! Square function for autodiff arrays (a*a)
+    implicit none
+    class(array_type), intent(in), target :: a
+    type(array_type), pointer :: c
+
+    c => a%create_result()
+    c%val = a%val * a%val
+
+    c%get_partial_left => get_partial_squared
+    c%get_partial_left_val => get_partial_squared_val
+    if(a%requires_grad)then
+       c%requires_grad = .true.
+       c%is_forward = a%is_forward
+       c%operation = 'squared'
+       c%left_operand => a
+       c%owns_left_operand = a%is_temporary
+    end if
+  end function squared_array
+!-------------------------------------------------------------------------------
+  function get_partial_squared(this, upstream_grad) result(output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+    logical :: left_is_temporary_local
+    type(array_type), pointer :: ptr
+
+    left_is_temporary_local = this%left_operand%is_temporary
+    this%left_operand%is_temporary = .false.
+    ptr => upstream_grad * this%left_operand * 2._real32
+    this%left_operand%is_temporary = left_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
+  end function get_partial_squared
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_squared_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    output = upstream_grad * this%left_operand%val * 2._real32
+  end subroutine get_partial_squared_val
+!###############################################################################
+
+
+!###############################################################################
+  module function cubed_array(a) result(c)
+    !! Cube function for autodiff arrays (a*a*a)
+    implicit none
+    class(array_type), intent(in), target :: a
+    type(array_type), pointer :: c
+
+    c => a%create_result()
+    c%val = a%val * a%val * a%val
+
+    c%get_partial_left => get_partial_cubed
+    c%get_partial_left_val => get_partial_cubed_val
+    if(a%requires_grad)then
+       c%requires_grad = .true.
+       c%is_forward = a%is_forward
+       c%operation = 'cubed'
+       c%left_operand => a
+       c%owns_left_operand = a%is_temporary
+    end if
+  end function cubed_array
+!-------------------------------------------------------------------------------
+  function get_partial_cubed(this, upstream_grad) result(output)
+    implicit none
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+    logical :: left_is_temporary_local
+    type(array_type), pointer :: ptr
+
+    left_is_temporary_local = this%left_operand%is_temporary
+    this%left_operand%is_temporary = .false.
+    ptr => upstream_grad * this%left_operand * this%left_operand * 3._real32
+    this%left_operand%is_temporary = left_is_temporary_local
+    call output%assign_and_deallocate_source(ptr)
+  end function get_partial_cubed
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_cubed_val(this, upstream_grad, output)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    output = upstream_grad * this%left_operand%val * this%left_operand%val * 3._real32
+  end subroutine get_partial_cubed_val
+!###############################################################################
+
 end submodule diffstruc__operations_maths_sub
