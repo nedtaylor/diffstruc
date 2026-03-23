@@ -7,7 +7,7 @@ module diffstruc__operations_maths
 
   private
 
-  public :: sqrt, sign, sigmoid, gaussian, abs, log10
+  public :: sqrt, sign, sigmoid, gaussian, abs, log10, squared, cubed
 
 
   ! Operation interfaces
@@ -54,6 +54,20 @@ module diffstruc__operations_maths
        class(array_type), intent(in), target :: a
        type(array_type), pointer :: c
      end function log10_array
+  end interface
+
+  interface squared
+     module function squared_array(a) result(c)
+       class(array_type), intent(in), target :: a
+       type(array_type), pointer :: c
+     end function squared_array
+  end interface
+
+  interface cubed
+     module function cubed_array(a) result(c)
+       class(array_type), intent(in), target :: a
+       type(array_type), pointer :: c
+     end function cubed_array
   end interface
 
 end module diffstruc__operations_maths

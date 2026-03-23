@@ -29,6 +29,9 @@ Operation Summary Table
    * - Exponential
      - ``exp``, ``log``, ``log10``
      - log is natural logarithm
+   * - Power
+     - ``squared``, ``cubed``, ``sqrt``
+     - Common power operations
    * - Linear Algebra
      - ``dot_product``, ``outer_product``, ``matmul``, ``transpose``
      - Matrix operations
@@ -42,7 +45,7 @@ Operation Summary Table
      - ``spread``, ``concat``, ``slice_left``, ``slice_right``, ``ltrim``, ``rtrim``, ``.index.``, ``reverse_index``, ``pack``, ``unpack``, ``reshape``
      - Broadcasting and indexing
    * - Other
-     - ``sign``, ``sqrt``, ``sigmoid``, ``gaussian``
+     - ``sign``, ``sigmoid``, ``gaussian``
      - Element-wise operations
 
 
