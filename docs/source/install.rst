@@ -52,6 +52,7 @@ The library has been developed and tested with:
 
 * **gfortran** -- GCC 15.2.0, 14.3.0
 * **ifx** -- Intel Fortran Compiler 2025.2.0, 2025.3.0
+* **flang** -- Flang 22.1.1
 
 .. _compiler-note-temporaries:
 
