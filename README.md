@@ -78,6 +78,27 @@ To check whether diffstruc has installed correctly and that the compilation work
 This runs a set of test programs (found within the test/ directory) to ensure the expected output occurs when layers and networks are set up.
 
 
+Known issues
+------------
+
+#### Compiler note: bracketed expressions and temporaries
+
+> **_WARNING:_** When chaining overloaded operators on `array_type`, expressions that use brackets to group intermediate results may cause compiler-generated temporaries to be created. For example:
+>
+> ```fortran
+> y => (w * x)**2
+> ```
+>
+> This pattern works correctly with **gfortran**, but can behave incorrectly with **flang** because the temporary result produced by `(w * x)` may not propagate the `is_temporary` flag correctly through the chained operator call, leading to incorrect gradient computation or memory issues.
+>
+> The recommended safe pattern is to store intermediate results explicitly:
+>
+> ```fortran
+> tmp => w * x
+> y => tmp**2
+> ```
+>
+> This avoids reliance on compiler-specific handling of temporaries in operator-overloaded expressions and is the portable approach across all supported compilers.
 
 API documentation
 -----------------

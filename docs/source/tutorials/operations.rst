@@ -174,3 +174,36 @@ Focus on the parts marked with comments.
 
 For one with two operands, you would similarly define ``get_partial_right_custom_op``, ``get_partial_right_custom_op_val``, and associate the ``right_operand`` pointer of the result.
 For how this works, see the built-in matmul operation in the source code (:git:`diffstruc_operations_linalg_sub.f90<src/diffstruc/diffstruc_operations_linalg_sub.f90>`)
+
+
+.. _compiler-note-temporaries-ops:
+
+Chaining Operations issues
+--------------------------
+
+
+.. warning::
+
+   When chaining overloaded operators on ``array_type``, expressions that group
+   intermediate results in brackets may trigger **compiler-generated
+   temporaries**. For example:
+
+   .. code-block:: fortran
+
+      y => (w * x)**2
+
+   This is a known limitation with some compilers. It works correctly with
+   **gfortran**, but can fail with **flang**: the temporary produced by
+   ``(w * x)`` may not have its ``is_temporary`` flag propagated correctly
+   into the subsequent ``**`` call, which can cause incorrect gradient
+   computation or memory errors.
+
+   **Recommended workaround** — store intermediate results explicitly:
+
+   .. code-block:: fortran
+
+      tmp => w * x
+      y => tmp**2
+
+   This makes ownership and lifetime unambiguous and avoids differences in
+   how compilers handle temporaries in operator-overloaded expressions.
