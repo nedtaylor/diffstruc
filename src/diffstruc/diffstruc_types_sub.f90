@@ -260,6 +260,10 @@ contains
          this%get_partial_left_val => input%get_partial_left_val
     if(associated(input%get_partial_right_val)) &
          this%get_partial_right_val => input%get_partial_right_val
+    if(associated(input%get_partial_left_val_sum)) &
+         this%get_partial_left_val_sum => input%get_partial_left_val_sum
+    if(associated(input%get_partial_right_val_sum)) &
+         this%get_partial_right_val_sum => input%get_partial_right_val_sum
 
   end subroutine assign_array
 !-------------------------------------------------------------------------------
@@ -303,6 +307,10 @@ contains
          this%get_partial_left_val => source%get_partial_left_val
     if(associated(source%get_partial_right_val)) &
          this%get_partial_right_val => source%get_partial_right_val
+    if(associated(source%get_partial_left_val_sum)) &
+         this%get_partial_left_val_sum => source%get_partial_left_val_sum
+    if(associated(source%get_partial_right_val_sum)) &
+         this%get_partial_right_val_sum => source%get_partial_right_val_sum
 
   end subroutine assign_shallow
 !-------------------------------------------------------------------------------
@@ -364,6 +372,8 @@ contains
     result_ptr%get_partial_right => null()
     result_ptr%get_partial_left_val => null()
     result_ptr%get_partial_right_val => null()
+    result_ptr%get_partial_left_val_sum => null()
+    result_ptr%get_partial_right_val_sum => null()
     result_ptr%is_temporary = .true.
     result_ptr%fix_pointer = .false.
   end function create_result_array
@@ -837,7 +847,10 @@ contains
   recursive subroutine accumulate_gradient_single( &
        array, parent, upstream_grad, num_samples, is_left_operand, depth &
   )
-    !! Accumulate gradient for array - optimized with fused direction+sum
+    !! Accumulate gradient for array - optimized with sum-reduced path
+    !! When a sum-reduced partial derivative is available, computes the
+    !! sum(partial, dim=2) directly, avoiding the large (n_elem, S) allocation.
+    !! Falls back to full computation when sum-reduced variant is not set.
     implicit none
     class(array_type), intent(inout) :: array
     class(array_type), intent(inout) :: parent
@@ -854,90 +867,143 @@ contains
     real(real32), dimension(size(array%val, 1), num_samples) :: grad
     real(real32), dimension(size(array%val, 1), 1) :: out_grad
 #endif
-    logical :: has_direction, needs_recurse
+    logical :: has_direction, needs_recurse, use_sum_reduced
 
     ! Cache array dimension to avoid repeated calls
     n_elem = size(array%val, 1)
-
-    ! Compute partial derivative
-#ifdef __flang__
-    allocate(grad(n_elem, num_samples))
-#endif
-    if(is_left_operand)then
-       call parent%get_partial_left_val(upstream_grad, grad)
-    else
-       call parent%get_partial_right_val(upstream_grad, grad)
-    end if
 
     ! Check direction once
     has_direction = allocated(array%direction)
     if(has_direction) has_direction = (size(array%direction).gt.0)
 
-    ! Check if recursion needed (determines whether we need out_grad separately)
+    ! Check if recursion needed
     needs_recurse = associated(array%left_operand) .or. &
          associated(array%right_operand)
 
-    ! Fast path: leaf node with existing gradient — direct accumulation
-    ! Avoids out_grad temporary; column-wise access for cache-friendly stride-1
-    if(.not. needs_recurse .and. associated(array%grad))then
-       array%grad%is_temporary = .true.
-       if(num_samples .eq. 1)then
-          if(has_direction)then
-             do concurrent( i = 1 : n_elem )
-                array%grad%val(i,1) = array%grad%val(i,1) + &
-                     grad(i,1) * array%direction(i)
-             end do
-          else
-             do concurrent( i = 1 : n_elem )
-                array%grad%val(i,1) = array%grad%val(i,1) + grad(i,1)
-             end do
-          end if
-       else if(.not. has_direction)then
-          ! Column-wise: stride-1 access in inner loop (cache-friendly)
-          ! Avoids out_grad temporary entirely
-          do concurrent( s = 1 : num_samples, i = 1 : n_elem )
-             array%grad%val(i,1) = array%grad%val(i,1) + grad(i,s)
-          end do
+    ! Determine if we can use the sum-reduced path (avoids large allocation)
+    use_sum_reduced = .false.
+    if(num_samples .gt. 1)then
+       if(is_left_operand)then
+          use_sum_reduced = associated(parent%get_partial_left_val_sum)
        else
-          ! Direction case: column-wise sum into out_grad, then apply direction
-#ifdef __flang__
-          allocate(out_grad(n_elem, 1))
-#endif
-          out_grad(:,1) = grad(:,1)
-          do concurrent( s = 2 : num_samples, i = 1 : n_elem )
-             out_grad(i,1) = out_grad(i,1) + grad(i,s)
-          end do
-          do concurrent( i = 1 : n_elem )
-             array%grad%val(i,1) = array%grad%val(i,1) + &
-                  out_grad(i,1) * array%direction(i)
-          end do
+          use_sum_reduced = associated(parent%get_partial_right_val_sum)
        end if
-       return
     end if
 
-    ! General path: compute out_grad with cache-friendly column-wise reduction
+    if(use_sum_reduced)then
+       !----------------------------------------------------------------------
+       ! Sum-reduced fast path: compute sum(partial, dim=2) directly
+       ! Avoids allocating the large grad(n_elem, num_samples) array entirely
+       !----------------------------------------------------------------------
 #ifdef __flang__
-    allocate(out_grad(n_elem, 1))
+       allocate(out_grad(n_elem, 1))
 #endif
-    if(num_samples .eq. 1)then
-       if(has_direction)then
-          do concurrent( i = 1 : n_elem )
-             out_grad(i,1) = grad(i,1) * array%direction(i)
-          end do
+       if(is_left_operand)then
+          call parent%get_partial_left_val_sum(upstream_grad, out_grad(:,1))
        else
-          out_grad(:,1) = grad(:,1)
+          call parent%get_partial_right_val_sum(upstream_grad, out_grad(:,1))
        end if
-    else
-       ! Column-wise sum: stride-1 inner loop for cache-friendly access
-       out_grad(:,1) = grad(:,1)
-       do concurrent( s = 2 : num_samples, i = 1 : n_elem )
-          out_grad(i,1) = out_grad(i,1) + grad(i,s)
-       end do
+
+       ! Apply direction if needed
        if(has_direction)then
           do concurrent( i = 1 : n_elem )
              out_grad(i,1) = out_grad(i,1) * array%direction(i)
           end do
        end if
+
+       ! Fast path: leaf node with existing gradient
+       if(.not. needs_recurse .and. associated(array%grad))then
+          array%grad%is_temporary = .true.
+          do concurrent( i = 1 : n_elem )
+             array%grad%val(i,1) = array%grad%val(i,1) + out_grad(i,1)
+          end do
+#ifdef __flang__
+          deallocate(out_grad)
+#endif
+          return
+       end if
+    else
+       !----------------------------------------------------------------------
+       ! Standard path: compute full gradient then reduce
+       !----------------------------------------------------------------------
+#ifdef __flang__
+       allocate(grad(n_elem, num_samples))
+#endif
+       !allocate(grad(n_elem, num_samples))
+       if(is_left_operand)then
+          call parent%get_partial_left_val(upstream_grad, grad)
+       else
+          call parent%get_partial_right_val(upstream_grad, grad)
+       end if
+
+       ! Fast path: leaf node with existing gradient — direct accumulation
+       if(.not. needs_recurse .and. associated(array%grad))then
+          array%grad%is_temporary = .true.
+          if(num_samples .eq. 1)then
+             if(has_direction)then
+                do concurrent( i = 1 : n_elem )
+                   array%grad%val(i,1) = array%grad%val(i,1) + &
+                        grad(i,1) * array%direction(i)
+                end do
+             else
+                do concurrent( i = 1 : n_elem )
+                   array%grad%val(i,1) = array%grad%val(i,1) + grad(i,1)
+                end do
+             end if
+          else if(.not. has_direction)then
+             do concurrent( s = 1 : num_samples, i = 1 : n_elem )
+                array%grad%val(i,1) = array%grad%val(i,1) + grad(i,s)
+             end do
+          else
+#ifdef __flang__
+             allocate(out_grad(n_elem, 1))
+#endif
+             out_grad(:,1) = grad(:,1)
+             do concurrent( s = 2 : num_samples, i = 1 : n_elem )
+                out_grad(i,1) = out_grad(i,1) + grad(i,s)
+             end do
+             do concurrent( i = 1 : n_elem )
+                array%grad%val(i,1) = array%grad%val(i,1) + &
+                     out_grad(i,1) * array%direction(i)
+             end do
+#ifdef __flang__
+             deallocate(out_grad)
+#endif
+          end if
+#ifdef __flang__
+          deallocate(grad)
+#endif
+          return
+       end if
+
+       ! General path: compute out_grad with reduction
+#ifdef __flang__
+       allocate(out_grad(n_elem, 1))
+#endif
+       if(num_samples .eq. 1)then
+          if(has_direction)then
+             do concurrent( i = 1 : n_elem )
+                out_grad(i,1) = grad(i,1) * array%direction(i)
+             end do
+          else
+             out_grad(:,1) = grad(:,1)
+          end if
+       else
+          out_grad(:,1) = grad(:,1)
+          do concurrent( s = 2 : num_samples, i = 1 : n_elem )
+             out_grad(i,1) = out_grad(i,1) + grad(i,s)
+          end do
+          if(has_direction)then
+             do concurrent( i = 1 : n_elem )
+                out_grad(i,1) = out_grad(i,1) * array%direction(i)
+             end do
+          end if
+       end if
+
+       ! Free large workspace BEFORE recursion
+#ifdef __flang__
+       deallocate(grad)
+#endif
     end if
 
     ! Accumulate gradient
@@ -981,18 +1047,15 @@ contains
     integer, intent(in) :: depth
 
     integer :: s, i, n_elem, n_samples_actual
+#ifdef __flang__
+    real(real32), dimension(:, :), allocatable :: grad
+#else
     real(real32), dimension(size(array%val, 1), num_samples) :: grad
+#endif
     logical :: has_direction, needs_recurse
 
     ! Cache array dimensions
     n_elem = size(array%val, 1)
-
-    ! Compute partial derivative
-    if(is_left_operand)then
-       call parent%get_partial_left_val(upstream_grad, grad)
-    else
-       call parent%get_partial_right_val(upstream_grad, grad)
-    end if
 
     ! Check direction once
     has_direction = allocated(array%direction)
@@ -1001,6 +1064,37 @@ contains
     ! Check recursion need
     needs_recurse = associated(array%left_operand) .or. &
          associated(array%right_operand)
+
+    ! Direct-write fast path: first gradient, no direction
+    ! Compute partial directly into gradient storage, avoiding temp array copy
+    if(.not. associated(array%grad) .and. .not. has_direction)then
+       allocate(array%grad)
+       call array%grad%allocate(array_shape=[array%shape, size(array%val,2)])
+       if(is_left_operand)then
+          call parent%get_partial_left_val(upstream_grad, array%grad%val)
+       else
+          call parent%get_partial_right_val(upstream_grad, array%grad%val)
+       end if
+       array%grad%is_scalar = array%is_scalar
+       array%grad%is_sample_dependent = array%is_sample_dependent
+       array%grad%requires_grad = .not. array%is_scalar
+       array%grad%grad => null()
+       array%grad%owns_gradient = .false.
+       array%owns_gradient = .true.
+       array%grad%is_temporary = array%is_temporary
+       if(needs_recurse) call reverse_mode(array, array%grad%val, depth+1)
+       return
+    end if
+
+    ! General path: compute partial into temp grad array
+#ifdef __flang__
+    allocate(grad(n_elem, num_samples))
+#endif
+    if(is_left_operand)then
+       call parent%get_partial_left_val(upstream_grad, grad)
+    else
+       call parent%get_partial_right_val(upstream_grad, grad)
+    end if
 
     ! Leaf node fast path: fuse direction into accumulation, skip grad modification
     if(.not. needs_recurse .and. has_direction)then
@@ -1666,6 +1760,8 @@ contains
     c%get_partial_right => get_partial_add
     c%get_partial_left_val => get_partial_add_val
     c%get_partial_right_val => get_partial_add_val
+    c%get_partial_left_val_sum => get_partial_add_val_sum
+    c%get_partial_right_val_sum => get_partial_add_val_sum
     ! Set up computation graph
     if(a%requires_grad .or. b%requires_grad)then
        c%requires_grad = .true.
@@ -1805,6 +1901,28 @@ contains
        end if
     end if
   end subroutine get_partial_add_val
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_add_val_sum(this, upstream_grad, output)
+    !! Fused partial+sum for add: output(:,1) = sum_over_samples(upstream_grad)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:), intent(out) :: output
+
+    integer :: s, n_samples
+
+    n_samples = size(upstream_grad, 2)
+    if(size(output,1).eq.1 .and. size(upstream_grad,1).gt.1)then
+       output(1) = sum(upstream_grad)
+    else if(n_samples .eq. 1)then
+       output(:) = upstream_grad(:,1)
+    else
+       output(:) = upstream_grad(:,1)
+       do s = 2, n_samples
+          output(:) = output(:) + upstream_grad(:,s)
+       end do
+    end if
+  end subroutine get_partial_add_val_sum
 !###############################################################################
 
 
@@ -1832,6 +1950,8 @@ contains
     c%get_partial_right => get_partial_negate
     c%get_partial_left_val => get_partial_add_val
     c%get_partial_right_val => get_partial_negate_val
+    c%get_partial_left_val_sum => get_partial_add_val_sum
+    c%get_partial_right_val_sum => get_partial_negate_val_sum
     if(a%requires_grad .or. b%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
@@ -1981,6 +2101,28 @@ contains
        end if
     end if
   end subroutine get_partial_negate_val
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_negate_val_sum(this, upstream_grad, output)
+    !! Fused partial+sum for negate: output(:,1) = -sum_over_samples(upstream_grad)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:), intent(out) :: output
+
+    integer :: s, n_samples
+
+    n_samples = size(upstream_grad, 2)
+    if(size(output,1).eq.1 .and. size(upstream_grad,1).gt.1)then
+       output(1) = -sum(upstream_grad)
+    else if(n_samples .eq. 1)then
+       output(:) = -upstream_grad(:,1)
+    else
+       output(:) = -upstream_grad(:,1)
+       do s = 2, n_samples
+          output(:) = output(:) - upstream_grad(:,s)
+       end do
+    end if
+  end subroutine get_partial_negate_val_sum
 !###############################################################################
 
 
@@ -2027,6 +2169,8 @@ contains
     c%get_partial_right => get_partial_multiply_right
     c%get_partial_left_val => get_partial_multiply_left_val
     c%get_partial_right_val => get_partial_multiply_right_val
+    c%get_partial_left_val_sum => get_partial_multiply_left_val_sum
+    c%get_partial_right_val_sum => get_partial_multiply_right_val_sum
     if(a%requires_grad .or. b%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
@@ -2093,6 +2237,7 @@ contains
 
     c%get_partial_left => get_partial_multiply_left
     c%get_partial_left_val => get_partial_multiply_left_val
+    c%get_partial_left_val_sum => get_partial_multiply_left_val_sum
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -2243,6 +2388,66 @@ contains
        output = upstream_grad * this%left_operand%val
     end if
   end subroutine get_partial_multiply_right_val
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_multiply_left_val_sum(this, upstream_grad, output)
+    !! Fused partial+sum for multiply left: output(:,1) = sum_s(upstream*right_op)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:), intent(out) :: output
+
+    integer :: s, n_samples
+
+    n_samples = size(upstream_grad, 2)
+    if(this%right_operand%is_scalar)then
+       output(:) = upstream_grad(:,1)
+       do s = 2, n_samples
+          output(:) = output(:) + upstream_grad(:,s)
+       end do
+       output(:) = output(:) * this%right_operand%val(1,1)
+    elseif(.not.this%left_operand%is_sample_dependent .or. &
+         .not.this%right_operand%is_sample_dependent)then
+       output(:) = upstream_grad(:,1) * this%right_operand%val(:,1)
+       do s = 2, n_samples
+          output(:) = output(:) + upstream_grad(:,s) * this%right_operand%val(:,1)
+       end do
+    else
+       output(:) = upstream_grad(:,1) * this%right_operand%val(:,1)
+       do s = 2, n_samples
+          output(:) = output(:) + upstream_grad(:,s) * this%right_operand%val(:,s)
+       end do
+    end if
+  end subroutine get_partial_multiply_left_val_sum
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_multiply_right_val_sum(this, upstream_grad, output)
+    !! Fused partial+sum for multiply right: output(:,1) = sum_s(upstream*left_op)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:), intent(out) :: output
+
+    integer :: s, n_samples
+
+    n_samples = size(upstream_grad, 2)
+    if(this%left_operand%is_scalar)then
+       output(:) = upstream_grad(:,1)
+       do s = 2, n_samples
+          output(:) = output(:) + upstream_grad(:,s)
+       end do
+       output(:) = output(:) * this%left_operand%val(1,1)
+    elseif(.not.this%left_operand%is_sample_dependent .or. &
+         .not.this%right_operand%is_sample_dependent)then
+       output(:) = upstream_grad(:,1) * this%left_operand%val(:,1)
+       do s = 2, n_samples
+          output(:) = output(:) + upstream_grad(:,s) * this%left_operand%val(:,1)
+       end do
+    else
+       output(:) = upstream_grad(:,1) * this%left_operand%val(:,1)
+       do s = 2, n_samples
+          output(:) = output(:) + upstream_grad(:,s) * this%left_operand%val(:,s)
+       end do
+    end if
+  end subroutine get_partial_multiply_right_val_sum
 !-------------------------------------------------------------------------------
   function get_partial_multiply_logical_left(this, upstream_grad) result(output)
     implicit none
@@ -2560,6 +2765,7 @@ contains
 
     c%get_partial_left => get_partial_power_base
     c%get_partial_left_val => get_partial_power_base_val
+    c%get_partial_left_val_sum => get_partial_power_base_val_sum
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -2701,6 +2907,68 @@ contains
        end if
     end if
   end subroutine get_partial_power_base_val
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_power_base_val_sum(this, upstream_grad, output)
+    !! Fused partial+sum for power base: output(:,1) = sum_s(d(a^n)/da * upstream)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:), intent(out) :: output
+
+    integer :: s, n_samples
+    real(real32) :: exp_val
+
+    n_samples = size(upstream_grad, 2)
+    if(all(abs(this%right_operand%val - 1._real32).lt.1.E-6_real32))then
+       output(:) = upstream_grad(:,1)
+       do s = 2, n_samples
+          output(:) = output(:) + upstream_grad(:,s)
+       end do
+    elseif(all(abs(this%right_operand%val - 2._real32).lt.1.E-6_real32))then
+       if(.not.this%left_operand%is_sample_dependent)then
+          output(:) = upstream_grad(:,1)
+          do s = 2, n_samples
+             output(:) = output(:) + upstream_grad(:,s)
+          end do
+          output(:) = output(:) * this%left_operand%val(:,1) * 2._real32
+       else
+          output(:) = upstream_grad(:,1) * this%left_operand%val(:,1) * 2._real32
+          do s = 2, n_samples
+             output(:) = output(:) + &
+                  upstream_grad(:,s) * this%left_operand%val(:,s) * 2._real32
+          end do
+       end if
+    else
+       exp_val = this%right_operand%val(1,1)
+       if(this%right_operand%is_scalar)then
+          if(.not.this%left_operand%is_sample_dependent)then
+             output(:) = upstream_grad(:,1)
+             do s = 2, n_samples
+                output(:) = output(:) + upstream_grad(:,s)
+             end do
+             output(:) = output(:) * exp_val * &
+                  this%left_operand%val(:,1) ** (exp_val - 1._real32)
+          else
+             output(:) = upstream_grad(:,1) * exp_val * &
+                  this%left_operand%val(:,1) ** (exp_val - 1._real32)
+             do s = 2, n_samples
+                output(:) = output(:) + upstream_grad(:,s) * exp_val * &
+                     this%left_operand%val(:,s) ** (exp_val - 1._real32)
+             end do
+          end if
+       else
+          output(:) = upstream_grad(:,1) * this%right_operand%val(:,1) * &
+               this%left_operand%val(:,1) ** (this%right_operand%val(:,1) - 1._real32)
+          do s = 2, n_samples
+             output(:) = output(:) + upstream_grad(:,s) * &
+                  this%right_operand%val(:,s) * &
+                  this%left_operand%val(:,s) ** ( &
+                       this%right_operand%val(:,s) - 1._real32 &
+                  )
+          end do
+       end if
+    end if
+  end subroutine get_partial_power_base_val_sum
 !###############################################################################
 
 
@@ -2721,6 +2989,7 @@ contains
 
     c%get_partial_left => get_partial_exp
     c%get_partial_left_val => get_partial_exp_val
+    c%get_partial_left_val_sum => get_partial_exp_val_sum
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -2754,6 +3023,30 @@ contains
 
     output = upstream_grad * this%val
   end subroutine get_partial_exp_val
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_exp_val_sum(this, upstream_grad, output)
+    !! Fused partial+sum for exp: output(:,1) = sum_s(upstream * exp(x))
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:), intent(out) :: output
+
+    integer :: s, n_samples
+
+    n_samples = size(upstream_grad, 2)
+    if(.not.this%is_sample_dependent)then
+       output(:) = upstream_grad(:,1)
+       do s = 2, n_samples
+          output(:) = output(:) + upstream_grad(:,s)
+       end do
+       output(:) = output(:) * this%val(:,1)
+    else
+       output(:) = upstream_grad(:,1) * this%val(:,1)
+       do s = 2, n_samples
+          output(:) = output(:) + upstream_grad(:,s) * this%val(:,s)
+       end do
+    end if
+  end subroutine get_partial_exp_val_sum
 !###############################################################################
 
 
@@ -3025,6 +3318,7 @@ contains
     c%get_partial_left => get_partial_sum
     !c%get_partial_right => get_partial_sum_forward
     c%get_partial_left_val => get_partial_sum_val
+    c%get_partial_left_val_sum => get_partial_sum_val_sum
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -3053,6 +3347,7 @@ contains
 
     c%get_partial_left => get_partial_sum_all
     c%get_partial_left_val => get_partial_sum_all_val
+    c%get_partial_left_val_sum => get_partial_sum_all_val_sum
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -3206,6 +3501,35 @@ contains
        output(i,s) = upstream_grad(1,1)
     end do
   end subroutine get_partial_sum_all_val
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_sum_all_val_sum(this, upstream_grad, output)
+    !! Fused partial+sum for sum_all: output(:,1) = upstream_grad(1,1)*num_samples
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:), intent(out) :: output
+
+    output(:) = upstream_grad(1,1) * real(size(upstream_grad, 2), real32)
+  end subroutine get_partial_sum_all_val_sum
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_sum_val_sum(this, upstream_grad, output)
+    !! Fused partial+sum for sum: output(:,1) = sum_s(spread(upstream_grad))
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:), intent(out) :: output
+
+    integer :: s, dim, n_samples
+
+    dim = this%indices(1)
+    n_samples = size(upstream_grad, 2)
+
+    if(dim.eq.1)then
+       output(:) = upstream_grad(1,1) * real(n_samples, real32)
+    else if(dim.eq.2)then
+       output(:) = upstream_grad(:,1) * real(n_samples, real32)
+    end if
+  end subroutine get_partial_sum_val_sum
 !-------------------------------------------------------------------------------
   function get_partial_sum_and_pad(this, upstream_grad) result(output)
     implicit none
