@@ -1,7 +1,8 @@
 submodule(diffstruc__types) diffstruc__types_submodule
   !! Submodule containing implementations for derived types
   use coreutils, only: stop_program, print_warning
-  use diffstruc__global, only: diffstruc__max_recursion_depth, diffstruc__init_map_cap
+  use diffstruc__global, only: diffstruc__max_recursion_depth, &
+       diffstruc__init_map_cap, diffstruc__visit_counter
 
 
 
@@ -1142,7 +1143,7 @@ contains
        array%owns_gradient = .true.
        array%grad%is_temporary = array%is_temporary
     else
-       ! In-place addition to avoid temporary array creation
+       ! In-place addition
        array%grad%is_temporary = .true.
        n_samples_actual = size(array%grad%val, 2)
        do concurrent( s = 1 : n_samples_actual, i = 1 : n_elem )
@@ -1198,20 +1199,36 @@ contains
 
 !###############################################################################
   recursive subroutine zero_all_fixed_pointer_grads(this)
-    !! Zero the gradients of this array
+    !! Zero the gradients of all fixed-pointer nodes in the graph
     implicit none
     type(array_type), intent(inout) :: this
 
+    ! Use visit_tag for O(1) cycle detection
+    integer, save :: local_visit_id = 0
+
+    diffstruc__visit_counter = diffstruc__visit_counter + 1
+    local_visit_id = diffstruc__visit_counter
+    call zero_fixed_grads_inner(this, local_visit_id)
+  end subroutine zero_all_fixed_pointer_grads
+!-------------------------------------------------------------------------------
+  recursive subroutine zero_fixed_grads_inner(this, visit_id)
+    implicit none
+    type(array_type), intent(inout) :: this
+    integer, intent(in) :: visit_id
+
+    if(this%visit_tag .eq. visit_id) return
+    this%visit_tag = visit_id
+
     if(associated(this%left_operand))then
-       call zero_all_fixed_pointer_grads(this%left_operand)
+       call zero_fixed_grads_inner(this%left_operand, visit_id)
     end if
     if(associated(this%right_operand))then
-       call zero_all_fixed_pointer_grads(this%right_operand)
+       call zero_fixed_grads_inner(this%right_operand, visit_id)
     end if
     if(this%fix_pointer.and.associated(this%grad))then
        if(allocated(this%grad%val)) this%grad%val = 0.0_real32
     end if
-  end subroutine zero_all_fixed_pointer_grads
+  end subroutine zero_fixed_grads_inner
 !###############################################################################
 
 
@@ -1221,12 +1238,27 @@ contains
     implicit none
     class(array_type), intent(inout) :: this
 
+    integer, save :: local_visit_id = 0
+
+    diffstruc__visit_counter = diffstruc__visit_counter + 1
+    local_visit_id = diffstruc__visit_counter
+    call reset_graph_inner(this, local_visit_id)
+  end subroutine reset_graph
+!-------------------------------------------------------------------------------
+  recursive subroutine reset_graph_inner(this, visit_id)
+    implicit none
+    class(array_type), intent(inout) :: this
+    integer, intent(in) :: visit_id
+
+    if(this%visit_tag .eq. visit_id) return
+    this%visit_tag = visit_id
+
     if(associated(this%left_operand))then
-       call this%left_operand%reset_graph()
+       call reset_graph_inner(this%left_operand, visit_id)
     end if
 
     if(associated(this%right_operand))then
-       call this%right_operand%reset_graph()
+       call reset_graph_inner(this%right_operand, visit_id)
     end if
 
     call this%zero_grad()
@@ -1234,10 +1266,9 @@ contains
        this%grad => null()
     end if
 
-    ! Reset ownership flags
     this%owns_gradient = .false.
 
-  end subroutine reset_graph
+  end subroutine reset_graph_inner
 !###############################################################################
 
 
@@ -1347,73 +1378,100 @@ contains
        deallocate(map)
     end if
   end subroutine map_free
+!-------------------------------------------------------------------------------
+  subroutine dealloc_list_append(list, count, ptr)
+    !! Append pointer to dealloc list using count-based tracking (O(1) amortized)
+    implicit none
+    type(array_ptr), allocatable, intent(inout) :: list(:)
+    integer, intent(inout) :: count
+    type(array_type), intent(in), target :: ptr
+    integer :: cap
+
+    if(.not. allocated(list))then
+       allocate(list(diffstruc__init_map_cap))
+       count = 0
+    end if
+    cap = size(list)
+    if(count .ge. cap)then
+       ! Double capacity
+       block
+         type(array_ptr) :: tmp(cap)
+         tmp = list(1:cap)
+         deallocate(list)
+         allocate(list(cap * 2))
+         list(1:cap) = tmp
+       end block
+    end if
+    count = count + 1
+    list(count)%p => ptr
+  end subroutine dealloc_list_append
 !###############################################################################
 
 
 !###############################################################################
-  recursive subroutine nullify_graph_recursive(this, visited_map, dealloc_list, &
-       ignore_ownership &
+  recursive subroutine nullify_graph_recursive(this, dealloc_list, dealloc_count, &
+       ignore_ownership, visit_id, dealloc_id &
   )
-    !! Recursive helper that tracks visited nodes to avoid infinite loops
-    !! Instead of deallocating immediately, collect nodes to deallocate in a second pass
+    !! Recursive helper using visit_tag for O(1) cycle detection
+    !! Collects nodes to deallocate in a second pass
     implicit none
     class(array_type), intent(inout), target :: this
-    type(array_ptr), allocatable, intent(inout) :: visited_map(:), dealloc_list(:)
+    type(array_ptr), allocatable, intent(inout) :: dealloc_list(:)
+    integer, intent(inout) :: dealloc_count
     logical, intent(in) :: ignore_ownership
-    integer :: idx
+    integer, intent(in) :: visit_id, dealloc_id
 
-    ! Check if we've already visited this node
-    idx = map_find(visited_map, this)
-    if(idx .ne. 0) return  ! Already processed, avoid infinite loop
+    ! O(1) visited check via tag
+    if(this%visit_tag .eq. visit_id) return
+    this%visit_tag = visit_id
 
-    ! Mark this node as visited by adding to map BEFORE recursing
-    call single_map_add(visited_map, this)
-
-    ! Now process children recursively first
-    ! ... this node is not reprocessed due to visited check
+    ! Recurse into children
     if(ignore_ownership)then
-       ! Ignore ownership flags during traversal
        if(associated(this%left_operand))then
           call nullify_graph_recursive( &
-               this%left_operand, visited_map, dealloc_list, ignore_ownership &
+               this%left_operand, dealloc_list, dealloc_count, &
+               ignore_ownership, visit_id, dealloc_id &
           )
        end if
        if(associated(this%right_operand))then
           call nullify_graph_recursive( &
-               this%right_operand, visited_map, dealloc_list, ignore_ownership &
+               this%right_operand, dealloc_list, dealloc_count, &
+               ignore_ownership, visit_id, dealloc_id &
           )
        end if
        if(associated(this%grad))then
           call nullify_graph_recursive( &
-               this%grad, visited_map, dealloc_list, ignore_ownership &
+               this%grad, dealloc_list, dealloc_count, &
+               ignore_ownership, visit_id, dealloc_id &
           )
        end if
     else
        if(associated(this%left_operand).and.this%owns_left_operand)then
           call nullify_graph_recursive( &
-               this%left_operand, visited_map, dealloc_list, ignore_ownership &
+               this%left_operand, dealloc_list, dealloc_count, &
+               ignore_ownership, visit_id, dealloc_id &
           )
        end if
        if(associated(this%right_operand).and.this%owns_right_operand)then
           call nullify_graph_recursive( &
-               this%right_operand, visited_map, dealloc_list, ignore_ownership &
+               this%right_operand, dealloc_list, dealloc_count, &
+               ignore_ownership, visit_id, dealloc_id &
           )
        end if
        if(associated(this%grad).and.this%owns_gradient)then
           call nullify_graph_recursive( &
-               this%grad, visited_map, dealloc_list, ignore_ownership &
+               this%grad, dealloc_list, dealloc_count, &
+               ignore_ownership, visit_id, dealloc_id &
           )
        end if
     end if
 
-    ! After recursion, collect nodes that need deallocation
-    ! Only add to dealloc list if we own it and it's not a fixed pointer
-    ! Check if already in list to avoid double-free
+    ! Collect nodes for deallocation (use dealloc_id tag to avoid duplicates)
     if(associated(this%left_operand))then
        if(.not.this%left_operand%fix_pointer .and. this%owns_left_operand)then
-          idx = map_find(dealloc_list, this%left_operand)
-          if(idx .eq. 0)then  ! Not already listed
-             call single_map_add(dealloc_list, this%left_operand)
+          if(this%left_operand%visit_tag .ne. dealloc_id)then
+             this%left_operand%visit_tag = dealloc_id
+             call dealloc_list_append(dealloc_list, dealloc_count, this%left_operand)
           end if
        end if
        nullify(this%left_operand)
@@ -1421,9 +1479,9 @@ contains
 
     if(associated(this%right_operand))then
        if(.not.this%right_operand%fix_pointer .and. this%owns_right_operand)then
-          idx = map_find(dealloc_list, this%right_operand)
-          if(idx .eq. 0)then  ! Not already listed
-             call single_map_add(dealloc_list, this%right_operand)
+          if(this%right_operand%visit_tag .ne. dealloc_id)then
+             this%right_operand%visit_tag = dealloc_id
+             call dealloc_list_append(dealloc_list, dealloc_count, this%right_operand)
           end if
        end if
        nullify(this%right_operand)
@@ -1431,9 +1489,9 @@ contains
 
     if(associated(this%grad))then
        if(.not.this%grad%fix_pointer .and. this%owns_gradient)then
-          idx = map_find(dealloc_list, this%grad)
-          if(idx .eq. 0)then  ! Not already listed
-             call single_map_add(dealloc_list, this%grad)
+          if(this%grad%visit_tag .ne. dealloc_id)then
+             this%grad%visit_tag = dealloc_id
+             call dealloc_list_append(dealloc_list, dealloc_count, this%grad)
           end if
        end if
        nullify(this%grad)
@@ -1447,6 +1505,8 @@ contains
     nullify(this%get_partial_right)
     nullify(this%get_partial_left_val)
     nullify(this%get_partial_right_val)
+    nullify(this%get_partial_left_val_sum)
+    nullify(this%get_partial_right_val_sum)
 
   end subroutine nullify_graph_recursive
 !###############################################################################
@@ -1454,27 +1514,32 @@ contains
 
 !###############################################################################
   module subroutine nullify_graph(this, ignore_ownership)
-    !! Nullify graph by tracking visited nodes to avoid infinite recursion
+    !! Nullify graph using visit_tag for O(1) cycle detection
     implicit none
     class(array_type), intent(inout), target :: this
     logical, intent(in), optional :: ignore_ownership
-    type(array_ptr), allocatable :: visited_map(:), dealloc_list(:)
+    type(array_ptr), allocatable :: dealloc_list(:)
     type(array_type), pointer :: node_to_dealloc
-    integer :: i, n
+    integer :: i, dealloc_count, visit_id, dealloc_id
     logical :: ignore_ownership_
 
     ignore_ownership_ = .not.this%is_forward
     if(present(ignore_ownership)) ignore_ownership_ = ignore_ownership
 
-    ! Initialise and run the recursive cleanup with tracking
-    ! This will traverse the graph, nullify pointers, and collect nodes to deallocate
-    call nullify_graph_recursive(this, visited_map, dealloc_list, ignore_ownership_)
+    ! Increment global counter by 2: one for visited, one for dealloc tracking
+    diffstruc__visit_counter = diffstruc__visit_counter + 2
+    visit_id = diffstruc__visit_counter - 1
+    dealloc_id = diffstruc__visit_counter
 
-    ! Now deallocate all collected nodes in a second pass
-    ! This avoids issues with deallocating while traversing
+    dealloc_count = 0
+
+    ! Traverse graph with O(1) visited checks via visit_tag
+    call nullify_graph_recursive(this, dealloc_list, dealloc_count, &
+         ignore_ownership_, visit_id, dealloc_id)
+
+    ! Deallocate collected nodes
     if(allocated(dealloc_list))then
-       n = size(dealloc_list)
-       do i = 1, n
+       do i = 1, dealloc_count
           if(associated(dealloc_list(i)%p))then
              node_to_dealloc => dealloc_list(i)%p
              if(node_to_dealloc%allocated)then
@@ -1487,9 +1552,6 @@ contains
        end do
        deallocate(dealloc_list)
     end if
-
-    ! Clean up the map
-    call map_free(visited_map)
 
   end subroutine nullify_graph
 !###############################################################################
