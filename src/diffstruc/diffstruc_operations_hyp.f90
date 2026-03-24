@@ -31,12 +31,13 @@ contains
 
     c => a%create_result()
     do concurrent(s = 1:size(a%val, 2), i = 1:size(a%val,1))
-      c%val(i,s) = tanh(a%val(i,s))
+       c%val(i,s) = tanh(a%val(i,s))
     end do
     !c%val = tanh(a%val)
 
     c%get_partial_left => get_partial_tanh
     c%get_partial_left_val => get_partial_tanh_val
+    c%get_partial_left_val_sum => get_partial_tanh_val_sum
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -72,6 +73,24 @@ contains
 
     output = upstream_grad * (1._real32 - this%val * this%val)
   end subroutine get_partial_tanh_val
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_tanh_val_sum(this, upstream_grad, output)
+    !! Fused partial+sum for tanh: output(:,1) = sum_s(upstream * (1 - val^2))
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:), intent(out) :: output
+
+    integer :: s, n_samples
+
+    n_samples = size(upstream_grad, 2)
+    output(:) = upstream_grad(:,1) * &
+         (1._real32 - this%val(:,1) * this%val(:,1))
+    do s = 2, n_samples
+       output(:) = output(:) + upstream_grad(:,s) * &
+            (1._real32 - this%val(:,s) * this%val(:,s))
+    end do
+  end subroutine get_partial_tanh_val_sum
 !###############################################################################
 
 
@@ -86,7 +105,7 @@ contains
 
     c => a%create_result()
     do concurrent(s = 1:size(a%val, 2), i = 1:size(a%val,1))
-      c%val(i,s) = 1._real32 - a%val(i,s) * a%val(i,s)
+       c%val(i,s) = 1._real32 - a%val(i,s) * a%val(i,s)
     end do
 
     c%get_partial_left => get_partial_tanh_reverse
