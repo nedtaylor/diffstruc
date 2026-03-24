@@ -298,6 +298,7 @@ contains
 
     c%get_partial_left => get_partial_squared
     c%get_partial_left_val => get_partial_squared_val
+    c%get_partial_left_val_sum => get_partial_squared_val_sum
     if(a%requires_grad)then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -330,6 +331,31 @@ contains
 
     output = upstream_grad * this%left_operand%val * 2._real32
   end subroutine get_partial_squared_val
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_squared_val_sum(this, upstream_grad, output)
+    !! Fused partial+sum for squared: output(:,1) = sum_s(upstream * left_op * 2)
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:), intent(out) :: output
+
+    integer :: s, n_samples
+
+    n_samples = size(upstream_grad, 2)
+    if(.not.this%left_operand%is_sample_dependent)then
+       output(:) = upstream_grad(:,1)
+       do s = 2, n_samples
+          output(:) = output(:) + upstream_grad(:,s)
+       end do
+       output(:) = output(:) * this%left_operand%val(:,1) * 2._real32
+    else
+       output(:) = upstream_grad(:,1) * this%left_operand%val(:,1) * 2._real32
+       do s = 2, n_samples
+          output(:) = output(:) + &
+               upstream_grad(:,s) * this%left_operand%val(:,s) * 2._real32
+       end do
+    end if
+  end subroutine get_partial_squared_val_sum
 !###############################################################################
 
 

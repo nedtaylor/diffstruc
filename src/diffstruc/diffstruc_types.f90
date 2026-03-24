@@ -80,6 +80,13 @@ module diffstruc__types
      procedure(get_partial_val), pass(this), pointer :: get_partial_right_val => null()
      !! Pointer procedure for getting partial derivative wrt right operand
 
+     procedure(get_partial_val_sum), pass(this), pointer :: &
+          get_partial_left_val_sum => null()
+     !! Pointer to sum-reduced partial derivative wrt left operand
+     !! Computes sum(partial, dim=2) directly, avoiding large intermediate array
+     procedure(get_partial_val_sum), pass(this), pointer :: &
+          get_partial_right_val_sum => null()
+     !! Pointer to sum-reduced partial derivative wrt right operand
 
    contains
      procedure, pass(this) :: allocate => allocate_array
@@ -321,6 +328,18 @@ module diffstruc__types
        real(real32), dimension(:,:), intent(in) :: upstream_grad
        real(real32), dimension(:,:), intent(out) :: output
      end subroutine get_partial_val
+
+#ifdef USE_BLAS
+     module subroutine get_partial_val_sum(this, upstream_grad, output)
+#else
+     pure module subroutine get_partial_val_sum(this, upstream_grad, output)
+#endif
+       !! Sum-reduced partial derivative: output = sum(partial(upstream_grad), dim=2)
+       !! Avoids allocating large (n_elem, num_samples) intermediate array
+       class(array_type), intent(in) :: this
+       real(real32), dimension(:,:), intent(in) :: upstream_grad
+       real(real32), dimension(:), intent(out) :: output
+     end subroutine get_partial_val_sum
   end interface
 
   interface

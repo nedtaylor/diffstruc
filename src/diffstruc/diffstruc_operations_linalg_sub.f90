@@ -13,6 +13,15 @@ submodule(diffstruc__operations_linalg) diffstruc__operations_linalg_sub
        real(real32), intent(in) :: A(lda,*), B(ldb,*)
        real(real32), intent(inout) :: C(ldc,*)
      end subroutine sgemm
+
+     subroutine sgemv(trans, m, n, alpha, A, lda, x, incx, beta, y, incy)
+       import :: real32
+       character(len=1), intent(in) :: trans
+       integer, intent(in) :: m, n, lda, incx, incy
+       real(real32), intent(in) :: alpha, beta
+       real(real32), intent(in) :: A(lda,*), x(*)
+       real(real32), intent(inout) :: y(*)
+     end subroutine sgemv
   end interface
 #endif
 
@@ -84,6 +93,8 @@ contains
     c%get_partial_right => get_partial_matmul_right
     c%get_partial_left_val => get_partial_matmul_left_val
     c%get_partial_right_val => get_partial_matmul_right_val
+    c%get_partial_left_val_sum => get_partial_matmul_left_val_sum
+    c%get_partial_right_val_sum => get_partial_matmul_right_val_sum
     if(a%requires_grad .or. b%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
@@ -128,6 +139,8 @@ contains
     c%get_partial_right => get_partial_matmul_right
     c%get_partial_left_val => get_partial_matmul_left_val
     c%get_partial_right_val => get_partial_matmul_right_val
+    c%get_partial_left_val_sum => get_partial_matmul_left_val_sum
+    c%get_partial_right_val_sum => get_partial_matmul_right_val_sum
     if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
@@ -177,6 +190,8 @@ contains
     c%get_partial_right => get_partial_matmul_right
     c%get_partial_left_val => get_partial_matmul_left_val
     c%get_partial_right_val => get_partial_matmul_right_val
+    c%get_partial_left_val_sum => get_partial_matmul_left_val_sum
+    c%get_partial_right_val_sum => get_partial_matmul_right_val_sum
     if(b%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = b%is_forward
@@ -420,6 +435,203 @@ contains
     end if
 
   end subroutine get_partial_matmul_right_val
+!###############################################################################
+
+
+!###############################################################################
+! Sum-reduced gradient functions for matmul
+! These compute sum(partial(upstream_grad), dim=2) directly, avoiding
+! the large (n_elem, num_samples) intermediate array allocation.
+!###############################################################################
+#ifdef USE_BLAS
+  subroutine get_partial_matmul_left_val_sum(this, upstream_grad, output)
+#else
+  pure subroutine get_partial_matmul_left_val_sum(this, upstream_grad, output)
+#endif
+    !! Sum-reduced gradient w.r.t. left operand for matmul.
+    !! For the outer product case (rank-1 right operand), this computes:
+    !!   output = sum_s(upstream(:,s) (x) right(:,s)) = upstream * right^T
+    !! using a single SGEMM call instead of computing the full (n_elem, S) array.
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:), intent(out) :: output
+
+    integer :: i, j, s, m, n, num_elements, num_batches, num_rhs
+
+    num_batches = size(upstream_grad, 2)
+
+    if(size(this%right_operand%shape).eq.2)then
+       ! 2D case: output = sum_s(W * upstream(:,s)) = W * sum(upstream, dim=2)
+       m = this%right_operand%shape(1)
+       n = this%right_operand%shape(2)
+       if(this%right_operand%is_sample_dependent)then
+          ! Per-sample weight matrices: fall back to explicit loop
+          block
+            real(real32), dimension(m, n) :: temp
+            real(real32), dimension(m) :: row_result
+            output = 0.0_real32
+            do s = 1, num_batches
+               temp = reshape(this%right_operand%val(:,s), [m, n])
+               row_result = matmul(upstream_grad(:,s), transpose(temp))
+               output = output + row_result
+            end do
+          end block
+       else
+          ! Non-sample-dependent: W * sum(upstream, dim=2) via matvec
+#ifdef USE_BLAS
+          block
+            real(real32), pointer :: W(:,:)
+            real(real32), dimension(size(upstream_grad,1)) :: upstream_sum
+            W(1:m, 1:n) => this%right_operand%val(:,1)
+            upstream_sum = sum(upstream_grad, dim=2)
+            call sgemv('N', m, n, 1.0_real32, W, m, upstream_sum, 1, &
+                 0.0_real32, output, 1)
+          end block
+#else
+          block
+            real(real32), dimension(m, n) :: temp
+            real(real32), dimension(size(upstream_grad,1)) :: upstream_sum
+            temp = reshape(this%right_operand%val(:,1), [m, n])
+            upstream_sum = sum(upstream_grad, dim=2)
+            output = matmul(temp, upstream_sum)
+          end block
+#endif
+       end if
+    else
+       ! Outer product case: sum_s(upstream(i,s) * right(j,s))
+       ! = matmul(upstream, right^T) stored column-major
+       num_elements = size(upstream_grad, 1)
+       num_rhs = size(this%right_operand%val, 1)
+       if(this%right_operand%is_sample_dependent)then
+#ifdef USE_BLAS
+          ! SGEMM: result(num_elements, num_rhs) = upstream * right^T
+          call sgemm('N', 'T', num_elements, num_rhs, num_batches, &
+               1.0_real32, upstream_grad, num_elements, &
+               this%right_operand%val, num_rhs, &
+               0.0_real32, output, num_elements)
+#else
+          ! Manual fused outer product + sum
+          output = 0.0_real32
+          do s = 1, num_batches
+             do j = 1, num_rhs
+                do i = 1, num_elements
+                   output((j-1)*num_elements + i) = &
+                        output((j-1)*num_elements + i) + &
+                        this%right_operand%val(j,s) * upstream_grad(i,s)
+                end do
+             end do
+          end do
+#endif
+       else
+          ! Right operand not sample-dependent: outer product with scalar right
+          ! sum_s(right(j,1) * upstream(i,s)) = right(j,1) * sum_s(upstream(i,s))
+          block
+            real(real32), dimension(num_elements) :: upstream_sum
+            upstream_sum = sum(upstream_grad, dim=2)
+            do j = 1, num_rhs
+               output((j-1)*num_elements+1:j*num_elements) = &
+                    this%right_operand%val(j, 1) * upstream_sum
+            end do
+          end block
+       end if
+    end if
+
+  end subroutine get_partial_matmul_left_val_sum
+!###############################################################################
+
+
+!###############################################################################
+#ifdef USE_BLAS
+  subroutine get_partial_matmul_right_val_sum(this, upstream_grad, output)
+#else
+  pure subroutine get_partial_matmul_right_val_sum(this, upstream_grad, output)
+#endif
+    !! Sum-reduced gradient w.r.t. right operand for matmul.
+    !! For the outer product case (rank-1 left operand), this computes:
+    !!   output = sum_s(left(:,s) (x) upstream(:,s)) = left * upstream^T
+    !! using a single SGEMM call.
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:), intent(out) :: output
+
+    integer :: i, j, s, m, n, num_elements, num_batches, num_upstream
+
+    num_batches = size(upstream_grad, 2)
+
+    if(size(this%left_operand%shape).eq.2)then
+       ! 2D case: output = sum_s(W^T * upstream(:,s)) = W^T * sum(upstream, dim=2)
+       m = this%left_operand%shape(1)
+       n = this%left_operand%shape(2)
+       if(this%left_operand%is_sample_dependent)then
+          block
+            real(real32), dimension(m, n) :: temp
+            real(real32), dimension(n) :: col_result
+            output = 0.0_real32
+            do s = 1, num_batches
+               temp = reshape(this%left_operand%val(:,s), [m, n])
+               col_result = matmul(transpose(temp), upstream_grad(:,s))
+               output = output + col_result
+            end do
+          end block
+       else
+#ifdef USE_BLAS
+          block
+            real(real32), pointer :: W(:,:)
+            real(real32), dimension(size(upstream_grad,1)) :: upstream_sum
+            W(1:m, 1:n) => this%left_operand%val(:,1)
+            upstream_sum = sum(upstream_grad, dim=2)
+            ! W^T * upstream_sum: sgemv with 'T'
+            call sgemv('T', m, n, 1.0_real32, W, m, upstream_sum, 1, &
+                 0.0_real32, output, 1)
+          end block
+#else
+          block
+            real(real32), dimension(n, m) :: temp_t
+            real(real32), dimension(size(upstream_grad,1)) :: upstream_sum
+            temp_t = transpose(reshape(this%left_operand%val(:,1), [m, n]))
+            upstream_sum = sum(upstream_grad, dim=2)
+            output = matmul(temp_t, upstream_sum)
+          end block
+#endif
+       end if
+    else
+       ! Outer product case: sum_s(left(i,s) * upstream(j,s))
+       ! = matmul(left, upstream^T) stored column-major
+       num_elements = size(this%left_operand%val, 1)
+       num_upstream = size(upstream_grad, 1)
+       if(this%left_operand%is_sample_dependent)then
+#ifdef USE_BLAS
+          call sgemm('N', 'T', num_elements, num_upstream, num_batches, &
+               1.0_real32, this%left_operand%val, num_elements, &
+               upstream_grad, num_upstream, &
+               0.0_real32, output, num_elements)
+#else
+          output = 0.0_real32
+          do s = 1, num_batches
+             do j = 1, num_upstream
+                do i = 1, num_elements
+                   output((j-1)*num_elements + i) = &
+                        output((j-1)*num_elements + i) + &
+                        upstream_grad(j,s) * this%left_operand%val(i,s)
+                end do
+             end do
+          end do
+#endif
+       else
+          block
+            real(real32), dimension(num_upstream) :: upstream_sum
+            upstream_sum = sum(upstream_grad, dim=2)
+            do j = 1, num_upstream
+               output((j-1)*num_elements+1:j*num_elements) = &
+                    this%left_operand%val(:, 1) * upstream_sum(j)
+            end do
+          end block
+       end if
+    end if
+
+  end subroutine get_partial_matmul_right_val_sum
 !###############################################################################
 
 
