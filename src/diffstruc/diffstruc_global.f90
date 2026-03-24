@@ -6,5 +6,7 @@ module diffstruc__global
   !! Recursion depth limit for operations that traverse the computation graph
   integer :: diffstruc__init_map_cap = 32
   !! Default capacity for pointer mapping in graph operations
+  integer :: diffstruc__visit_counter = 0
+  !! Global visit counter for O(1) cycle detection in graph traversal
 
 end module diffstruc__global

@@ -65,6 +65,8 @@ module diffstruc__types
      !! ... duplicated or nullified
      logical :: is_temporary = .true.
      !! Boolean indicating if array is temporary
+     integer :: visit_tag = 0
+     !! Visit counter for O(1) graph traversal cycle detection
 
      real(real32), dimension(:), allocatable :: direction
      !! Direction vector for forward-mode differentiation
