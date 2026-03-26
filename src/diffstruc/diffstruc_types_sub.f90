@@ -892,6 +892,27 @@ contains
     end if
 
     if(use_sum_reduced)then
+       ! For leaf nodes without directional derivatives, write the reduced
+       ! gradient directly into the destination buffer and avoid an extra copy.
+       if(.not. needs_recurse .and. .not. has_direction .and. &
+            .not. associated(array%grad))then
+          allocate(array%grad)
+          call array%grad%allocate(array_shape=[array%shape, 1])
+          if(is_left_operand)then
+             call parent%get_partial_left_val_sum(upstream_grad, array%grad%val(:,1))
+          else
+             call parent%get_partial_right_val_sum(upstream_grad, array%grad%val(:,1))
+          end if
+          array%grad%is_scalar = array%is_scalar
+          array%grad%is_sample_dependent = array%is_sample_dependent
+          array%grad%requires_grad = .not. array%is_scalar
+          array%grad%grad => null()
+          array%grad%owns_gradient = .false.
+          array%owns_gradient = .true.
+          array%grad%is_temporary = array%is_temporary
+          return
+       end if
+
        !----------------------------------------------------------------------
        ! Sum-reduced fast path: compute sum(partial, dim=2) directly
        ! Avoids allocating the large grad(n_elem, num_samples) array entirely
@@ -930,7 +951,6 @@ contains
 #ifdef __flang__
        allocate(grad(n_elem, num_samples))
 #endif
-       !allocate(grad(n_elem, num_samples))
        if(is_left_operand)then
           call parent%get_partial_left_val(upstream_grad, grad)
        else
@@ -1010,7 +1030,7 @@ contains
     ! Accumulate gradient
     if(.not. associated(array%grad))then
        allocate(array%grad)
-       call array%grad%allocate(array_shape=[array%shape, size(array%val,2)])
+       call array%grad%allocate(array_shape=[array%shape, 1])
        array%grad%val = out_grad
        array%grad%is_scalar = array%is_scalar
        array%grad%is_sample_dependent = array%is_sample_dependent
@@ -1066,15 +1086,20 @@ contains
     needs_recurse = associated(array%left_operand) .or. &
          associated(array%right_operand)
 
-    ! Direct-write fast path: first gradient, no direction
-    ! Compute partial directly into gradient storage, avoiding temp array copy
-    if(.not. associated(array%grad) .and. .not. has_direction)then
+    ! Direct-write fast path: first gradient can be written straight into
+    ! persistent storage, then optionally scaled and recursed from there.
+    if(.not. associated(array%grad))then
        allocate(array%grad)
-       call array%grad%allocate(array_shape=[array%shape, size(array%val,2)])
+       call array%grad%allocate(array_shape=[array%shape, num_samples])
        if(is_left_operand)then
           call parent%get_partial_left_val(upstream_grad, array%grad%val)
        else
           call parent%get_partial_right_val(upstream_grad, array%grad%val)
+       end if
+       if(has_direction)then
+          do concurrent( s = 1 : num_samples, i = 1 : n_elem )
+             array%grad%val(i,s) = array%grad%val(i,s) * array%direction(i)
+          end do
        end if
        array%grad%is_scalar = array%is_scalar
        array%grad%is_sample_dependent = array%is_sample_dependent
@@ -1261,9 +1286,12 @@ contains
        call reset_graph_inner(this%right_operand, visit_id)
     end if
 
-    call this%zero_grad()
-    if(this%owns_gradient.and.associated(this%grad))then
-       this%grad => null()
+    if(associated(this%grad))then
+       if(this%owns_gradient)then
+          this%grad => null()
+       else if(allocated(this%grad%val))then
+          this%grad%val = 0.0_real32
+       end if
     end if
 
     this%owns_gradient = .false.
