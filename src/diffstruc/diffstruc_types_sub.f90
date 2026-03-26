@@ -190,6 +190,8 @@ contains
     nullify(this%get_partial_right)
     nullify(this%get_partial_left_val)
     nullify(this%get_partial_right_val)
+    nullify(this%get_partial_left_val_sum)
+    nullify(this%get_partial_right_val_sum)
     this%is_temporary = .true.
     ! write(*,*) "finalised array loc: ", loc(this)
 
