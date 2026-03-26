@@ -190,6 +190,9 @@ contains
     nullify(this%get_partial_right)
     nullify(this%get_partial_left_val)
     nullify(this%get_partial_right_val)
+    nullify(this%get_partial_left_val_sum)
+    nullify(this%get_partial_right_val_sum)
+    nullify(this%get_partial_both_val)
     this%is_temporary = .true.
     ! write(*,*) "finalised array loc: ", loc(this)
 
@@ -265,6 +268,8 @@ contains
          this%get_partial_left_val_sum => input%get_partial_left_val_sum
     if(associated(input%get_partial_right_val_sum)) &
          this%get_partial_right_val_sum => input%get_partial_right_val_sum
+    if(associated(input%get_partial_both_val)) &
+         this%get_partial_both_val => input%get_partial_both_val
 
   end subroutine assign_array
 !-------------------------------------------------------------------------------
@@ -312,6 +317,8 @@ contains
          this%get_partial_left_val_sum => source%get_partial_left_val_sum
     if(associated(source%get_partial_right_val_sum)) &
          this%get_partial_right_val_sum => source%get_partial_right_val_sum
+    if(associated(source%get_partial_both_val)) &
+         this%get_partial_both_val => source%get_partial_both_val
 
   end subroutine assign_shallow
 !-------------------------------------------------------------------------------
@@ -375,6 +382,7 @@ contains
     result_ptr%get_partial_right_val => null()
     result_ptr%get_partial_left_val_sum => null()
     result_ptr%get_partial_right_val_sum => null()
+    result_ptr%get_partial_both_val => null()
     result_ptr%is_temporary = .true.
     result_ptr%fix_pointer = .false.
   end function create_result_array
@@ -812,6 +820,17 @@ contains
     if(.not.has_left .and. .not.has_right) return
 
     array%is_forward = .false.
+    if(has_left .and. has_right .and. associated(array%get_partial_both_val))then
+       if(array%left_operand%is_sample_dependent .and. &
+            .not.array%right_operand%is_sample_dependent .and. &
+            size(upstream_grad, 2) .gt. 1)then
+          call accumulate_gradient_mixed( &
+               array%left_operand, array%right_operand, array, upstream_grad, &
+               depth)
+          return
+       end if
+    end if
+
     ! Process left operand (already verified it requires grad)
     if(has_left)then
        num_samples = max(size(array%left_operand%val, 2), size(upstream_grad, 2))
@@ -841,6 +860,118 @@ contains
     end if
     ! write(*,*) "done operation: ", trim(array%operation)
   end subroutine reverse_mode
+!###############################################################################
+
+
+!###############################################################################
+  recursive subroutine accumulate_gradient_mixed( &
+       left_array, right_array, parent, upstream_grad, depth)
+    !! Fused accumulation for a sample-dependent left operand and a
+    !! sample-independent right operand.
+    implicit none
+
+    class(array_type), intent(inout) :: left_array
+    class(array_type), intent(inout) :: right_array
+    class(array_type), intent(inout) :: parent
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    integer, intent(in) :: depth
+
+    integer :: i, s, left_n_elem, right_n_elem, left_num_samples
+    integer :: left_grad_samples
+    logical :: left_has_direction, right_has_direction
+    logical :: left_needs_recurse, right_needs_recurse
+#ifdef __flang__
+    real(real32), allocatable :: left_grad(:,:)
+    real(real32), allocatable :: right_grad(:,:)
+#else
+    real(real32) :: left_grad(size(left_array%val, 1), size(upstream_grad, 2))
+    real(real32) :: right_grad(size(right_array%val, 1), 1)
+#endif
+
+    left_n_elem = size(left_array%val, 1)
+    right_n_elem = size(right_array%val, 1)
+    left_num_samples = size(upstream_grad, 2)
+    left_grad_samples = size(left_array%val, 2)
+
+    left_has_direction = allocated(left_array%direction)
+    if(left_has_direction) left_has_direction = size(left_array%direction) .gt. 0
+    right_has_direction = allocated(right_array%direction)
+    if(right_has_direction)then
+       right_has_direction = size(right_array%direction) .gt. 0
+    end if
+
+    left_needs_recurse = associated(left_array%left_operand) .or. &
+         associated(left_array%right_operand)
+    right_needs_recurse = associated(right_array%left_operand) .or. &
+         associated(right_array%right_operand)
+
+#ifdef __flang__
+    allocate(left_grad(left_n_elem, left_num_samples))
+    allocate(right_grad(right_n_elem, 1))
+#endif
+    call parent%get_partial_both_val(upstream_grad, left_grad, right_grad(:,1))
+
+    if(left_has_direction)then
+       do concurrent(s = 1:left_num_samples, i = 1:left_n_elem)
+          left_grad(i, s) = left_grad(i, s) * left_array%direction(i)
+       end do
+    end if
+    if(right_has_direction)then
+       do concurrent(i = 1:right_n_elem)
+          right_grad(i, 1) = right_grad(i, 1) * right_array%direction(i)
+       end do
+    end if
+
+    if(.not. associated(left_array%grad))then
+       allocate(left_array%grad)
+       call left_array%grad%allocate( &
+            array_shape=[left_array%shape, left_grad_samples])
+       left_array%grad%val = left_grad
+       left_array%grad%is_scalar = left_array%is_scalar
+       left_array%grad%is_sample_dependent = left_array%is_sample_dependent
+       left_array%grad%requires_grad = .not. left_array%is_scalar
+       left_array%grad%grad => null()
+       left_array%grad%owns_gradient = .false.
+       left_array%owns_gradient = .true.
+       left_array%grad%is_temporary = left_array%is_temporary
+    else
+       left_array%grad%is_temporary = .true.
+       do concurrent(s = 1:left_grad_samples, i = 1:left_n_elem)
+          left_array%grad%val(i,s) = left_array%grad%val(i,s) + left_grad(i,s)
+       end do
+    end if
+
+    if(.not. associated(right_array%grad))then
+       allocate(right_array%grad)
+       call right_array%grad%allocate(array_shape=[right_array%shape, 1])
+       right_array%grad%val = right_grad
+       right_array%grad%is_scalar = right_array%is_scalar
+       right_array%grad%is_sample_dependent = right_array%is_sample_dependent
+       right_array%grad%requires_grad = .not. right_array%is_scalar
+       right_array%grad%grad => null()
+       right_array%grad%owns_gradient = .false.
+       right_array%owns_gradient = .true.
+       right_array%grad%is_temporary = right_array%is_temporary
+    else
+       right_array%grad%is_temporary = .true.
+       do concurrent(i = 1:right_n_elem)
+          right_array%grad%val(i,1) = right_array%grad%val(i,1) + &
+               right_grad(i,1)
+       end do
+    end if
+
+    if(left_needs_recurse)then
+       call reverse_mode(left_array, left_grad, depth + 1)
+    end if
+    if(right_needs_recurse)then
+       call reverse_mode(right_array, right_grad, depth + 1)
+    end if
+
+#ifdef __flang__
+    deallocate(left_grad)
+    deallocate(right_grad)
+#endif
+  end subroutine accumulate_gradient_mixed
 !###############################################################################
 
 
@@ -1535,6 +1666,7 @@ contains
     nullify(this%get_partial_right_val)
     nullify(this%get_partial_left_val_sum)
     nullify(this%get_partial_right_val_sum)
+    nullify(this%get_partial_both_val)
 
   end subroutine nullify_graph_recursive
 !###############################################################################

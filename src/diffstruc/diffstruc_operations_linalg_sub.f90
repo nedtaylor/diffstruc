@@ -36,8 +36,10 @@ contains
 
     integer :: s, m, k, n, num_samples
     character(len=128) :: err_msg
+    logical :: supports_mixed_reverse
     real(real32), pointer :: temp(:,:)
 
+    supports_mixed_reverse = .false.
     if(.not.a%is_sample_dependent)then
        if(size(b%shape).ne.1)then
           write(err_msg,'("Matrix multiplication not implemented for array ''b'' &
@@ -73,6 +75,7 @@ contains
        num_samples = size(a%val, 2)
        c => b%create_result(array_shape=[n, num_samples])
        temp(1:k, 1:n) => b%val
+       supports_mixed_reverse = .true.
 #ifdef USE_BLAS
        ! sgemm: C = alpha * op(A) * B + beta * C with transa='T'
        ! Computes C(n, S) = temp^T(n, k) * a%val(k, S)
@@ -95,6 +98,7 @@ contains
     c%get_partial_right_val => get_partial_matmul_right_val
     c%get_partial_left_val_sum => get_partial_matmul_left_val_sum
     c%get_partial_right_val_sum => get_partial_matmul_right_val_sum
+    if(supports_mixed_reverse) c%get_partial_both_val => get_partial_matmul_both_val
     if(a%requires_grad .or. b%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
@@ -435,6 +439,61 @@ contains
     end if
 
   end subroutine get_partial_matmul_right_val
+!###############################################################################
+
+
+!###############################################################################
+#ifdef USE_BLAS
+  subroutine get_partial_matmul_both_val(this, upstream_grad, left_output, right_output)
+#else
+  pure subroutine get_partial_matmul_both_val( &
+       this, upstream_grad, left_output, right_output &
+  )
+#endif
+    !! Fused reverse-mode partials for C(:,s) = B^T * A(:,s), where A is
+    !! sample-dependent and B is a sample-independent 2D matrix.
+    !!
+    !! Computes:
+    !!   left_output(:,s) = B * upstream_grad(:,s)
+    !!   right_output     = sum_s(A(:,s) (x) upstream_grad(:,s))
+    implicit none
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: left_output
+    real(real32), dimension(:), intent(out) :: right_output
+
+    integer :: k, n, num_batches
+
+    k = this%right_operand%shape(1)
+    n = this%right_operand%shape(2)
+    num_batches = size(upstream_grad, 2)
+
+#ifdef USE_BLAS
+    block
+      real(real32), pointer :: weights(:,:)
+
+      weights(1:k, 1:n) => this%right_operand%val(:,1)
+
+      call sgemm('N', 'N', k, num_batches, n, &
+           1.0_real32, weights, k, upstream_grad, n, &
+           0.0_real32, left_output, k)
+      call sgemm('N', 'T', k, n, num_batches, &
+           1.0_real32, this%left_operand%val, k, upstream_grad, n, &
+           0.0_real32, right_output, k)
+    end block
+#else
+    block
+      real(real32), dimension(k, n) :: weights
+      real(real32), dimension(k, n) :: right_output_matrix
+
+      weights = reshape(this%right_operand%val(:,1), [k, n])
+      left_output = matmul(weights, upstream_grad)
+      right_output_matrix = matmul(this%left_operand%val, transpose(upstream_grad))
+      right_output = reshape(right_output_matrix, [k * n])
+    end block
+#endif
+
+  end subroutine get_partial_matmul_both_val
 !###############################################################################
 
 

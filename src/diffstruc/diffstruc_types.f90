@@ -90,6 +90,13 @@ module diffstruc__types
           get_partial_right_val_sum => null()
      !! Pointer to sum-reduced partial derivative wrt right operand
 
+     procedure(get_partial_val_mixed), pass(this), pointer :: &
+          get_partial_both_val => null()
+     !! Pointer to fused partial derivative evaluation for operations with a
+     !! sample-dependent left operand and a sample-independent right operand.
+     !! Computes the full left gradient and the sum-reduced right gradient in
+     !! one pass to avoid traversing the same stencil twice.
+
    contains
      procedure, pass(this) :: allocate => allocate_array
      !! Abstract procedure for allocating array
@@ -336,12 +343,25 @@ module diffstruc__types
 #else
      pure module subroutine get_partial_val_sum(this, upstream_grad, output)
 #endif
-       !! Sum-reduced partial derivative: output = sum(partial(upstream_grad), dim=2)
+       !! Sum-reduced partial derivative:
+       !! output = sum(partial(upstream_grad), dim=2)
        !! Avoids allocating large (n_elem, num_samples) intermediate array
        class(array_type), intent(in) :: this
        real(real32), dimension(:,:), intent(in) :: upstream_grad
        real(real32), dimension(:), intent(out) :: output
      end subroutine get_partial_val_sum
+
+#ifdef USE_BLAS
+     module subroutine get_partial_val_mixed( &
+#else
+     pure module subroutine get_partial_val_mixed( &
+#endif
+          this, upstream_grad, left_output, right_output)
+       class(array_type), intent(in) :: this
+       real(real32), dimension(:,:), intent(in) :: upstream_grad
+       real(real32), dimension(:,:), intent(out) :: left_output
+       real(real32), dimension(:), intent(out) :: right_output
+     end subroutine get_partial_val_mixed
   end interface
 
   interface
