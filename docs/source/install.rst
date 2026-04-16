@@ -3,10 +3,6 @@ Installation
 
 This guide will help you install and set up the **diffstruc** library for automatic differentiation in Fortran.
 
-.. contents::
-   :local:
-   :depth: 2
-
 
 Getting the Source Code
 -----------------------

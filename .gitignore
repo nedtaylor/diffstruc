@@ -25,3 +25,4 @@ docs/source/_static/ford/
 docs/ford/output/
 .local-pre-commit-config.yaml
 .ipynb_checkpoints
+_build/

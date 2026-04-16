@@ -8,3 +8,9 @@ table.docutils td {
 table.docutils td:nth-child(1) { max-width: 12rem; }
 table.docutils td:nth-child(2) { max-width: 20rem; }
 table.docutils td:nth-child(3) { max-width: 30rem; }
+
+.content-icon-container .github-this-page svg {
+    color: inherit;
+    height: 1.25rem;
+    width: 1.25rem;
+}
