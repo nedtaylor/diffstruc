@@ -863,13 +863,8 @@ contains
     integer, intent(in) :: depth
 
     integer :: s, i, n_elem
-#ifdef __flang__
-    real(real32), dimension(:, :), allocatable :: grad
-    real(real32), dimension(:, :), allocatable :: out_grad
-#else
     real(real32), dimension(size(array%val, 1), num_samples) :: grad
     real(real32), dimension(size(array%val, 1), 1) :: out_grad
-#endif
     logical :: has_direction, needs_recurse, use_sum_reduced
 
     ! Cache array dimension to avoid repeated calls
@@ -919,9 +914,6 @@ contains
        ! Sum-reduced fast path: compute sum(partial, dim=2) directly
        ! Avoids allocating the large grad(n_elem, num_samples) array entirely
        !----------------------------------------------------------------------
-#ifdef __flang__
-       allocate(out_grad(n_elem, 1))
-#endif
        if(is_left_operand)then
           call parent%get_partial_left_val_sum(upstream_grad, out_grad(:,1))
        else
@@ -941,18 +933,12 @@ contains
           do concurrent( i = 1 : n_elem )
              array%grad%val(i,1) = array%grad%val(i,1) + out_grad(i,1)
           end do
-#ifdef __flang__
-          deallocate(out_grad)
-#endif
           return
        end if
     else
        !----------------------------------------------------------------------
        ! Standard path: compute full gradient then reduce
        !----------------------------------------------------------------------
-#ifdef __flang__
-       allocate(grad(n_elem, num_samples))
-#endif
        if(is_left_operand)then
           call parent%get_partial_left_val(upstream_grad, grad)
        else
@@ -978,9 +964,6 @@ contains
                 array%grad%val(i,1) = array%grad%val(i,1) + grad(i,s)
              end do
           else
-#ifdef __flang__
-             allocate(out_grad(n_elem, 1))
-#endif
              out_grad(:,1) = grad(:,1)
              do concurrent( s = 2 : num_samples, i = 1 : n_elem )
                 out_grad(i,1) = out_grad(i,1) + grad(i,s)
@@ -989,20 +972,11 @@ contains
                 array%grad%val(i,1) = array%grad%val(i,1) + &
                      out_grad(i,1) * array%direction(i)
              end do
-#ifdef __flang__
-             deallocate(out_grad)
-#endif
           end if
-#ifdef __flang__
-          deallocate(grad)
-#endif
           return
        end if
 
        ! General path: compute out_grad with reduction
-#ifdef __flang__
-       allocate(out_grad(n_elem, 1))
-#endif
        if(num_samples .eq. 1)then
           if(has_direction)then
              do concurrent( i = 1 : n_elem )
@@ -1024,9 +998,6 @@ contains
        end if
 
        ! Free large workspace BEFORE recursion
-#ifdef __flang__
-       deallocate(grad)
-#endif
     end if
 
     ! Accumulate gradient
@@ -1070,11 +1041,7 @@ contains
     integer, intent(in) :: depth
 
     integer :: s, i, n_elem, n_samples_actual
-#ifdef __flang__
-    real(real32), dimension(:, :), allocatable :: grad
-#else
     real(real32), dimension(size(array%val, 1), num_samples) :: grad
-#endif
     logical :: has_direction, needs_recurse
 
     ! Cache array dimensions
@@ -1115,9 +1082,6 @@ contains
     end if
 
     ! General path: compute partial into temp grad array
-#ifdef __flang__
-    allocate(grad(n_elem, num_samples))
-#endif
     if(is_left_operand)then
        call parent%get_partial_left_val(upstream_grad, grad)
     else
