@@ -12,6 +12,7 @@ program test_benchmark_reverse
   !!
   !! Reports: backward pass time (ms), correctness checksums
   use coreutils, only: real32
+  use, intrinsic :: iso_fortran_env, only: real64
   use diffstruc
   implicit none
 
@@ -25,7 +26,8 @@ program test_benchmark_reverse
 
   integer  :: s, r, d, batch, seed_size
   integer, allocatable :: seed_vals(:)
-  real     :: t0, t1, t_revA, t_revB, t_revC
+  real(real64) :: t0, t1
+  real(real32) :: t_revA, t_revB, t_revC
   real(real32) :: checksum_a, checksum_b, checksum_c
   real(real32) :: ref_checksum_a, ref_checksum_b, ref_checksum_c
 
@@ -86,7 +88,7 @@ program test_benchmark_reverse
      first_pass = .true.
 
      !--- Backward A ---
-     call cpu_time(t0)
+     t0 = wall_time_seconds()
      do r = 1, N_REV
         y => squared(W * x + b)
         loss => sum(y)
@@ -122,8 +124,8 @@ program test_benchmark_reverse
            b%owns_gradient = .false.
         end if
      end do
-     call cpu_time(t1)
-     t_revA = (t1 - t0) / real(N_REV) * 1000.0
+     t1 = wall_time_seconds()
+     t_revA = real((t1 - t0) / real(N_REV, real64) * 1000.0_real64, real32)
 
      call W%deallocate()
      call x%deallocate()
@@ -173,7 +175,7 @@ program test_benchmark_reverse
      first_pass = .true.
 
      !--- Backward B ---
-     call cpu_time(t0)
+     t0 = wall_time_seconds()
      do r = 1, N_REV
         h => W1 * x + b1
         y2 => tanh(W2 * h + b2)
@@ -219,8 +221,8 @@ program test_benchmark_reverse
            b2%owns_gradient = .false.
         end if
      end do
-     call cpu_time(t1)
-     t_revB = (t1 - t0) / real(N_REV) * 1000.0
+     t1 = wall_time_seconds()
+     t_revB = real((t1 - t0) / real(N_REV, real64) * 1000.0_real64, real32)
 
      call W1%deallocate()
      call W2%deallocate()
@@ -252,7 +254,7 @@ program test_benchmark_reverse
      first_pass = .true.
 
      !--- Backward C ---
-     call cpu_time(t0)
+     t0 = wall_time_seconds()
      do r = 1, N_REV
         y => squared(a1 + a2)
         loss => sum(y)
@@ -279,8 +281,8 @@ program test_benchmark_reverse
            a2%owns_gradient = .false.
         end if
      end do
-     call cpu_time(t1)
-     t_revC = (t1 - t0) / real(N_REV) * 1000.0
+     t1 = wall_time_seconds()
+     t_revC = real((t1 - t0) / real(N_REV, real64) * 1000.0_real64, real32)
 
      call a1%deallocate()
      call a2%deallocate()
@@ -294,5 +296,15 @@ program test_benchmark_reverse
   write(*,'(A,E16.6)') "Ref checksum B (first pass): ", ref_checksum_b
   write(*,'(A,E16.6)') "Ref checksum C (first pass): ", ref_checksum_c
   write(*,'(A)') ""
+
+contains
+
+  real(real64) function wall_time_seconds() result(seconds)
+    implicit none
+    integer :: count, count_rate
+
+    call system_clock(count, count_rate)
+    seconds = real(count, real64) / real(count_rate, real64)
+  end function wall_time_seconds
 
 end program test_benchmark_reverse

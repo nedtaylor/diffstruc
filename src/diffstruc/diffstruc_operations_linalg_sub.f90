@@ -1,29 +1,7 @@
 submodule(diffstruc__operations_linalg) diffstruc__operations_linalg_sub
   !! Submodule containing implementations of linear algebra operations
+  use diffstruc__backend_linalg, only: backend_sgemm, backend_sgemv
   use coreutils, only: stop_program
-
-#ifdef USE_BLAS
-  interface
-     subroutine sgemm(transa, transb, m, n, k, alpha, A, lda, B, ldb, &
-          beta, C, ldc)
-       import :: real32
-       character(len=1), intent(in) :: transa, transb
-       integer, intent(in) :: m, n, k, lda, ldb, ldc
-       real(real32), intent(in) :: alpha, beta
-       real(real32), intent(in) :: A(lda,*), B(ldb,*)
-       real(real32), intent(inout) :: C(ldc,*)
-     end subroutine sgemm
-
-     subroutine sgemv(trans, m, n, alpha, A, lda, x, incx, beta, y, incy)
-       import :: real32
-       character(len=1), intent(in) :: trans
-       integer, intent(in) :: m, n, lda, incx, incy
-       real(real32), intent(in) :: alpha, beta
-       real(real32), intent(in) :: A(lda,*), x(*)
-       real(real32), intent(inout) :: y(*)
-     end subroutine sgemv
-  end interface
-#endif
 
 contains
 
@@ -55,7 +33,7 @@ contains
        ! sgemm: C = alpha * A * B + beta * C
        ! m = rows of A and C, n = columns of B and C, k = cols of A / rows of B
        ! lda = m (leading dim of A), ldb = k (leading dim of B), ldc = m
-       call sgemm('N', 'N', m, num_samples, k, &
+       call backend_sgemm('N', 'N', m, num_samples, k, &
             1.0_real32, temp, m, b%val, k, 0.0_real32, c%val, m)
 #else
        c%val = matmul(temp, b%val)
@@ -78,7 +56,7 @@ contains
        ! Computes C(n, S) = temp^T(n, k) * a%val(k, S)
        ! m = n (rows of result), n_arg = S, k = k (shared dim)
        ! lda = k (leading dim of temp before transpose), ldb = k, ldc = n
-       call sgemm('T', 'N', n, num_samples, k, &
+       call backend_sgemm('T', 'N', n, num_samples, k, &
             1.0_real32, temp, k, a%val, k, 0.0_real32, c%val, n)
 #else
        c%val = matmul(transpose(temp), a%val)
@@ -128,7 +106,7 @@ contains
     ! sgemm: transa='T' transposes b in-place, no temporary needed
     ! m = cols, n = S, k = rows
     ! lda = rows (leading dim of b before transpose), ldb = rows, ldc = cols
-    call sgemm('T', 'N', cols, num_samples, rows, &
+    call backend_sgemm('T', 'N', cols, num_samples, rows, &
          1.0_real32, b, rows, a%val, rows, 0.0_real32, c%val, cols)
 #else
     c%val = matmul(transpose(b), a%val)
@@ -179,7 +157,7 @@ contains
     ! sgemm: standard C = alpha * A * B, no transposes
     ! m = m, n = S, k = k
     ! lda = m, ldb = k, ldc = m
-    call sgemm('N', 'N', m, num_samples, k, &
+    call backend_sgemm('N', 'N', m, num_samples, k, &
          1.0_real32, a, m, b%val, k, 0.0_real32, c%val, m)
 #else
     c%val = matmul(a, b%val)
@@ -323,7 +301,7 @@ contains
             ! n_arg = num_batches (columns of upstream_grad and output)
             ! k = n (columns of W / rows of upstream_grad)
             ! lda = m (leading dim of W), ldb = n, ldc = m
-            call sgemm('N', 'N', m, num_batches, n, &
+            call backend_sgemm('N', 'N', m, num_batches, n, &
                  1.0_real32, W, m, upstream_grad, n, &
                  0.0_real32, output, m)
           end block
@@ -405,7 +383,7 @@ contains
             ! n_arg = num_batches (columns of upstream_grad and output)
             ! k = m (columns of W^T / rows of upstream_grad)
             ! lda = m (leading dim of W before transpose), ldb = m, ldc = n
-            call sgemm('T', 'N', n, num_batches, m, &
+            call backend_sgemm('T', 'N', n, num_batches, m, &
                  1.0_real32, W, m, upstream_grad, m, &
                  0.0_real32, output, n)
           end block
@@ -485,7 +463,7 @@ contains
             real(real32), dimension(size(upstream_grad,1)) :: upstream_sum
             W(1:m, 1:n) => this%right_operand%val(:,1)
             upstream_sum = sum(upstream_grad, dim=2)
-            call sgemv('N', m, n, 1.0_real32, W, m, upstream_sum, 1, &
+            call backend_sgemv('N', m, n, 1.0_real32, W, m, upstream_sum, 1, &
                  0.0_real32, output, 1)
           end block
 #else
@@ -506,7 +484,7 @@ contains
        if(this%right_operand%is_sample_dependent)then
 #ifdef USE_BLAS
           ! SGEMM: result(num_elements, num_rhs) = upstream * right^T
-          call sgemm('N', 'T', num_elements, num_rhs, num_batches, &
+          call backend_sgemm('N', 'T', num_elements, num_rhs, num_batches, &
                1.0_real32, upstream_grad, num_elements, &
                this%right_operand%val, num_rhs, &
                0.0_real32, output, num_elements)
@@ -583,7 +561,7 @@ contains
             W(1:m, 1:n) => this%left_operand%val(:,1)
             upstream_sum = sum(upstream_grad, dim=2)
             ! W^T * upstream_sum: sgemv with 'T'
-            call sgemv('T', m, n, 1.0_real32, W, m, upstream_sum, 1, &
+            call backend_sgemv('T', m, n, 1.0_real32, W, m, upstream_sum, 1, &
                  0.0_real32, output, 1)
           end block
 #else
@@ -603,7 +581,7 @@ contains
        num_upstream = size(upstream_grad, 1)
        if(this%left_operand%is_sample_dependent)then
 #ifdef USE_BLAS
-          call sgemm('N', 'T', num_elements, num_upstream, num_batches, &
+          call backend_sgemm('N', 'T', num_elements, num_upstream, num_batches, &
                1.0_real32, this%left_operand%val, num_elements, &
                upstream_grad, num_upstream, &
                0.0_real32, output, num_elements)

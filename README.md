@@ -78,6 +78,79 @@ To check whether diffstruc has installed correctly and that the compilation work
 
 This runs a set of test programs (found within the test/ directory) to ensure the expected output occurs when layers and networks are set up.
 
+#### Apple Silicon dense backend selection
+
+On macOS, dense GEMM and GEMV paths can be steered at runtime with the
+`DIFFSTRUC_LINALG_BACKEND` environment variable:
+
+```
+  DIFFSTRUC_LINALG_BACKEND=legacy      # existing BLAS / LAPACK path
+  DIFFSTRUC_LINALG_BACKEND=accelerate  # Accelerate.framework CBLAS path
+  DIFFSTRUC_LINALG_BACKEND=metal       # Metal / MPS GEMM path (feature build)
+  DIFFSTRUC_LINALG_BACKEND=auto        # size-based CPU/GPU dispatch
+```
+
+The default mode is `auto`. On standard macOS builds this selects the
+Accelerate path. On `metal` feature builds it still prefers Accelerate for the
+measured dense training/inference sizes used by diffstruc and only promotes to
+Metal / MPS for very large GEMM workloads. Explicit `metal` mode always forces
+the MPS path when available.
+
+Optional Metal support can be enabled in fpm with:
+
+```
+  fpm test --profile release-metal
+```
+
+The `test_benchmark_matmul` target reports per-backend forward and reverse-mode
+timings across a range of dense matrix sizes. The automatic Metal threshold can
+be tuned with `DIFFSTRUC_METAL_MIN_OPS` when benchmarking.
+
+#### Reproducible Apple Silicon validation
+
+The commands below were used for validation in the `raffle_env` conda
+environment on Apple Silicon:
+
+```bash
+  rm -rf build/gfortran_* build/compile_commands.json
+  conda run -n raffle_env fpm test --profile release
+  rm -rf build/gfortran_* build/compile_commands.json
+  conda run -n raffle_env fpm test --profile release-metal
+  rm -rf build/gfortran_* build/compile_commands.json
+  conda run -n raffle_env fpm test --target test_backend_equivalence --profile release-metal
+  conda run -n raffle_env fpm test --target test_benchmark_matmul --profile release-metal
+  conda run -n raffle_env fpm test --target test_benchmark_reverse --profile release-metal
+```
+
+When switching between `release` and `release-metal`, clear the generated
+`build/gfortran_*` artifacts first. With the current `fpm` + `conda run`
+workflow, profile changes can otherwise reuse stale module objects and hide the
+Metal feature during incremental rebuilds.
+
+`test_backend_equivalence` compares forward values and reverse-mode gradients
+between the legacy BLAS path, Accelerate, and Metal backends within tight
+tolerances.
+
+`test_benchmark_matmul` performs wall-clock dense GEMM benchmarking for:
+
+```bash
+  DIFFSTRUC_LINALG_BACKEND=legacy
+  DIFFSTRUC_LINALG_BACKEND=accelerate
+  DIFFSTRUC_LINALG_BACKEND=metal
+  DIFFSTRUC_LINALG_BACKEND=auto
+```
+
+The benchmark includes warmup passes and reports autodiff forward/reverse and
+real-matrix forward/reverse timings across increasing matrix sizes.
+
+For backend bring-up or threshold tuning, the following optional environment
+variables are available:
+
+```bash
+  DIFFSTRUC_METAL_MIN_OPS=268435456   # override the auto-dispatch crossover
+  DIFFSTRUC_BACKEND_DEBUG=1           # log backend probing and Metal setup
+```
+
 
 Known issues
 ------------

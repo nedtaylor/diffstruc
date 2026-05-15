@@ -24,3 +24,10 @@ source-form = "free"
 
 [build]
 link=["blas", "lapack"]
+
+[features]
+metal.description = "Enable the Apple Metal backend for fpm builds on macOS"
+metal.macos.preprocess.cpp.macros = ["DIFFSTRUC_ENABLE_METAL_BACKEND"]
+
+[profiles]
+release-metal = ["release", "metal"]

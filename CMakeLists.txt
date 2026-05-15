@@ -33,6 +33,7 @@ set(CMAKE_Fortran_COMPILER gfortran
 set(CMAKE_Fortran_STANDARD 2018)
 
 # set language
+enable_language(C)
 enable_language(Fortran)
 
 # set up the coreutils dependency
@@ -69,17 +70,20 @@ else()
   set(BUILD_EXAMPLES OFF)
 endif()
 
+option(DIFFSTRUC_ENABLE_METAL_BACKEND "Enable the Apple Metal backend on macOS" OFF)
+
 # Define the sources
 set(SRC_DIR src)
 set(LIB_DIR ${SRC_DIR}/diffstruc)
 # Automatically find all Fortran files in lib/
 file(GLOB LIB_FILES "${LIB_DIR}/*.f90")
+file(GLOB LIB_C_FILES "${LIB_DIR}/*.c")
 
 # Collect the main source file
 file(GLOB SRC_FILES "${SRC_DIR}/*.f90")
 
 # Combine all source files
-set(ALL_SOURCES ${SRC_FILES} ${LIB_FILES})
+set(ALL_SOURCES ${SRC_FILES} ${LIB_FILES} ${LIB_C_FILES})
 
 # Optional: print for debugging
 message(STATUS "LIB_FILES: ${LIB_FILES}")
@@ -159,6 +163,11 @@ if(USE_BLAS)
   target_compile_definitions(${PROJECT_NAME} PUBLIC USE_BLAS)
   target_link_libraries(${PROJECT_NAME} PUBLIC ${BLAS_LIBRARIES})
   message(STATUS "BLAS enabled: ${BLAS_LIBRARIES}")
+endif()
+
+if(DIFFSTRUC_ENABLE_METAL_BACKEND AND APPLE)
+  target_compile_definitions(${PROJECT_NAME} PUBLIC DIFFSTRUC_ENABLE_METAL_BACKEND)
+  message(STATUS "Apple Metal backend enabled")
 endif()
 
 
