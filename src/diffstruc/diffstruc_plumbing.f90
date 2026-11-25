@@ -419,7 +419,22 @@ contains
     type(array_context_type) :: ctx
     type(array_type), pointer :: src, dst
 
-    src => live(input)
+    src => canonical(input)
+    if(.not. associated(src)) then
+       ! Assigning from an unbound handle leaves the target unbound too. This
+       ! happens when a derived type that contains an allocated-but-unbound
+       ! array_type component is copied, so it must not be treated as an error.
+       this%id = 0
+       this%allocated = .false.
+       this%self => null()
+       this%val => null()
+       this%grad => null()
+       this%left_operand => null()
+       this%right_operand => null()
+       this%is_temporary => null()
+       this%is_sample_dependent => null()
+       return
+    end if
     dst => canonical(this)
     if(associated(dst)) then
        call clone_record(dst, src)
@@ -444,7 +459,20 @@ contains
     ! Local variables
     type(array_type), pointer :: node
 
-    node => live(source)
+    node => canonical(source)
+    if(.not. associated(node)) then
+       ! Nothing to share: leave this handle unbound.
+       this%id = 0
+       this%allocated = .false.
+       this%self => null()
+       this%val => null()
+       this%grad => null()
+       this%left_operand => null()
+       this%right_operand => null()
+       this%is_temporary => null()
+       this%is_sample_dependent => null()
+       return
+    end if
     call bind_handle(this, node)
   end subroutine assign_shallow
 !###############################################################################
@@ -522,10 +550,11 @@ contains
        node%size = product(array_shape(1:n-1))
        node%rank = 1
     else if(allocated(this%shape)) then
-       node => allocate_value_storage(ctx, 1, [this%shape, size(this%val, 2)])
+       ! Storage is always (elements, samples); flatten the logical shape.
+       node => allocate_value_storage(ctx, 1, [this%size, size(this%val, 2)])
        node%shape = this%shape
        node%size = this%size
-       node%rank = 1
+       node%rank = max(1, size(this%shape))
     else
        node => allocate_value_storage(ctx, 1, shape(this%val))
     end if
@@ -568,6 +597,16 @@ contains
        else
           this%val = reshape(input, shape(this%val))
        end if
+    rank(3)
+       this%val = reshape(input, shape(this%val))
+    rank(4)
+       this%val = reshape(input, shape(this%val))
+    rank(5)
+       this%val = reshape(input, shape(this%val))
+    rank(6)
+       this%val = reshape(input, shape(this%val))
+    rank(7)
+       this%val = reshape(input, shape(this%val))
     rank default
        call stop_program('diffstruc: unsupported input rank')
     end select

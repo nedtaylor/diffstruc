@@ -358,7 +358,7 @@ contains
     if(.not. associated(node%grad)) then
        ctx = context_of(this)
        grad => allocate_value_storage(ctx, 1, &
-            [node%shape, size(node%val, 2)])
+            [node%size, size(node%val, 2)])
        grad%is_scalar = node%is_scalar
        grad%is_sample_dependent = node%is_sample_dependent
        grad%requires_grad = .true.
@@ -1100,7 +1100,12 @@ contains
        grad => node%grad
        return
     end if
-    grad => allocate_value_storage(ctx, 1, [node%shape, max(1, n_samples)])
+    ! Storage is (elements, samples); flatten the logical shape so that a
+    ! rank-2 variable does not get an (rows, cols) accumulator.
+    grad => allocate_value_storage(ctx, 1, [node%size, max(1, n_samples)])
+    grad%shape = node%shape
+    grad%size = node%size
+    grad%rank = node%rank
     grad%is_scalar = node%is_scalar
     grad%is_sample_dependent = node%is_sample_dependent
     grad%requires_grad = .not. node%is_scalar

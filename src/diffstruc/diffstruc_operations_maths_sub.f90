@@ -184,9 +184,8 @@ contains
        c%left_operand => canonical(a)
     end if
     allocate(b_array)
-    b_array%is_sample_dependent = .false.
+    call b_array%allocate(array_shape=[2, 1], sample_dependent=.false.)
     b_array%requires_grad = .false.
-    call b_array%allocate(array_shape=[2, 1])
     b_array%val(1,1) = mu
     b_array%val(2,1) = sigma
     c%right_operand => canonical(b_array)
