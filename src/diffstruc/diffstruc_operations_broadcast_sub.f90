@@ -1,6 +1,7 @@
 submodule(diffstruc__operations_broadcast) diffstruc__operations_broadcast_sub
   !! Submodule containing implementations of broadcast operations
   use coreutils, only: stop_program
+  use diffstruc__types, only: canonical, constant_node
 
 
 contains
@@ -42,7 +43,7 @@ contains
        c => a%create_result(array_shape = &
             [input_shape, size(a%val,2)])
        c%val = 0._real32
-       do concurrent(s=1:size(a%val,2))
+       do s = 1,size(a%val, 2)
           do concurrent(i=1:size(a%val,1))
              c%val(i, s) = a%val(i, s)
           end do
@@ -60,7 +61,7 @@ contains
        c => a%create_result(array_shape = &
             [a%shape, size(a%val,2) + size(b%val,2)])
        c%val = 0._real32
-       do concurrent(s=1:size(a%val,1))
+       do s = 1,size(a%val, 1)
           do concurrent(i=1:size(a%val,2))
              c%val(s, i) = a%val(s, i)
           end do
@@ -82,10 +83,8 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
        c%operation = 'concat'
-       c%left_operand => a
-       c%right_operand => b
-       c%owns_left_operand = a%is_temporary
-       c%owns_right_operand = b%is_temporary
+       c%left_operand => canonical(a)
+       c%right_operand => canonical(b)
     end if
   end function concat_arrays
 !-------------------------------------------------------------------------------
@@ -107,7 +106,7 @@ contains
     type(array_type), pointer :: ptr
 
     ptr => slice_right(upstream_grad, this%right_operand%shape(1), this%indices(1))
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_concat_right
 !-------------------------------------------------------------------------------
   pure subroutine get_partial_concat_left_val(this, upstream_grad, output)
@@ -165,12 +164,12 @@ contains
     ! left trim 1D array by using shape to swap dimensions
     if(dim_.eq.1)then
        c => a%create_result(array_shape = [b, size(a%val,2)])
-       do concurrent(s=1:size(a%val,2))
+       do s = 1,size(a%val, 2)
           c%val( :, s) = a%val( 1:b, s)
        end do
     else
        c => a%create_result(array_shape = [size(a%val,1), b])
-       do concurrent(s=1:size(a%val,1))
+       do s = 1,size(a%val, 1)
           c%val( s, : ) = a%val( s, 1:b)
        end do
     end if
@@ -180,8 +179,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'slice_left'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
   end function slice_left_array
 !###############################################################################
@@ -208,12 +206,12 @@ contains
     ! right trim 1D array by using shape to swap dimensions
     if(dim_.eq.1)then
        c => a%create_result(array_shape = [b, size(a%val,2)])
-       do concurrent(s=1:size(a%val,2))
+       do s = 1,size(a%val, 2)
           c%val( :, s) = a%val( size(a%val,1)-b+1:size(a%val,1), s)
        end do
     else
        c => a%create_result(array_shape = [size(a%val,1), b])
-       do concurrent(s=1:size(a%val,1))
+       do s = 1,size(a%val, 1)
           c%val( s, : ) = a%val( s, size(a%val,2)-b+1:size(a%val,2))
        end do
     end if
@@ -223,8 +221,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'slice_right'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
   end function slice_right_array
 !###############################################################################
@@ -290,8 +287,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'index'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
   end function index_array
 !-------------------------------------------------------------------------------
@@ -306,7 +302,7 @@ contains
          upstream_grad, indices=this%indices, from=.false., &
          new_index_size=size(this%left_operand%val, 2) &
     )
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_index
 !###############################################################################
 
@@ -343,8 +339,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'index'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
   end function reverse_index_array
 !###############################################################################
@@ -367,7 +362,7 @@ contains
           c => a%create_result(array_shape=[itmp1, size(a%val,2)])
           allocate(c%indices(itmp1))
           i = 0
-          do concurrent(s=1:size(a%val,2))
+          do s = 1,size(a%val, 2)
              do j = 1, size(a%val,1)
                 if(mask(j)) then
                    i = i + 1
@@ -381,7 +376,7 @@ contains
           c => a%create_result(array_shape=[a%shape, itmp1])
           allocate(c%indices(itmp1))
           i = 0
-          do concurrent(s=1:size(a%val,1))
+          do s = 1,size(a%val, 1)
              do j = 1, size(a%val,2)
                 if(mask(j)) then
                    i = i + 1
@@ -397,13 +392,19 @@ contains
     else
        if(dim.eq.1)then
           c => a%create_result(array_shape=[size(a%val,1), size(a%val,2)])
-          do concurrent(s=1:size(a%val,2), i=1:size(a%val,1))
-             c%val(i, s) = a%val(i, s)
+          do s = 1,size(a%val, 2)
+             !$omp simd
+             do i = 1,size(a%val, 1)
+                c%val(i, s) = a%val(i, s)
+             end do
           end do
        elseif(dim.eq.2)then
           c => a%create_result()
-          do concurrent(s=1:size(a%val,1), i=1:size(a%val,2))
-             c%val(s, i) = a%val(s, i)
+          do s = 1,size(a%val, 1)
+             !$omp simd
+             do i = 1,size(a%val, 2)
+                c%val(s, i) = a%val(s, i)
+             end do
           end do
        else
           call stop_program("pack: only 1 or 2 dimensions are supported")
@@ -420,8 +421,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'pack_mask'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
   end function pack_mask_array
 !-------------------------------------------------------------------------------
@@ -441,7 +441,7 @@ contains
        ptr => unpack(upstream_grad, array_shape=this%adj_ja(2:,1), &
             dim = this%adj_ja(1,1))
     end if
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_pack_mask
 !-------------------------------------------------------------------------------
   pure subroutine get_partial_pack_mask_val(this, upstream_grad, output)
@@ -527,8 +527,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'unpack_mask'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
   end function unpack_mask_array
 !-------------------------------------------------------------------------------
@@ -550,7 +549,7 @@ contains
        ptr => pack(upstream_grad, this%adj_ja(1,1))
     end if
 
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_unpack_mask
 !###############################################################################
 
@@ -589,8 +588,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'pack_indices'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
   end function pack_indices_array
 !-------------------------------------------------------------------------------
@@ -602,7 +600,7 @@ contains
     type(array_type), pointer :: ptr
 
     ptr => unpack(upstream_grad, this%indices, this%adj_ja(1,1), this%adj_ja(2,1))
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_pack_indices
 !-------------------------------------------------------------------------------
   pure subroutine get_partial_pack_indices_val(this, upstream_grad, output)
@@ -619,8 +617,10 @@ contains
 
     output = 0.0_real32
     if(dim.eq.1)then
-       do concurrent(i=1:size(this%indices,1), s=1:size(upstream_grad,2))
-          output(this%indices(i),s) = upstream_grad(i,s)
+       do i = 1,size(this%indices, 1)
+          do s = 1,size(upstream_grad, 2)
+             output(this%indices(i),s) = upstream_grad(i,s)
+          end do
        end do
     elseif(dim.eq.2)then
        do concurrent(i=1:size(upstream_grad,1), s=1:new_size)
@@ -647,8 +647,10 @@ contains
     if(dim.eq.1)then
        c => a%create_result(array_shape = [ new_size, size(a%val,2) ])
        c%val = 0.0_real32
-       do concurrent(i=1:size(indices,1), s=1:size(a%val,2))
-          c%val(indices(i),s) = a%val(i,s)
+       do i = 1,size(indices, 1)
+          do s = 1,size(a%val, 2)
+             c%val(indices(i),s) = a%val(i,s)
+          end do
        end do
     elseif(dim.eq.2)then
        c => a%create_result(array_shape = [ size(a%val,1), new_size ])
@@ -667,8 +669,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'unpack_indices'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
   end function unpack_indices_array
 !-------------------------------------------------------------------------------
@@ -680,7 +681,7 @@ contains
     type(array_type), pointer :: ptr
 
     ptr => pack(upstream_grad, this%indices, this%adj_ja(1,1))
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_unpack_indices
 !###############################################################################
 
@@ -696,7 +697,7 @@ contains
     integer :: s
 
     c => a%create_result(array_shape = [ new_shape, size(a%val,2) ])
-    do concurrent(s=1:size(a%val,2))
+    do s = 1,size(a%val, 2)
        c%val(:, s) = a%val(:, s)
     end do
     c%indices = a%shape
@@ -707,8 +708,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'reshape'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
   end function reshape_array
 !-------------------------------------------------------------------------------
@@ -722,7 +722,7 @@ contains
     ptr => reshape( &
          upstream_grad, new_shape = this%indices &
     )
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_reshape
 !-------------------------------------------------------------------------------
   pure subroutine get_partial_reshape_val(this, upstream_grad, output)

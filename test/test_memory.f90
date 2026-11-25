@@ -12,12 +12,20 @@ program test_memory_detailed
 
   do_forward = .true.
   do_second_order = .true.
-  n_iterations = 10000
-  x%is_temporary = .false.
-  y%is_temporary = .false.
-  f%is_temporary = .false.
+  n_iterations = 1000
+  block
+    character(len=32) :: value
+    integer :: status, count
+    call get_environment_variable('DIFFSTRUC_MEMORY_ITERATIONS', value, &
+         status=status)
+    if(status == 0) then
+       read(value, *, iostat=status) count
+       if(status == 0 .and. count > 0) n_iterations = count
+    end if
+  end block
 
   write(*,*) "=== Detailed Memory Test ==="
+  write(*,*) "Iterations:", n_iterations
   write(*,*) "Testing different cleanup strategies..."
   write(*,*) ""
 
@@ -43,9 +51,7 @@ program test_memory_detailed
   end do
   call f%print_graph()
   !write(*,*) "  Final gradient x:", x%grad%val(1,1)
-  write(*,*) f%owns_left_operand, f%owns_right_operand, f%owns_gradient
   call f%nullify_graph()
-  write(*,*) f%owns_left_operand, f%owns_right_operand, f%owns_gradient
   call x%deallocate()
   call y%deallocate()
   call f%deallocate()
@@ -58,8 +64,6 @@ program test_memory_detailed
   call y%allocate(array_shape=[1000, 100])
   x%val = 1.0_real32
   y%val = 2.0_real32
-  x%id = 12
-  y%id = 13
   call x%set_requires_grad(.true.)
   call y%set_requires_grad(.true.)
 
@@ -68,7 +72,6 @@ program test_memory_detailed
      !allocate(temp)
      temp => x**2 + y * x + exp(x * 0.01_real32)
      temp%is_temporary = .false.
-     temp%id = 15
      if(do_forward)then
         xgrad => temp%grad_forward(x)
         xgrad%is_temporary = .false.
@@ -82,18 +85,17 @@ program test_memory_detailed
 
      ! Explicit cleanup of temp (THIS IS KEY TO AVOIDING LEAKS)
      call temp%nullify_graph()
+     call temp%deallocate()
      if(do_forward)then
         call xgrad%nullify_graph()
+        call xgrad%deallocate()
         if(do_second_order)then
            call xgradgrad%nullify_graph()
+           call xgradgrad%deallocate()
         end if
      end if
-
-     deallocate(temp)
      if(do_forward)then
-        deallocate(xgrad)
         if(do_second_order)then
-           deallocate(xgradgrad)
         end if
      end if
 

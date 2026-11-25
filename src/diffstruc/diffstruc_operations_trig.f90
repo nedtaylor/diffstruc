@@ -1,7 +1,7 @@
 module diffstruc__operations_trig
   !! This module contains trigonometric operations for the diffstruc library.
   use coreutils, only: real32
-  use diffstruc__types, only: array_type, get_partial, &
+  use diffstruc__types, only: canonical, constant_node, array_type, get_partial, &
        operator(+), operator(-), operator(*), operator(/), operator(**)
   implicit none
 
@@ -44,8 +44,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'sin'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
   end function sin_array
 !-------------------------------------------------------------------------------
@@ -61,7 +60,7 @@ contains
     this%left_operand%is_temporary = .false.
     ptr => upstream_grad * cos( this%left_operand )
     this%left_operand%is_temporary = left_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_sin
 !-------------------------------------------------------------------------------
   pure subroutine get_partial_sin_val(this, upstream_grad, output)
@@ -91,8 +90,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'cos'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
   end function cos_array
 !-------------------------------------------------------------------------------
@@ -108,7 +106,7 @@ contains
     this%left_operand%is_temporary = .false.
     ptr => -upstream_grad * sin( this%left_operand )
     this%left_operand%is_temporary = left_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_cos
 !-------------------------------------------------------------------------------
   pure subroutine get_partial_cos_val(this, upstream_grad, output)
@@ -138,8 +136,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'tan'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
   end function tan_array
 !-------------------------------------------------------------------------------
@@ -155,7 +152,7 @@ contains
     this%left_operand%is_temporary = .false.
     ptr => upstream_grad / ( cos( this%left_operand ) ** 2._real32 )
     this%left_operand%is_temporary = left_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_tan
 !-------------------------------------------------------------------------------
   pure subroutine get_partial_tan_val(this, upstream_grad, output)
@@ -167,9 +164,12 @@ contains
     real(real32) :: cos_val
     integer :: i, s
 
-    do concurrent(s = 1:size(upstream_grad,2), i = 1:size(upstream_grad,1))
-       cos_val = cos(this%left_operand%val(i,s))
-       output(i,s) = upstream_grad(i,s) / (cos_val * cos_val)
+    do s = 1,size(upstream_grad, 2)
+       !$omp simd
+       do i = 1,size(upstream_grad, 1)
+          cos_val = cos(this%left_operand%val(i,s))
+          output(i,s) = upstream_grad(i,s) / (cos_val * cos_val)
+       end do
     end do
   end subroutine get_partial_tan_val
 !###############################################################################

@@ -1,28 +1,44 @@
+# editor / OS
 *~
 \#
+.DS_Store
+.vscode/
+settings.json
+.local-pre-commit-config.yaml
+
+# build products
+build/
+_build/
 bin/
 obj/
 *.mod
 *.smod
-*.so
-*.txt
-*.mod
-*.out
 *.o
+*.so
+*.dylib
+*.a
+*.dSYM
+*.gcda
+*.gcno
+
+# scratch space
+.scratch/
+backup/
+.ipynb_checkpoints
+
+# documentation build
+doc/html
+docs/html/
+docs/_build/
+docs/source/_static/ford/
+docs/ford/output/
+
+# miscellaneous generated files
+*.out
 *.e
 *.pdf
 *.aux
 *.log
 *.toc
 *.gz
-build/
-doc/html
-settings.json
-.local-pre-commit-config.yaml
-docs/html/
-docs/_build/
-docs/source/_static/ford/
-docs/ford/output/
-.local-pre-commit-config.yaml
-.ipynb_checkpoints
-_build/
+*.txt

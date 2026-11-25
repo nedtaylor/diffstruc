@@ -24,3 +24,6 @@ source-form = "free"
 
 [build]
 link=["blas", "lapack"]
+
+[install]
+library = true

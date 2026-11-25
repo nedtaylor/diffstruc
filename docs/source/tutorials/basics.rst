@@ -67,10 +67,10 @@ An example of setting the values of a 2D array (with a single sample index) is s
 .. code-block:: fortran
 
    type(array_type) :: x
-   real :: new_values(2,3,1)
+   real :: new_values(2,3)
    call x%allocate([2, 3, 1])  ! Allocate a 2D array of shape [2, 3]
    new_values = reshape([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape(new_values))  ! New values in column-major order
-   call x%set(new_values)      ! Set the values
+   call x%set(new_values)      ! Set the values (same element count)
    write(*,*) 'Shape:', x%shape
    write(*,*) 'Values:', x%val(:, 1)  ! Accessing val directly
 
@@ -127,7 +127,6 @@ A full code example is provided below.
      ! Step 5: Clean up
      call f%nullify_graph()
      call df_dx%nullify_graph()
-     deallocate(f, df_dx)
 
    end program first_derivative
 
@@ -173,15 +172,14 @@ We now break down each step:
    * ``grad_forward`` computes $\frac{\partial f}{\partial x}$ using forward mode
    * Returns a pointer to the result
 
-4. **Clean up memory**
+4. **Release the graph**
 
    .. code-block:: fortran
 
       call f%nullify_graph()
       call df_dx%nullify_graph()
-      deallocate(f, df_dx)
 
-   * Always clean up computation graphs and deallocate memory
+   * Always release expression graphs with ``nullify_graph``
    * See :doc:`memory_management` for details
 
 Multi-Dimensional Arrays
@@ -224,7 +222,6 @@ An example of computing gradients for multiple input points simultaneously is sh
      ! Clean up
      call f%nullify_graph()
      call df_dx%nullify_graph()
-     deallocate(f, df_dx)
 
    end program batch_derivative
 
@@ -328,7 +325,7 @@ For any variable you want to differentiate with respect to, you must enable grad
 Not Cleaning Up Memory
 ~~~~~~~~~~~~~~~~~~~~~~
 
-It is crucial to clean up computation graphs and deallocate memory to avoid leaks.
+It is crucial to release computation graphs to avoid unbounded memory growth.
 For small programs, this may not be noticeable, but for larger applications or long-running processes, failing to do so can lead to excessive memory usage.
 It is especially important in loops or repeated computations.
 
@@ -344,4 +341,3 @@ It is especially important in loops or repeated computations.
    df_dx => f%grad_forward(x)
    call f%nullify_graph()
    call df_dx%nullify_graph()
-   deallocate(f, df_dx)

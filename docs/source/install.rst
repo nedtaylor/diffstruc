@@ -121,6 +121,19 @@ Installing coreutils
 
 coreutils will be installed automatically by fpm or CMake when you build diffstruc, so no manual installation is necessary.
 
+Installing the library
+~~~~~~~~~~~~~~~~~~~~~~
+
+Using diffstruc as an fpm dependency (shown below) needs no installation step.
+If you prefer a prefix install, the package manifest declares the library, so
+
+.. code-block:: bash
+
+   fpm install --profile release --prefix "$HOME/.local"
+
+installs ``libdiffstruc.a`` and the ``.mod`` files under ``lib/`` and
+``include/``.
+
 Building diffstruc with fpm
 ---------------------------
 
@@ -136,6 +149,16 @@ In the repository main directory, run:
    fpm build --profile release
 
 This will compile the library with optimization flags for production use.
+
+To build the approximate hyperbolic tangent kernel (``tanhf`` in place of
+``tanh``, about ten times faster with a maximum absolute error of 8.5e-5),
+add the preprocessor definition:
+
+.. code-block:: bash
+
+   fpm build --profile release --flag "-DDIFFSTRUC_FAST_TANH"
+
+More on the accuracy trade-off is in the project README.
 
 Development Build
 ~~~~~~~~~~~~~~~~~
@@ -268,14 +291,12 @@ Here's a simple example to verify your installation:
      type(array_type) :: x, y
      type(array_type), pointer :: f, xgrad
 
-     ! Allocate arrays
-     call x%allocate([2,2,1], source=2.0)
-     call y%allocate([2,2,1], source=10.0)
+     ! Allocate arrays (2x2, one sample) and mark them as variables
+     call x%allocate([2,2,1], source=2.0, temporary=.false.)
+     call y%allocate([2,2,1], source=10.0, temporary=.false.)
 
      ! Enable gradient tracking
      call x%set_requires_grad(.true.)
-     x%is_temporary = .false.
-     y%is_temporary = .false.
 
      ! Compute function: f = x * y + sin(x)
      f => x * y + sin(x)
@@ -285,13 +306,9 @@ Here's a simple example to verify your installation:
      xgrad => f%grad_forward(x)
      write(*,*) 'Gradient of f w.r.t x:', xgrad%val(:,1)
 
-     ! Clean up
+     ! Clean up: the context owns the records, so only the graph is released
      call f%nullify_graph()
-     call f%deallocate()
      call xgrad%nullify_graph()
-     call xgrad%deallocate()
-
-     deallocate(f, xgrad)
    end program test_diffstruc
 
 Save this as ``test.f90`` and compile with:

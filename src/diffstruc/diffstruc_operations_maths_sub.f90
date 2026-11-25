@@ -1,7 +1,7 @@
 submodule(diffstruc__operations_maths) diffstruc__operations_maths_sub
   !! Submodule containing implementations of maths operations.
   use coreutils, only: pi
-  use diffstruc__types, only: &
+  use diffstruc__types, only: canonical, constant_node, &
        operator(+), operator(-), operator(*), operator(/), operator(**), exp
 
   real(real32), parameter :: inv_log10 = 1.0_real32 / log(10._real32)
@@ -24,8 +24,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'abs'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
   end function abs_array
 !-------------------------------------------------------------------------------
@@ -67,8 +66,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'sqrt'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
   end function sqrt_array
 !-------------------------------------------------------------------------------
@@ -111,8 +109,7 @@ contains
     ! if(array%requires_grad) then
     !    c%requires_grad = .true.
     !    c%operation = 'sign'
-    !    c%left_operand => array
-    !    c%owns_left_operand = array%is_temporary
+    !    c%left_operand => canonical(array)
     ! end if
   end function sign_array
 !###############################################################################
@@ -134,8 +131,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'sigmoid'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
   end function sigmoid_array
 !-------------------------------------------------------------------------------
@@ -152,7 +148,7 @@ contains
     ptr => 1._real32 - this
     ptr => upstream_grad * this * ptr
     this%is_temporary = this_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_sigmoid
 !-------------------------------------------------------------------------------
   pure subroutine get_partial_sigmoid_val(this, upstream_grad, output)
@@ -185,8 +181,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'gaussian'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
     allocate(b_array)
     b_array%is_sample_dependent = .false.
@@ -194,8 +189,7 @@ contains
     call b_array%allocate(array_shape=[2, 1])
     b_array%val(1,1) = mu
     b_array%val(2,1) = sigma
-    c%right_operand => b_array
-    c%owns_right_operand = .true.
+    c%right_operand => canonical(b_array)
 
   end function gaussian_array
 !-------------------------------------------------------------------------------
@@ -255,8 +249,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'log10'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
   end function log10_array
 !-------------------------------------------------------------------------------
@@ -272,7 +265,7 @@ contains
     this%left_operand%is_temporary = .false.
     ptr => upstream_grad * inv_log10 / this%left_operand
     this%left_operand%is_temporary = left_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_log10
 !-------------------------------------------------------------------------------
   pure subroutine get_partial_log10_val(this, upstream_grad, output)
@@ -293,8 +286,19 @@ contains
     class(array_type), intent(in), target :: a
     type(array_type), pointer :: c
 
+    type(array_type), pointer :: na, nc
+
+    integer :: i, s
+
+    na => canonical(a)
     c => a%create_result()
-    c%val = a%val * a%val
+    nc => c
+    do s = 1, size(na%store, 2)
+       !$omp simd
+       do i = 1, size(na%store, 1)
+          nc%store(i,s) = na%store(i,s) * na%store(i,s)
+       end do
+    end do
 
     c%get_partial_left => get_partial_squared
     c%get_partial_left_val => get_partial_squared_val
@@ -303,8 +307,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'squared'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
   end function squared_array
 !-------------------------------------------------------------------------------
@@ -320,7 +323,7 @@ contains
     this%left_operand%is_temporary = .false.
     ptr => upstream_grad * this%left_operand * 2._real32
     this%left_operand%is_temporary = left_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_squared
 !-------------------------------------------------------------------------------
   pure subroutine get_partial_squared_val(this, upstream_grad, output)
@@ -329,7 +332,14 @@ contains
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
-    output = upstream_grad * this%left_operand%val * 2._real32
+    integer :: i, s
+
+    do s = 1, size(output, 2)
+       !$omp simd
+       do i = 1, size(output, 1)
+          output(i,s) = upstream_grad(i,s) * this%left_operand%val(i,s) * 2._real32
+       end do
+    end do
   end subroutine get_partial_squared_val
 !-------------------------------------------------------------------------------
   pure subroutine get_partial_squared_val_sum(this, upstream_grad, output)
@@ -375,8 +385,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'cubed'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
   end function cubed_array
 !-------------------------------------------------------------------------------
@@ -392,7 +401,7 @@ contains
     this%left_operand%is_temporary = .false.
     ptr => upstream_grad * this%left_operand * this%left_operand * 3._real32
     this%left_operand%is_temporary = left_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_cubed
 !-------------------------------------------------------------------------------
   pure subroutine get_partial_cubed_val(this, upstream_grad, output)
@@ -404,5 +413,7 @@ contains
     output = upstream_grad * this%left_operand%val * this%left_operand%val * 3._real32
   end subroutine get_partial_cubed_val
 !###############################################################################
+
+
 
 end submodule diffstruc__operations_maths_sub

@@ -109,18 +109,6 @@ program test_benchmark_reverse
 
         ! Cleanup
         call loss%nullify_graph()
-        if(associated(W%grad))then
-           call W%grad%deallocate(); deallocate(W%grad); nullify(W%grad)
-           W%owns_gradient = .false.
-        end if
-        if(associated(x%grad))then
-           call x%grad%deallocate(); deallocate(x%grad); nullify(x%grad)
-           x%owns_gradient = .false.
-        end if
-        if(associated(b%grad))then
-           call b%grad%deallocate(); deallocate(b%grad); nullify(b%grad)
-           b%owns_gradient = .false.
-        end if
      end do
      call cpu_time(t1)
      t_revA = (t1 - t0) / real(N_REV) * 1000.0
@@ -198,26 +186,6 @@ program test_benchmark_reverse
         if(associated(b2%grad)) checksum_b = checksum_b + sum(b2%grad%val)
 
         call loss2%nullify_graph()
-        if(associated(W1%grad))then
-           call W1%grad%deallocate(); deallocate(W1%grad); nullify(W1%grad)
-           W1%owns_gradient = .false.
-        end if
-        if(associated(W2%grad))then
-           call W2%grad%deallocate(); deallocate(W2%grad); nullify(W2%grad)
-           W2%owns_gradient = .false.
-        end if
-        if(associated(x%grad))then
-           call x%grad%deallocate(); deallocate(x%grad); nullify(x%grad)
-           x%owns_gradient = .false.
-        end if
-        if(associated(b1%grad))then
-           call b1%grad%deallocate(); deallocate(b1%grad); nullify(b1%grad)
-           b1%owns_gradient = .false.
-        end if
-        if(associated(b2%grad))then
-           call b2%grad%deallocate(); deallocate(b2%grad); nullify(b2%grad)
-           b2%owns_gradient = .false.
-        end if
      end do
      call cpu_time(t1)
      t_revB = (t1 - t0) / real(N_REV) * 1000.0
@@ -270,14 +238,6 @@ program test_benchmark_reverse
         if(associated(a2%grad)) checksum_c = checksum_c + sum(a2%grad%val)
 
         call loss%nullify_graph()
-        if(associated(a1%grad))then
-           call a1%grad%deallocate(); deallocate(a1%grad); nullify(a1%grad)
-           a1%owns_gradient = .false.
-        end if
-        if(associated(a2%grad))then
-           call a2%grad%deallocate(); deallocate(a2%grad); nullify(a2%grad)
-           a2%owns_gradient = .false.
-        end if
      end do
      call cpu_time(t1)
      t_revC = (t1 - t0) / real(N_REV) * 1000.0

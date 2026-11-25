@@ -185,6 +185,12 @@ target_compile_options(${PROJECT_NAME} PUBLIC "$<$<CONFIG:Debug>:${DEBUGFLAGS}>"
 target_compile_options(${PROJECT_NAME} PUBLIC "$<$<CONFIG:Parallel_Dev>:${MPFLAGS}>")
 target_compile_options(${PROJECT_NAME} PUBLIC "$<$<CONFIG:Parallel_Dev>:${DEVFLAGS}>")
 
+# The numeric kernels carry !$omp simd directives. Enable them for GNU Fortran
+# without enabling threading; other compilers ignore the directives.
+if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+  target_compile_options(${PROJECT_NAME} PRIVATE -fopenmp-simd -fversion-loops-for-strides -fvect-cost-model=unlimited)
+endif()
+
 # add library dependencies
 add_dependencies(${PROJECT_NAME} coreutils)
 target_link_libraries(${PROJECT_NAME} PUBLIC coreutils)

@@ -37,7 +37,6 @@ A simple example of using forward mode to compute the derivative of a function i
      ! Cleanup
      call f%nullify_graph()
      call df_dx%nullify_graph()
-     deallocate(f, df_dx)
 
    end program forward_example
 
@@ -80,7 +79,6 @@ The derivative of a function with respect to each input variable can be computed
      call f%nullify_graph()
      call df_dx%nullify_graph()
      call df_dy%nullify_graph()
-     deallocate(f, df_dx, df_dy)
 
    end program partial_derivatives
 
@@ -122,7 +120,6 @@ Here, we compute the full gradient vector using forward mode, i.e. differentiati
      ! Cleanup
      call f%nullify_graph()
      call grad_f%nullify_graph()
-     deallocate(f, grad_f)
 
    end program gradient_vector
 
@@ -178,7 +175,6 @@ Below is an example of computing a directional derivative using forward mode.
      ! Cleanup
      call f%nullify_graph()
      call dir_deriv%nullify_graph()
-     deallocate(f, dir_deriv)
 
    end program directional_derivative
 
@@ -224,7 +220,6 @@ Here, we show examples with trigonometric, exponential, and logarithmic function
      call f2%nullify_graph()
      call df1%nullify_graph()
      call df2%nullify_graph()
-     deallocate(f1, f2, df1, df2)
 
    end program trig_derivatives
 
@@ -263,7 +258,6 @@ Here, we show examples with trigonometric, exponential, and logarithmic function
      call f_log%nullify_graph()
      call df_exp%nullify_graph()
      call df_log%nullify_graph()
-     deallocate(f_exp, f_log, df_exp, df_log)
 
    end program exp_log_derivatives
 
@@ -292,9 +286,8 @@ In these iterative approaches, it is essential that the memory is correctly mana
 
      do iter = 1, max_iter
        ! Setup
-       call x%allocate([1, 1], source=x_val)
+       call x%allocate([1, 1], source=x_val, temporary=.false.)
        call x%set_requires_grad(.true.)
-       x%is_temporary = .false.
 
        ! Function and derivative
        f => x**2 - 2.0
@@ -308,7 +301,6 @@ In these iterative approaches, it is essential that the memory is correctly mana
        ! Cleanup for next iteration
        call f%nullify_graph()
        call df%nullify_graph()
-       deallocate(f, df)
        call x%deallocate()
 
        if (abs(x_val**2 - 2.0) < tol) then

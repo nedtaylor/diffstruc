@@ -29,6 +29,12 @@ foreach(test_file ${TEST_SOURCES})
   add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()
 
+# These cases must reject invalid handles rather than dereference stale nodes.
+add_test(NAME test_context_stale COMMAND test_context stale)
+set_tests_properties(test_context_stale PROPERTIES WILL_FAIL TRUE)
+add_test(NAME test_context_guard COMMAND test_context guard)
+set_tests_properties(test_context_guard PROPERTIES WILL_FAIL TRUE)
+
 # Build benchmark programs (not registered as ctest targets)
 foreach(bench_file ${BENCH_SOURCES})
   get_filename_component(bench_name ${bench_file} NAME_WE)

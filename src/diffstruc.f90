@@ -3,11 +3,12 @@ module diffstruc
   use coreutils, only: real32
   use diffstruc__global, only: diffstruc__max_recursion_depth, diffstruc__init_map_cap
   use diffstruc__types, only: &
-       array_type, get_partial, &
+       array_type, array_context_type, default_context, &
+       set_default_context, reset_default_context, get_partial, &
        operator(+), operator(-), operator(*), operator(/), operator(**), &
        sum, mean, spread, unspread, exp, log
   use diffstruc__operations_trig, only: sin, cos, tan
-  use diffstruc__operations_hyp, only: tanh
+  use diffstruc__operations_hyp, only: tanh, tanhf
   use diffstruc__operations_linalg, only: &
        matmul, operator(.mmul.), &
        outer_product, operator(.outer.), &
@@ -29,11 +30,13 @@ module diffstruc
   public :: real32
   public :: diffstruc__max_recursion_depth, diffstruc__init_map_cap
   public :: array_type, get_partial
+  public :: array_context_type, default_context
+  public :: set_default_context, reset_default_context
 
   public :: operator(+), operator(-), operator(*), operator(/), operator(**)
   public :: sum, mean, spread, unspread, exp, log
   public :: sin, cos, tan
-  public :: tanh
+  public :: tanh, tanhf
   public :: matmul, operator(.mmul.), &
        outer_product, operator(.outer.), &
        dot_product, operator(.dot.), &

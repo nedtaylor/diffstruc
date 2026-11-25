@@ -80,11 +80,17 @@ The interface for the ``get_partial_left_val`` and ``get_partial_right_val`` fun
      end subroutine get_partial_val
   end interface
 
-The former set are used for forward mode differentiation, while the latter are used exclusively for reverse mode differentiation.
-A future release may use ``get_partial`` for reverse mode also (if a computational graph needs to be built during reverse mode traversal), but for now it is only used in forward mode.
-The reason that some operations in diffstruc still define a ``get_partial`` function is a legacy reason in case this reverse mode graph building needs to be reintroduced in the future.
+The former set are used for forward mode differentiation, while the latter are
+used for reverse mode differentiation by the library's built-in operations.
+Reverse mode dispatches on ``c%operation``, so a **custom** operation must give
+itself a name that is not a built-in operation name; for an unrecognised name
+reverse mode uses the graph partial (``get_partial_left``/``get_partial_right``),
+which is always correct. The value partials are an optimisation that the engine
+only trusts for the operations it ships with.
 
-Depending on the operation, you might only need to define one of these (priority is given to the left operand if only one is defined).
+Depending on the operation, you might only need to define one of these (priority is given to the left operand if only one is defined). Reverse mode only
+needs one of ``get_partial_left`` / ``get_partial_right`` for each operand that
+can carry a gradient, so a one-operand operation only needs the left one.
 
 A simple example of a custom operation that takes in one operand and computes the cosine is shown below.
 Focus on the parts marked with comments.
@@ -123,9 +129,10 @@ Focus on the parts marked with comments.
       if(a%requires_grad) then
         c%requires_grad = .true.
         c%is_forward = a%is_forward
-        c%operation = 'cos'
+        !! Use a name that no built-in operation uses, otherwise reverse mode
+        !! would dispatch to the built-in derivative for that name.
+        c%operation = 'my_cos'
         c%left_operand => a
-        c%owns_left_operand = a%is_temporary
       end if
     end function my_custom_op
 

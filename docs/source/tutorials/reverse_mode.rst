@@ -32,14 +32,13 @@ A simple example of using reverse mode to compute the derivative of a function i
      f => x**3 + 2.0*x**2
 
      ! Compute gradient using reverse mode
-     call f%grad_reverse(record_graph=.true.)
+     call f%grad_reverse()
 
      write(*,*) 'f(3) =', f%val(1, 1)          ! 27 + 18 = 45
      write(*,*) 'df/dx =', x%grad%val(1, 1)    ! 3*9 + 4*3 = 39
 
      ! Cleanup
      call f%nullify_graph()
-     deallocate(f)
 
    end program reverse_example
 
@@ -56,7 +55,7 @@ Notice that in reverse mode:
    write(*,*) df_dx%val
 
    ! Reverse mode: gradient stored in input
-   call f%grad_reverse(record_graph=.true.)
+   call f%grad_reverse()
    write(*,*) x%grad%val
 
 All of the input gradients are computed in a single backward pass, making reverse mode very efficient for functions with many inputs and few outputs.
@@ -91,7 +90,7 @@ Here, we compute gradients with respect to multiple input variables in one backw
      f => x*y + y*z + x*z
 
      ! One backward pass computes all gradients!
-     call f%grad_reverse(record_graph=.true.)
+     call f%grad_reverse()
 
      write(*,*) 'f =', f%val(1, 1)             ! 6 + 12 + 8 = 26
      write(*,*) '∂f/∂x =', x%grad%val(1, 1)    ! y + z = 7
@@ -100,7 +99,6 @@ Here, we compute gradients with respect to multiple input variables in one backw
 
      ! Cleanup
      call f%nullify_graph()
-     deallocate(f)
 
    end program reverse_multiple
 
@@ -139,8 +137,6 @@ Another example with high-dimensional inputs:
 
      ! Cleanup
      call loss%nullify_graph()
-     call loss%deallocate()
-     deallocate(loss)
 
    end program high_dimensional
 
@@ -189,8 +185,6 @@ Simple Gradient Descent
        ! Cleanup for next iteration
        call x%zero_grad()  ! Reset gradient
        call loss%nullify_graph()
-       call loss%deallocate()
-       deallocate(loss)
      end do
 
      write(*,*) 'Final x =', x%val(1, 1)  ! Should be ≈ 5.0
@@ -240,8 +234,6 @@ Multi-Parameter Optimisation
        ! Cleanup
        call params%zero_grad()
        call loss%nullify_graph()
-       call loss%deallocate()
-       deallocate(loss)
      end do
 
      write(*,*) 'Final params:', params%val(:, 1)

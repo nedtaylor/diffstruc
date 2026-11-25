@@ -1,236 +1,197 @@
 Memory Management
 =================
 
-Proper memory management is crucial when using diffstruc to avoid memory leaks and ensure efficient performance.
+Every record, value buffer, gradient and scratch buffer belongs to a context
+(``array_context_type``). An ``array_type`` is a non-owning handle: it carries
+an id plus views into that memory. Copying a handle copies the views, never the
+storage, and no handle has a finaliser or a reference count.
 
+This means the usual Fortran cleanup rule is inverted: you do not free values,
+and you must not call ``deallocate`` on a pointer result. You release *regions*
+of the context, either explicitly (``nullify_graph``/``deallocate``) or in bulk
+(``reset``).
 
-Each ``array_type`` variable manages:
+What the context owns
+---------------------
 
-1. **Data array** (``val``) - The actual values
-2. **Gradient** (``grad``) - Pointer to gradient array
-3. **Left operand** (``left_operand``) - Pointer to left operand array
-4. **Right operand** (``right_operand``) - Pointer to right operand array
-5. **Computation graph** - Links to operands for differentiation
-6. **Ownership flags** - Tracks what should be deallocated
+* Node records (including ``shape``, ``indices``, masks and directions)
+* Value storage and its ``%val`` view
+* Gradient accumulators (``%grad``)
+* Scratch buffers used by the reverse-mode kernels
+* The links between operation nodes (``left_operand``/``right_operand``)
 
-Depending on what operations are performed, multiple intermediate arrays and pointers may be created.
-These will be directly accessible via the ``array_type`` structure through the ``left_operand`` and ``right_operand`` pointers.
+``x%val``, ``x%grad%val``, ``x%left_operand`` and friends are all views of
+context-owned memory. Reading and writing them is unchanged.
 
-It is important to manage the lifecycle of these components carefully.
+Lifecycle
+---------
 
-1. **Allocation**: Create and allocate memory
-2. **Computation**: Build computation graph
-3. **Differentiation**: Compute gradients
-4. **Cleanup**: Deallocate memory and nullify pointers
-
-Essential Cleanup Operations
------------------------------
-
-Always perform these two operations when done with computed results:
+1. **Allocate** an input with ``x%allocate(...)`` and mark it
+   ``set_requires_grad(.true.)`` if it is a differentiation variable.
+2. **Compute**: operators/functions create expression nodes in the context.
+3. **Differentiate**: ``grad_forward``/``grad_reverse`` fill ``x%grad``.
+4. **Release**: ``call expr%nullify_graph()`` for an expression, or
+   ``reset_default_context()`` to release everything.
 
 .. code-block:: fortran
 
-   ! 1. Nullify computation graph
-   call f%nullify_graph()
+   call x%allocate(array_shape=[3, 1], temporary=.false.)
+   x%val(:, 1) = [1.0_real32, 2.0_real32, 3.0_real32]
+   call x%set_requires_grad(.true.)
 
-   ! 2. Deallocate data arrays
-   call f%deallocate()
+   f => x**2 + x
+   call f%grad_reverse(reset_graph=.true.)
+   print *, x%grad%val(:, 1)     ! 3.0, 5.0, 7.0
 
-   ! 3. Deallocate the pointer itself
-   deallocate(f)
-
+   call f%nullify_graph()        ! expression and its operands released
+   call x%deallocate()           ! optional: give the input's storage back
 
 The nullify_graph Procedure
-----------------------------
+---------------------------
 
-``nullify_graph()`` traverses the computation graph and:
+``nullify_graph()`` walks the graph rooted at a handle and:
 
-* Nullifies all pointer connections
-* Deallocates temporary intermediate results
-* Prevents memory leaks from circular references
+* releases every operand record that is not a root variable, plus the gradients
+  of transient nodes,
+* releases the root itself when it is a temporary (an expression), or keeps it
+  when it is a variable,
+* unbinds the handle if its own record was released.
 
-Call ``nullify_graph()`` on:
+Root variables are nodes with ``requires_grad = .true.`` and no operands, i.e.
+the arrays the caller allocated. That is why ``x`` above survives and can be
+reused for the next expression.
 
-* **All** pointer results from operations
-* Both function values and gradient results
-* Before deallocating the variable
+The optional ``ignore_ownership`` argument is accepted for source
+compatibility. It has no effect: ownership is not tracked per handle.
 
-.. code-block:: fortran
+The deallocate Procedure
+------------------------
 
-   f => x**2 + y**2
-   df_dx => f%grad_forward(x)
+``call h%deallocate()`` returns *that node's* storage to the context and
+unbinds the handle. Other handles referring to the same node become stale and
+are rejected on access. Calling it after ``nullify_graph`` is a harmless
+no-op. Use it for inputs you are done with; you do not need it for expressions.
 
-   ! Clean up BOTH
-   call f%nullify_graph()      ! Clean function graph
-   call df_dx%nullify_graph()  ! Clean gradient graph
+Releasing whole regions
+~~~~~~~~~~~~~~~~~~~~~~~
 
-Sometimes it is necessary to use the ``ignore_ownership`` argument of ``nullify_graph()`` to prevent repeated deallocation attempts of shared nodes.
-Setting ``ignore_ownership = .false.`` skips deallocation of nodes not owned by the current variable.
-By default, ``ignore_ownership = .true.`` (unless the variable has been generated from ``grad_forward``).
-As such, it might sometimes be useful to do the following:
-
-.. code-block:: fortran
-
-   call f%nullify_graph(ignore_ownership = .true.)
-   call df_dx%nullify_graph(ignore_ownership = .false.)
-
-where the first call cleans up all nodes owned by ``f``, and the second call only cleans up nodes owned by ``df_dx``.
-
-Common Mistake
-~~~~~~~~~~~~~~
-
-.. code-block:: fortran
-
-   ! WRONG - Only cleaning one
-   call f%nullify_graph()
-   call f%deallocate()
-   deallocate(f)
-   ! df_dx is leaked!
-
-   ! CORRECT - Clean both
-   call f%nullify_graph()
-   call df_dx%nullify_graph()
-   deallocate(f, df_dx)
-
+* ``reset_default_context()`` releases every record the global context owns.
+* ``checkpoint_context(ctx)`` marks a point and ``rollback_context(ctx)``
+  releases every node created after it, without invalidating earlier records.
+  This is what the reverse-mode scratch region uses internally.
+* ``set_default_context(other)`` switches the process-wide context.
 
 The is_temporary Flag
 ---------------------
 
-* ``is_temporary = .false.``: Variable you created explicitly
-* ``is_temporary = .true.``: Intermediate computation result (automatic)
+* ``is_temporary = .false.``: a variable the caller created explicitly.
+* ``is_temporary = .true.``: an intermediate expression result (the default for
+  every operation result).
+
+``nullify_graph`` uses the flag to decide whether the root of the graph should
+be released. Set it, or pass the keyword to ``allocate``:
 
 .. code-block:: fortran
 
-   x%is_temporary = .false.   ! Explicit variable
-   y%is_temporary = .false.   ! Explicit variable
+   call x%allocate(array_shape=[1, 1, 1], source=1.0, temporary=.false.)
+   ! or, after allocation:
+   x%is_temporary = .false.
 
-   f => x + y                 ! f%is_temporary = .true. (automatic)
+.. warning::
 
-Set ``is_temporary = .false.`` for:
+   ``is_temporary`` and ``is_sample_dependent`` are views of flags stored in
+   the context record. They have no target until the handle is bound, so set
+   them after ``allocate`` (or use the ``temporary=``/``sample_dependent=``
+   keywords).
 
-* Input variables
-* Parameters (weights, biases)
-* Any variable you explicitly create
-
-.. code-block:: fortran
-
-   call x%allocate([1, 1, 1], source=1.0)
-   call x%set_requires_grad(.true.)
-   x%is_temporary = .false.  ! Set this!
-
-Memory Leak Patterns
+Assignment and copies
 ---------------------
 
-Pattern 1: Forgetting Cleanup
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Forgetting to clean up inside loops or repeated computations can lead to significant memory leaks over time.
-
-.. code-block:: fortran
-
-   ! BAD - Memory leak!
-   do i = 1, 1000
-     f => x**2
-     ! No cleanup - leaks every iteration
-   end do
-
-   ! GOOD
-   do i = 1, 1000
-     f => x**2
-     call f%nullify_graph()
-     deallocate(f)
-   end do
-
-Pattern 2: Forgetting Gradient Cleanup
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Because `f` is part of the `df_dx` computation graph, it is likely that only cleaning up `df_dx` is necessary.
-However, to be safe and avoid leaks in complex graphs, always clean up both.
+Assignment into an **unbound** handle binds it to the source's record, sharing
+the values. Assignment into a handle that is **already bound** copies the
+values into its record:
 
 .. code-block:: fortran
 
-   ! BAD - Gradient result leaked!
+   type(array_type) :: shared, copied
+
+   shared = x                              ! shares x's record
+   call copied%allocate(array_shape=shape(x))
+   copied = x                              ! value copy
+
+For expressions use ``p => expr%duplicate_graph()``, which deep-copies the
+graph while sharing the root variables.
+
+Common mistakes
+---------------
+
+.. code-block:: fortran
+
+   ! WRONG: pointer results are context-owned
    f => x**2
-   df_dx => f%grad_forward(x)
    call f%nullify_graph()
-   call f%deallocate()
-   deallocate(f)
-   ! df_dx still allocated!
+   deallocate(f)                  ! aborts
 
-   ! GOOD
-   call f%nullify_graph()
-   call df_dx%nullify_graph()
-   deallocate(f, df_dx)
+   ! WRONG: %val is a view, not an allocation
+   deallocate(x%val)
 
-Pattern 3: Circular References
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   ! WRONG: the flag has no target before binding
+   type(array_type) :: y
+   y%is_temporary = .false.       ! null-pointer dereference
+   call y%allocate(...)
 
-Circular references are common in computation graphs.
-These can lead to memory not being freed if not handled correctly.
-The ``nullify_graph()`` procedure is designed to handle these cases safely.
-
-.. code-block:: fortran
-
-   ! Computation graphs can have cycles
-   ! This is why nullify_graph() is essential
-
-   f => x * y + x  ! x appears twice - creates shared nodes
-
-   ! nullify_graph() handles cycles correctly
+   ! RIGHT
+   f => x**2
    call f%nullify_graph()
 
-Efficient Memory Usage
+Memory growth in loops
 ----------------------
 
-Reusing Variables
-~~~~~~~~~~~~~~~~~
-
-When possible, reuse allocated variables:
+Expression records are released by ``nullify_graph``, so repeated graph builds
+reuse the context's value buffers and stay in bounded memory:
 
 .. code-block:: fortran
 
-   ! Allocate once
-   call workspace%allocate([100, 100, 1])
-
-   do iter = 1, 1000
-     ! Reuse workspace
-     workspace%val = compute_something()
-     ! No allocation/deallocation overhead
+   do i = 1, 1000
+     f => x**2 + x
+     call f%grad_reverse(reset_graph=.true.)
+     call f%nullify_graph()       ! keeps memory flat
    end do
 
-   ! Deallocate once at end
-   call workspace%deallocate()
+Records are retired rather than recycled, so the registry itself grows with the
+total number of nodes a context has ever issued (a few hundred bytes per node).
+``reset_default_context()`` after a batch of work returns all of it. The
+``test_memory`` program checks that a long loop does not grow the *value*
+buffers; the number of iterations can be set with the
+``DIFFSTRUC_MEMORY_ITERATIONS`` environment variable.
 
-In-Place Operations
-~~~~~~~~~~~~~~~~~~~
+Efficient usage
+---------------
 
-For non-differentiable updates, modify in-place.
-Also, try to prioritise pointer assignment over normal assignment.
+Reuse an allocated input instead of allocating a new one; ``%set`` writes into
+the existing record:
 
 .. code-block:: fortran
 
-   ! Instead of creating new arrays
-   x = x + delta + y  ! In-place update
+   call workspace%allocate(array_shape=[100, 100, 1])
+   do iter = 1, 1000
+     call workspace%set(compute_something())
+   end do
+   call workspace%deallocate()
 
-   ! Rather than
-   temp = x + delta
-   x = temp + y
+Diagnostics
+-----------
 
-Global Variables
-----------------
+* ``context_of(handle)`` returns the owning context.
+* ``canonical(handle)`` resolves the handle to its record, or null when it is
+  unbound/stale.
+* ``live(handle)`` is the checked variant used internally: it rejects a stale
+  or unbound handle with a diagnostic instead of dereferencing it.
 
-diffstruc has two global variables to help manage memory:
-
-* ``diffstruc__max_recursion_depth``: Maximum recursion depth for graph traversal (default 1000)
-* ``diffstruc__init_map_cap``: Default capacity for internal hash maps (default 32)
-
-These can be adjusted by importing them from diffstruc and modifying them in your program before performing large computations.
-
-
-Debugging Memory Issues
+Debugging memory issues
 -----------------------
 
-Checking for Leaks
+Checking for leaks
 ~~~~~~~~~~~~~~~~~~
 
 Use valgrind (Linux):
@@ -239,5 +200,14 @@ Use valgrind (Linux):
 
    valgrind --leak-check=full --show-leak-kinds=all ./your_program
 
-For macOS, use Instruments or Activity Monitor to track memory usage.
-However, to do so, you need to use the ``codesign`` to sign your executable for profiling tools to work correctly.
+On macOS use ``leaks`` with the malloc stack logging environment variable:
+
+.. code-block:: bash
+
+   MallocStackLogging=1 leaks -atExit -- ./your_program
+
+The library's own test does exactly this:
+
+.. code-block:: bash
+
+   MallocStackLogging=1 leaks -atExit -- build/testbin/test_memory

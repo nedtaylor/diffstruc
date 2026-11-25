@@ -1,1205 +1,1134 @@
+!> The autodiff engine: construction, forward-mode differentiation,
+!! reverse-mode differentiation, graph lifecycle, and the reduction
+!! operations of `diffstruc__types`.
+!!
+!! Every node the engine creates lives in a context. The engine never frees
+!! a node a handle may still view; instead it releases whole regions when a
+!! graph is detached (`nullify_graph`) or when the context is rolled back.
 submodule(diffstruc__types) diffstruc__types_submodule
-  !! Submodule containing implementations for derived types
-  use coreutils, only: stop_program, print_warning
-  use diffstruc__global, only: diffstruc__max_recursion_depth, &
-       diffstruc__init_map_cap, diffstruc__visit_counter
+  use diffstruc__global, only: diffstruc__visit_counter, &
+       diffstruc__max_recursion_depth
+  use, intrinsic :: iso_fortran_env, only: error_unit
+  implicit none
 
+  integer, save :: accumulate_phase = 0
+  !! Counter identifying the current backward pass
 
+  logical, save :: scratch_nodes_created = .false.
+  !! Whether the current backward pass created transient graph nodes
 
 contains
 
+
 !###############################################################################
   module function constructor() result(this)
-    !! Constructor for array_type
-    implicit none
-
-    ! Return value
+    !! Constructor for array_type: an unbound handle.
     type(array_type) :: this
 
+    this%id = 0
+    this%ctx = 1
+    this%gen = 1
   end function constructor
 !###############################################################################
 
 
 !###############################################################################
-  module subroutine allocate_array(this, array_shape, source)
-    !! Allocate array
-    implicit none
-
-    ! Arguments
-    class(array_type), intent(inout), target :: this
-    !! Instance of the array type
-    integer, dimension(:), intent(in), optional :: array_shape
-    !! Shape of the array
-    class(*), dimension(..), intent(in), optional :: source
-    !! Source array
-
-    if(allocated(this%val).or.this%allocated)then
-       call stop_program("Trying to allocate already allocated array values")
-       return
-    end if
-    if(present(array_shape))then
-       allocate(this%val( &
-            product(array_shape(1:size(array_shape)-1)),  &
-            array_shape(size(array_shape)) &
-       ))
-       this%shape = [ array_shape(1:size(array_shape)-1) ]
-    end if
-    if(present(source))then
-       select rank(source)
-       rank(0)
-          select type(source)
-          type is (real(real32))
-             if(.not.present(array_shape))then
-                call stop_program('Source shape not provided')
-                return
-             end if
-             this%val(:,:) = source
-          type is (array_type)
-             if(present(array_shape))then
-                if(any(array_shape.ne.shape(source%val)))then
-                   call stop_program('Source shape does not match array shape')
-                   return
-                end if
-             end if
-             this = source
-             !  this%val_ptr( &
-             !       1:source%shape(1), &
-             !       1:size(source%val, dim=2) &
-             !  ) => this%val
-          class default
-             call stop_program('Incompatible source type for rank 0')
-             return
-          end select
-       rank(2)
-          select type(source)
-          type is (real(real32))
-             if(present(array_shape))then
-                if(any(array_shape.ne.shape(source)))then
-                   call stop_program('Source shape does not match array shape')
-                   return
-                end if
-             end if
-             this%val = source
-             !  this%val_ptr( &
-             !       1:size(source, dim=1), &
-             !       1:size(source, dim=2) &
-             !  ) => this%val
-          class default
-             call stop_program('Incompatible source type for rank 2')
-             return
-          end select
-       rank default
-          call stop_program('Unrecognised source rank')
-          return
-       end select
-    end if
-    if(.not.present(source).and..not.present(array_shape))then
-       call stop_program('No shape or source provided')
-       return
-    end if
-    this%rank = 1
-    this%allocated = .true.
-    !  this%val_ptr(1:size(this%val, dim=1), 1:size(this%val, dim=2)) => this%val
-    if(.not.allocated(this%shape)) this%shape = [ size(this%val, dim=1) ]
-    this%size = product(this%shape)
-
-
-  end subroutine allocate_array
-!###############################################################################
-
-
-!###############################################################################
-  recursive module subroutine deallocate_array(this, keep_shape)
-    !! Deallocate array
-    implicit none
-
-    ! Arguments
+  module subroutine set_requires_grad(this, requires_grad)
+    !! Marks this array as an independent variable of the graph.
     class(array_type), intent(inout) :: this
-    !! Instance of the array type
-    logical, intent(in), optional :: keep_shape
-    !! Boolean whether to keep shape
+    !! Handle to mark
+    logical, intent(in) :: requires_grad
+    !! Whether gradients are required
 
     ! Local variables
-    logical :: keep_shape_
-    !! Boolean whether to keep shape
+    type(array_type), pointer :: node
 
-    keep_shape_ = .false.
-    if(present(keep_shape)) keep_shape_ = keep_shape
-
-    ! Deallocate all allocatable arrays
-    if(allocated(this%val)) deallocate(this%val)
-    if(allocated(this%indices)) deallocate(this%indices)
-    if(allocated(this%adj_ja)) deallocate(this%adj_ja)
-    if(allocated(this%mask)) deallocate(this%mask)
-    if(allocated(this%direction)) deallocate(this%direction)
-    if(.not.keep_shape_)then
-       if(allocated(this%shape)) deallocate(this%shape)
+    node => live(this)
+    node%requires_grad = requires_grad
+    if(requires_grad .and. .not. associated(node%grad)) then
+       node%grad => ensure_gradient(context_of_node(node), node, size(node%val, 2))
     end if
-
-    this%allocated = .false.
-    this%size = 0
-    ! write(*,*) "deallocated array loc: ", loc(this)
-
-  end subroutine deallocate_array
+    call bind_handle(this, node)
+  end subroutine set_requires_grad
 !###############################################################################
 
 
 !###############################################################################
-  recursive module subroutine finalise_array(this)
-    !! Finalise array - clean up memory safely
-    implicit none
-    type(array_type), intent(inout) :: this
-
-    ! write(*,*) "finalising array loc: ", loc(this), this%is_temporary, this%operation
-
-    ! First deallocate owned pointers (operands and gradient) to prevent leaks
-    if(.not.this%is_temporary)then
-       if(associated(this%left_operand))then
-          if(this%owns_left_operand)then
-             !call this%left_operand%deallocate()
-             deallocate(this%left_operand)
-          end if
-          nullify(this%left_operand)
-       end if
-
-       if(associated(this%right_operand))then
-          if(this%owns_right_operand)then
-             !call this%right_operand%deallocate()
-             deallocate(this%right_operand)
-          end if
-          nullify(this%right_operand)
-       end if
-
-       if(associated(this%grad))then
-          if(this%owns_gradient)then
-             !call this%grad%deallocate()
-             deallocate(this%grad)
-          end if
-          nullify(this%grad)
-       end if
-    end if
-
-    ! Deallocate all allocatable arrays
-    call this%deallocate()
-
-    ! Reset ownership flags and nullify procedure pointers
-    this%owns_gradient = .false.
-    this%owns_left_operand = .false.
-    this%owns_right_operand = .false.
-    nullify(this%get_partial_left)
-    nullify(this%get_partial_right)
-    nullify(this%get_partial_left_val)
-    nullify(this%get_partial_right_val)
-    nullify(this%get_partial_left_val_sum)
-    nullify(this%get_partial_right_val_sum)
-    this%is_temporary = .true.
-    ! write(*,*) "finalised array loc: ", loc(this)
-
-  end subroutine finalise_array
-!###############################################################################
-
-
-!##############################################################################!
-! * * * * * * * * * * * * * * * * * * *  * * * * * * * * * * * * * * * * * * * !
-!##############################################################################!
-
-
-!###############################################################################
-  pure module function flatten_array(this) result(output)
-    !! Flatten the array
-    implicit none
-
-    ! Arguments
-    class(array_type), intent(in) :: this
-    !! Instance of the array type
-    real(real32), dimension(this%size) :: output
-    !! Flattened array
-
-    output = reshape(this%val, [this%size])
-  end function flatten_array
-!###############################################################################
-
-
-!###############################################################################
-  recursive module subroutine assign_array(this, input)
-    !! Assign the array
-    implicit none
-
-    ! Arguments
-    class(array_type), intent(out), target :: this
-    !! Instance of the array type
-    type(array_type), intent(in) :: input
-    !! Input array
-
-    this%id = input%id
-    this%rank = input%rank
-    this%size = input%size
-    this%is_sample_dependent = input%is_sample_dependent
-    this%is_forward = input%is_forward
-    this%is_scalar = input%is_scalar
-    this%allocated = input%allocated
-    if(allocated(input%shape)) this%shape = input%shape
-    if(allocated(input%val)) this%val = input%val
-    this%requires_grad = input%requires_grad
-    if(associated(input%grad)) this%grad => input%grad
-    if(associated(input%left_operand)) this%left_operand => input%left_operand
-    if(associated(input%right_operand)) this%right_operand => input%right_operand
-    this%operation = input%operation
-
-    ! Transfer ownership flags - this is critical to prevent memory leaks
-    this%owns_gradient = input%owns_gradient
-    this%owns_left_operand = input%owns_left_operand
-    this%owns_right_operand = input%owns_right_operand
-
-    if(allocated(input%indices)) this%indices = input%indices
-    if(allocated(input%adj_ja)) this%adj_ja = input%adj_ja
-    if(allocated(input%mask)) this%mask = input%mask
-
-    if(associated(input%get_partial_left)) &
-         this%get_partial_left => input%get_partial_left
-    if(associated(input%get_partial_right)) &
-         this%get_partial_right => input%get_partial_right
-    if(associated(input%get_partial_left_val)) &
-         this%get_partial_left_val => input%get_partial_left_val
-    if(associated(input%get_partial_right_val)) &
-         this%get_partial_right_val => input%get_partial_right_val
-    if(associated(input%get_partial_left_val_sum)) &
-         this%get_partial_left_val_sum => input%get_partial_left_val_sum
-    if(associated(input%get_partial_right_val_sum)) &
-         this%get_partial_right_val_sum => input%get_partial_right_val_sum
-
-  end subroutine assign_array
-!-------------------------------------------------------------------------------
-  module subroutine assign_shallow(this, source)
-    !! Assign the array
-    implicit none
-
-    ! Arguments
+  module subroutine set_shape(this, array_shape)
+    !! Updates the logical shape of an array in its context record.
     class(array_type), intent(inout) :: this
-    !! Instance of the array type
-    class(array_type), intent(in), target :: source
-    !! source array
-
-    this%id = source%id
-    this%rank = source%rank
-    this%size = source%size
-    this%is_sample_dependent = source%is_sample_dependent
-    this%is_forward = source%is_forward
-    this%is_scalar = source%is_scalar
-    this%allocated = source%allocated
-    this%is_temporary = source%is_temporary
-    if(allocated(source%shape)) this%shape = source%shape
-    if(allocated(source%val)) this%val = source%val
-    this%requires_grad = source%requires_grad
-    if(associated(source%grad)) this%grad => source%grad
-    if(associated(source%left_operand)) this%left_operand => source%left_operand
-    if(associated(source%right_operand)) this%right_operand => source%right_operand
-    this%operation = source%operation
-    this%owns_gradient = .false.  ! Dont copy gradient ownership
-    if(allocated(source%indices)) this%indices = source%indices
-    if(allocated(source%adj_ja)) this%adj_ja = source%adj_ja
-    if(allocated(source%mask)) this%mask = source%mask
-    this%owns_left_operand = source%owns_left_operand
-    this%owns_right_operand = source%owns_right_operand
-
-    if(associated(source%get_partial_left)) &
-         this%get_partial_left => source%get_partial_left
-    if(associated(source%get_partial_right)) &
-         this%get_partial_right => source%get_partial_right
-    if(associated(source%get_partial_left_val)) &
-         this%get_partial_left_val => source%get_partial_left_val
-    if(associated(source%get_partial_right_val)) &
-         this%get_partial_right_val => source%get_partial_right_val
-    if(associated(source%get_partial_left_val_sum)) &
-         this%get_partial_left_val_sum => source%get_partial_left_val_sum
-    if(associated(source%get_partial_right_val_sum)) &
-         this%get_partial_right_val_sum => source%get_partial_right_val_sum
-
-  end subroutine assign_shallow
-!-------------------------------------------------------------------------------
-  module subroutine assign_and_deallocate_source(this, source, owns_left_operand, &
-       owns_right_operand)
-    !! Assign and deallocate the source array
-    implicit none
-
-    ! Arguments
-    class(array_type), intent(inout) :: this
-    !! Instance of the array type
-    type(array_type), intent(inout), pointer :: source
-    !! Source array
-    logical, intent(in), optional :: owns_left_operand, owns_right_operand
-
-    if(present(owns_left_operand)) source%owns_left_operand = owns_left_operand
-    if(present(owns_right_operand)) source%owns_right_operand = owns_right_operand
-    this = source
-    deallocate(source)
-    ! nullify(source)
-
-  end subroutine assign_and_deallocate_source
-!###############################################################################
-
-
-!###############################################################################
-  module function create_result_array(this, array_shape) result(result_ptr)
-    !! Helper function to safely create result arrays with proper initialization
-    implicit none
-    class(array_type), intent(in) :: this
-    integer, dimension(:), intent(in), optional :: array_shape
-    type(array_type), pointer :: result_ptr
-
-    allocate(result_ptr)
-
-    if(present(array_shape))then
-       call result_ptr%allocate(array_shape=array_shape)
-    else
-       if(allocated(this%shape))then
-          call result_ptr%allocate(array_shape=[this%shape, &
-               size(this%val,2)])
-       else
-          call result_ptr%allocate(array_shape=shape(this%val))
-       end if
-    end if
-
-    ! Initialise autodiff fields
-    result_ptr%requires_grad = .false.
-    result_ptr%is_scalar = this%is_scalar
-    result_ptr%is_sample_dependent = this%is_sample_dependent
-    result_ptr%is_forward = this%is_forward
-    result_ptr%operation = 'none'
-    result_ptr%owns_gradient = .false.
-    result_ptr%owns_left_operand = .false.
-    result_ptr%owns_right_operand = .false.
-    result_ptr%left_operand => null()
-    result_ptr%right_operand => null()
-    result_ptr%get_partial_left => null()
-    result_ptr%get_partial_right => null()
-    result_ptr%get_partial_left_val => null()
-    result_ptr%get_partial_right_val => null()
-    result_ptr%get_partial_left_val_sum => null()
-    result_ptr%get_partial_right_val_sum => null()
-    result_ptr%is_temporary = .true.
-    result_ptr%fix_pointer = .false.
-  end function create_result_array
-!###############################################################################
-
-
-!###############################################################################
-  pure module subroutine set_array(this, input)
-    !! Set the array
-    implicit none
-
-    ! Arguments
-    class(array_type), intent(inout) :: this
-    !! Instance of the array type
-    real(real32), dimension(..), intent(in) :: input
-    !! Input array
-
-    if( any(shape(input).ne.[this%shape, size(this%val,2)]) )then
-       return
-    end if
-    select rank(input)
-    rank(1)
-       this%val(:,1) = input
-    rank(2)
-       this%val(:,:) = input
-    rank(3)
-       this%val(:,:) = reshape(input, shape(this%val))
-    rank(4)
-       this%val(:,:) = reshape(input, shape(this%val))
-    rank(5)
-       this%val(:,:) = reshape(input, shape(this%val))
-    end select
-  end subroutine set_array
-!###############################################################################
-
-
-!###############################################################################
-  module subroutine extract_array(this, output)
-    !! Extract the array
-    implicit none
-
-    ! Arguments
-    class(array_type), intent(in) :: this
-    !! Instance of the array type
-    real(real32), dimension(..), allocatable, intent(out) :: output
-    !! Output array
+    !! Handle to update
+    integer, dimension(:), intent(in) :: array_shape
+    !! New logical shape
 
     ! Local variables
-    integer :: rank_output
-    !! Rank of output array
-    character(len=10) :: rank_str
-    !! String for rank
+    type(array_type), pointer :: node
 
-
-    if(.not.this%allocated .or. .not.allocated(this%val))then
-       call print_warning("Trying to extract from unallocated array")
-       return
-    end if
-    select rank(output)
-    rank(1)
-       rank_output = 1
-       output = reshape(this%val, [ product(this%shape) * size(this%val,2) ])
-    rank(2)
-       rank_output = 2
-       output = this%val
-    rank default
-       rank_output = -1
-       select rank(output)
-       rank(3)
-          rank_output = 3
-          output = reshape( &
-               this%val, &
-               [ &
-                    this%shape(1), &
-                    this%shape(2), &
-                    size(this%val,2) &
-               ] &
-          )
-       rank(4)
-          rank_output = 4
-          output = reshape( &
-               this%val, &
-               [ &
-                    this%shape(1), &
-                    this%shape(2), &
-                    this%shape(3), &
-                    size(this%val,2) &
-               ] &
-          )
-       rank(5)
-          rank_output = 5
-          output = reshape( &
-               this%val, &
-               [ &
-                    this%shape(1), &
-                    this%shape(2), &
-                    this%shape(3), &
-                    this%shape(4), &
-                    size(this%val,2) &
-               ] &
-          )
-       end select
-    end select
-
-    if(rank_output.eq.-1)then
-       write(*,*) "Error: Unable to extract array with rank greater than 5"
-       return
-    elseif(rank_output .ne. size(this%shape,1) + 1)then
-       write(rank_str,'(I0)') rank_output
-       call print_warning( &
-            "Output data rank mismatch, expected rank "//trim(adjustl(rank_str)) &
-       )
-       return
-    end if
-
-  end subroutine extract_array
+    node => live(this)
+    node%shape = array_shape
+    node%size = product(array_shape)
+    node%rank = max(1, size(array_shape))
+    call bind_handle(this, node)
+  end subroutine set_shape
 !###############################################################################
 
 
-!##############################################################################!
-! * * * * * * * * * * * * * * * * * * *  * * * * * * * * * * * * * * * * * * * !
-!##############################################################################!
+!###############################################################################
+  module subroutine set_direction(this, direction)
+    !! Sets the forward-mode seed direction of a variable.
+    class(array_type), intent(inout) :: this
+    !! Variable to seed
+    real(real32), dimension(:), intent(in) :: direction
+    !! The seed vector
+
+    ! Local variables
+    type(array_type), pointer :: node
+
+    node => live(this)
+    if(allocated(node%direction)) deallocate(node%direction)
+    allocate(node%direction(size(direction)))
+    node%direction = direction
+  end subroutine set_direction
+!###############################################################################
+
+
+!###############################################################################
+  pure logical function is_variable(node)
+    !! Whether a record is a root variable of the graph.
+    type(array_type), intent(in) :: node
+    !! Record to test
+
+    is_variable = node%requires_grad .and. .not. associated(node%left_operand) &
+         .and. .not. associated(node%right_operand)
+  end function is_variable
+!###############################################################################
+
+
+!###############################################################################
+  logical function same_node(a, b)
+    !! Whether two handles refer to the same context node.
+    class(array_type), intent(in) :: a, b
+    !! Handles to compare
+
+    same_node = a%id > 0 .and. a%id == b%id .and. a%gen == b%gen
+  end function same_node
+!###############################################################################
 
 
 !###############################################################################
   module function grad_forward(this, variable) result(output)
-    !! Perform forward-mode automatic differentiation
-    implicit none
+    !! Forward-mode differentiation: the derivative of this array with
+    !! respect to a variable.
     class(array_type), intent(inout) :: this
+    !! Array to differentiate
     type(array_type), intent(in) :: variable
+    !! Variable to differentiate with respect to
     type(array_type), pointer :: output
+    !! The derivative
 
+    ! Local variables
     integer :: depth
+    type(array_type), pointer :: node
 
-    if(.not.variable%requires_grad)then
-       call print_warning("Variable does not require grad in forward mode")
+    nullify(output)
+    if(.not. variable%requires_grad) then
+       call print_warning('Variable does not require grad in forward mode')
        return
+    end if
+    node => canonical(this)
+    if(associated(node)) then
+       call checkpoint_context(context_of_node(node))
     end if
     depth = 0
     output => forward_over_reverse(this, variable, depth)
-    output%is_forward = .true.
-    this%requires_grad = .true.
-
+    if(associated(output)) then
+       output%is_forward = .true.
+       ! Release every node the traversal built and then discarded.
+       diffstruc__visit_counter = diffstruc__visit_counter + 1
+       call mark_graph(output, diffstruc__visit_counter)
+       call sweep_region(context_of_node(node), diffstruc__visit_counter)
+    end if
+    if(associated(node)) then
+       node%requires_grad = .true.
+       call bind_handle(this, node)
+    end if
   end function grad_forward
 !###############################################################################
 
 
 !###############################################################################
-  module subroutine grad_reverse(this, reset_graph)
-    !! Perform backward pass starting from this array
-    implicit none
-    class(array_type), intent(inout) :: this
-    logical, intent(in), optional :: reset_graph
-
-
-    if(present(reset_graph))then
-       if(reset_graph) call this%reset_graph()
-    end if
-    call zero_all_fixed_pointer_grads(this)
-
-    ! Initialise gradient if not allocated
-    if(.not. associated(this%grad))then
-       allocate(this%grad)
-       ! Safely initialise gradient without copying computation graph
-       call this%grad%allocate(array_shape=[this%shape, size(this%val,2)])
-       this%grad%is_sample_dependent = this%is_sample_dependent
-       this%grad%requires_grad = .true.
-       this%grad%operation = 'none'
-       this%grad%left_operand => null()
-       this%grad%right_operand => null()
-       this%grad%get_partial_left => null()
-       this%grad%get_partial_right => null()
-       this%grad%grad => null()
-       this%grad%owns_gradient = .false.
-       this%owns_gradient = .true.
-       if(allocated(this%indices)) this%grad%indices = this%indices
-       call this%grad%zero_grad()
-       ! Set gradient to ones for starting node
-       this%grad%val = 1.0_real32
-       this%grad%is_temporary = this%is_temporary
-    end if
-
-    ! Recursively compute gradients
-    !call reverse_mode_ptr(this, this%grad, 0)
-    call reverse_mode(this, this%grad%val, 0)
-  end subroutine grad_reverse
-!###############################################################################
-
-
-!##############################################################################!
-! * * * * * * * * * * * * * * * * * * *  * * * * * * * * * * * * * * * * * * * !
-!##############################################################################!
-
-
-!###############################################################################
   recursive function forward_over_reverse(this, variable, depth) result(output)
-    implicit none
+    !! Recursive forward-mode traversal of the computation graph.
     type(array_type), intent(inout) :: this
+    !! Node being differentiated
     type(array_type), intent(in) :: variable
+    !! Variable to differentiate with respect to
     integer, intent(inout) :: depth
+    !! Current recursion depth
     type(array_type), pointer :: output
+    !! The derivative node
 
+    ! Local variables
+    type(array_type), pointer :: node, left_deriv, right_deriv
+    type(array_type), pointer :: left_tmp, right_tmp
+    logical :: was_forward, left_is_variable, right_is_variable
+    logical :: has_left, has_right, has_left_partial, has_right_partial
     integer :: s, i, n_elem, n_samples
-    logical :: is_right_a_variable, is_left_a_variable
-    type(array_type), pointer :: left_deriv_tmp, right_deriv_tmp
-    type(array_type), pointer :: left_deriv, right_deriv
-    logical :: is_forward_local
-    logical :: is_add_op, has_left, has_right, has_left_partial, has_right_partial
 
     depth = depth + 1
-    if(depth.gt.diffstruc__max_recursion_depth)then
-       write(0,*) "MAX RECURSION DEPTH REACHED", depth
+    if(depth > diffstruc__max_recursion_depth) then
+       write(error_unit, '(A,I0)') 'MAX RECURSION DEPTH REACHED ', depth
+       nullify(output)
        return
     end if
-    is_forward_local = this%is_forward
-    this%is_forward = .true.
-    has_left = associated(this%left_operand)
-    has_right = associated(this%right_operand)
-    ! write(*,*) "Performing forward-over-reverse operation for: ", trim(this%operation)
-    if(loc(this).eq.loc(variable))then
-       allocate(output)
-       output = this
-       if(allocated(this%direction))then
-          n_elem = size(output%val, 1)
-          n_samples = size(output%val, 2)
+
+    node => live(this)
+    was_forward = node%is_forward
+    node%is_forward = .true.
+    has_left = associated(node%left_operand)
+    has_right = associated(node%right_operand)
+
+    if(same_node(this, variable)) then
+       output => clone_handle(node)
+       n_elem = size(output%val, 1)
+       n_samples = size(output%val, 2)
+       if(allocated(node%direction)) then
           do concurrent(s = 1:n_samples, i = 1:n_elem)
-             output%val(i,s) = this%direction(i)
+             output%val(i, s) = node%direction(i)
           end do
        else
-          output%val = 1._real32
+          output%val = 1.0_real32
        end if
        if(allocated(output%direction)) deallocate(output%direction)
+       output%requires_grad = .false.
+       output%grad => null()
 
-    elseif(has_left .or. has_right)then
-       ! Cache association checks and operation type
-       has_left_partial = associated(this%get_partial_left)
-       has_right_partial = associated(this%get_partial_right)
-       is_add_op = (trim(this%operation).eq.'add')
+    else if(has_left .or. has_right) then
+       has_left_partial = associated(node%get_partial_left)
+       has_right_partial = associated(node%get_partial_right)
+       left_is_variable = .false.
+       right_is_variable = .false.
 
-       is_left_a_variable = .false.
-       if(has_left .and. has_left_partial)then
-          is_left_a_variable = .true.
-          left_deriv_tmp => &
-               forward_over_reverse(this%left_operand, variable, depth)
-          ! call left_deriv_tmp%set_requires_grad(.false.)
-          if(is_add_op)then
-             left_deriv => left_deriv_tmp
+       if(has_left .and. has_left_partial) then
+          left_is_variable = .true.
+          left_tmp => forward_over_reverse(node%left_operand, variable, depth)
+          if(trim(node%operation) == 'add') then
+             left_deriv => left_tmp
+          else if(has_right_partial .and. .not. has_right) then
+             left_deriv => partial_node(node, left_tmp, 2)
           else
-             allocate(left_deriv)
-             if(has_right_partial .and. .not.has_right)then
-                left_deriv = this%get_partial_right(left_deriv_tmp)
-             else
-                left_deriv = this%get_partial_left(left_deriv_tmp)
-             end if
+             left_deriv => partial_node(node, left_tmp, 1)
           end if
-          !  left_deriv%owns_left_operand = .true.
-          !  left_deriv%owns_right_operand = .true.
        end if
 
-       is_right_a_variable = .false.
-       if(has_right .and. has_right_partial)then
-          is_right_a_variable = .true.
-          right_deriv_tmp => &
-               forward_over_reverse(this%right_operand, variable, depth)
-          ! call right_deriv_tmp%set_requires_grad(.false.)
-          if(is_add_op)then
-             right_deriv => right_deriv_tmp
+       if(has_right .and. has_right_partial) then
+          right_is_variable = .true.
+          right_tmp => forward_over_reverse(node%right_operand, variable, depth)
+          if(trim(node%operation) == 'add') then
+             right_deriv => right_tmp
           else
-             allocate(right_deriv)
-             right_deriv = this%get_partial_right(right_deriv_tmp)
+             right_deriv => partial_node(node, right_tmp, 2)
           end if
-          !  right_deriv%owns_left_operand = .true.
-          !  right_deriv%owns_right_operand = .true.
        end if
 
-       if(is_left_a_variable.and.is_right_a_variable)then
+       if(left_is_variable .and. right_is_variable) then
           output => left_deriv + right_deriv
-       elseif(is_left_a_variable)then
+       else if(left_is_variable) then
           output => left_deriv
-       elseif(is_right_a_variable)then
+       else if(right_is_variable) then
           output => right_deriv
        else
-          call stop_program("Neither operand is a variable in forward-over-reverse")
+          ! This subtree does not depend on the variable: its derivative is zero.
+          output => clone_handle(node)
+          output%val = 0.0_real32
+          output%requires_grad = .false.
+          output%grad => null()
        end if
 
     else
-       allocate(output)
-       output = this
-       if(allocated(output%direction)) deallocate(output%direction)
-       output%val = 0._real32
+       output => clone_handle(node)
+       output%val = 0.0_real32
     end if
-    this%is_forward = is_forward_local
-    output%is_forward = .true.
-    output%is_temporary = .true.
-    ! write(*,*) "done operation: ", trim(this%operation)
 
+    node%is_forward = was_forward
+    if(associated(output)) output%is_forward = .true.
   end function forward_over_reverse
 !###############################################################################
 
 
 !###############################################################################
-  recursive subroutine reverse_mode_ptr(array, upstream_grad, depth)
-    !! Backward operation for arrays
-    implicit none
-    class(array_type), intent(inout) :: array
-    type(array_type), pointer, intent(in) :: upstream_grad
-    integer, intent(in) :: depth
+  function partial_node(node, upstream, side) result(deriv)
+    !! The derivative of a node's operation with respect to one operand,
+    !! evaluated at the given upstream derivative.
+    type(array_type), intent(inout), target :: node
+    !! Operation node
+    type(array_type), intent(in) :: upstream
+    !! Derivative of the node's value
+    integer, intent(in) :: side
+    !! 1 for the left operand, 2 for the right operand
+    type(array_type), pointer :: deriv
+    !! The derivative node
 
-    type(array_type), pointer :: left_partial, right_partial
+    ! Local variables
+    type(array_type) :: tmp
 
-    ! write(*,'("Performing backward operation for: ",A,T60,"id: ",I0)') &
-    !      trim(array%operation), array%id
-    if(depth.gt.diffstruc__max_recursion_depth)then
-       write(0,*) "MAX RECURSION DEPTH REACHED IN REVERSE MODE", depth
-       return
-    end if
-    array%is_forward = .false.
-    if(associated(array%left_operand))then
-       if(array%left_operand%requires_grad)then
-          allocate(left_partial)
-          left_partial = array%get_partial_left(upstream_grad)
-          left_partial%is_temporary = .true.
-          call accumulate_gradient_ptr(array%left_operand, left_partial, depth)
-       end if
-    end if
-    if(associated(array%right_operand))then
-       if(array%right_operand%requires_grad)then
-          allocate(right_partial)
-          right_partial = array%get_partial_right(upstream_grad)
-          right_partial%is_temporary = .true.
-          call accumulate_gradient_ptr(array%right_operand, right_partial, depth)
-       end if
-    end if
-    ! write(*,*) "done operation: ", trim(array%operation)
-  end subroutine reverse_mode_ptr
-!###############################################################################
-
-
-!###############################################################################
-  recursive subroutine accumulate_gradient_ptr(array, grad, depth)
-    !! Accumulate gradient for array with safe memory management
-    implicit none
-    type(array_type), intent(inout), target :: array
-    type(array_type), intent(in), pointer :: grad
-    integer, intent(in) :: depth
-
-    integer :: s
-    logical :: is_directional
-    type(array_type), pointer :: directional_grad, tmp_ptr
-
-    is_directional = .false.
-    if(allocated(array%direction))then
-       if(size(array%direction).gt.0) is_directional = .true.
-    end if
-
-    if(is_directional)then
-       allocate(directional_grad)
-       directional_grad = grad
-       do s = 1, size(grad%val, 2)
-          directional_grad%val(:, s) = grad%val(:, s) * array%direction
-       end do
+    if(side == 1) then
+       tmp = node%get_partial_left(upstream)
     else
-       directional_grad => grad
+       tmp = node%get_partial_right(upstream)
     end if
-
-    if(.not. associated(array%grad))then
-       if(array%is_sample_dependent)then
-          array%grad => directional_grad
-       else
-          ! ! mean reduction
-          ! array%grad => array%grad + mean( directional_grad, dim = 2 )
-          ! sum reduction
-          array%grad => sum( directional_grad, dim = 2 )
-       end if
-       array%grad%is_scalar = array%is_scalar
-       array%grad%is_sample_dependent = array%is_sample_dependent
-       array%grad%requires_grad = .not. array%is_scalar
-       array%grad%grad => null()
-       array%grad%owns_gradient = .false.
-       array%owns_gradient = .true.
-       array%grad%is_temporary = array%is_temporary
-    else
-
-       array%grad%is_temporary = .true.
-       if(array%is_sample_dependent)then
-          array%grad => array%grad + directional_grad
-          !array%grad%val = array%grad%val + directional_grad%val
-       else
-          ! ! mean reduction
-          ! array%grad => array%grad + mean( directional_grad, dim = 2 )
-          ! sum reduction
-          array%grad => array%grad + sum( directional_grad, dim = 2 )
-          !array%grad%val(:,1) = array%grad%val(:,1) + sum( directional_grad%val, dim = 2 )
-       end if
-       array%grad%is_temporary = array%is_temporary
-
+    deriv => canonical(tmp)
+    if(.not. associated(deriv)) then
+       deriv => clone_handle(tmp)
     end if
-
-    if(associated(array%left_operand).or.associated(array%right_operand))then
-       call reverse_mode_ptr(array, directional_grad, depth+1)
-    end if
-  end subroutine accumulate_gradient_ptr
+  end function partial_node
 !###############################################################################
 
 
 !###############################################################################
-  recursive subroutine reverse_mode(array, upstream_grad, depth)
-    !! Backward operation for arrays
-    implicit none
-    class(array_type), intent(inout) :: array
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    integer, intent(in) :: depth
+  module subroutine grad_reverse(this, reset_graph)
+    !! Reverse-mode differentiation: accumulates the gradient of this array
+    !! with respect to every variable in its graph.
+    class(array_type), intent(inout) :: this
+    !! Array to differentiate
+    logical, intent(in), optional :: reset_graph
+    !! Whether to clear existing gradients first
 
-    integer :: num_samples
-    logical :: has_left, has_right
+    ! Local variables
+    type(array_type), pointer :: node, grad
+    type(array_context_type) :: ctx
 
-    ! write(*,'("Performing backward operation for: ",A,T60,"id: ",I0)') &
-    !      trim(array%operation), array%id
-    if(depth.gt.diffstruc__max_recursion_depth)then
-       write(0,*) "MAX RECURSION DEPTH REACHED IN REVERSE MODE", depth
-       return
+    node => live(this)
+    if(present(reset_graph)) then
+       if(reset_graph) continue
     end if
-
-    ! Cache operand checks to avoid repeated pointer checks
-    has_left = associated(array%left_operand)
-    has_right = associated(array%right_operand)
-
-    ! Early exit if no operands require gradients
-    if(has_left)then
-       if(.not.array%left_operand%requires_grad) has_left = .false.
-    end if
-    if(has_right)then
-       if(.not.array%right_operand%requires_grad) has_right = .false.
-    end if
-    if(.not.has_left .and. .not.has_right) return
-
-    array%is_forward = .false.
-    ! Process left operand (already verified it requires grad)
-    if(has_left)then
-       num_samples = max(size(array%left_operand%val, 2), size(upstream_grad, 2))
-       if(array%left_operand%is_sample_dependent .or. num_samples.eq.1)then
-          call accumulate_gradient_samples( &
-               array%left_operand, array, upstream_grad, num_samples, .true., depth &
-          )
-       else
-          call accumulate_gradient_single( &
-               array%left_operand, array, upstream_grad, num_samples, .true., depth &
-          )
-       end if
-    end if
-
-    ! Process right operand (already verified it requires grad)
-    if(has_right)then
-       num_samples = max(size(array%right_operand%val, 2), size(upstream_grad, 2))
-       if(array%right_operand%is_sample_dependent .or. num_samples.eq.1)then
-          call accumulate_gradient_samples( &
-               array%right_operand, array, upstream_grad, num_samples, .false., depth &
-          )
-       else
-          call accumulate_gradient_single( &
-               array%right_operand, array, upstream_grad, num_samples, .false., depth &
-          )
-       end if
-    end if
-    ! write(*,*) "done operation: ", trim(array%operation)
-  end subroutine reverse_mode
-!###############################################################################
-
-
-!###############################################################################
-  recursive subroutine accumulate_gradient_single( &
-       array, parent, upstream_grad, num_samples, is_left_operand, depth &
-  )
-    !! Accumulate gradient for array - optimized with sum-reduced path
-    !! When a sum-reduced partial derivative is available, computes the
-    !! sum(partial, dim=2) directly, avoiding the large (n_elem, S) allocation.
-    !! Falls back to full computation when sum-reduced variant is not set.
-    implicit none
-    class(array_type), intent(inout) :: array
-    class(array_type), intent(inout) :: parent
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    integer, intent(in) :: num_samples
-    logical, intent(in) :: is_left_operand
-    integer, intent(in) :: depth
-
-    integer :: s, i, n_elem
-#ifdef __flang__
-    real(real32), dimension(:, :), allocatable :: grad
-    real(real32), dimension(:, :), allocatable :: out_grad
-#else
-    real(real32), dimension(size(array%val, 1), num_samples) :: grad
-    real(real32), dimension(size(array%val, 1), 1) :: out_grad
+    ! A fresh pass tag makes the first contribution to each accumulator
+    ! overwrite it, so existing gradient contents are irrelevant: no zeroing
+    ! sweep and no read-modify-write of the gradient arrays is needed.
+    accumulate_phase = accumulate_phase + 1
+    scratch_nodes_created = .false.
+#ifdef DIFFSTRUC_SLOW_REVERSE
+    call zero_variable_grads(node, accumulate_phase)
 #endif
-    logical :: has_direction, needs_recurse, use_sum_reduced
 
-    ! Cache array dimension to avoid repeated calls
-    n_elem = size(array%val, 1)
-
-    ! Check direction once
-    has_direction = allocated(array%direction)
-    if(has_direction) has_direction = (size(array%direction).gt.0)
-
-    ! Check if recursion needed
-    needs_recurse = associated(array%left_operand) .or. &
-         associated(array%right_operand)
-
-    ! Determine if we can use the sum-reduced path (avoids large allocation)
-    use_sum_reduced = .false.
-    if(num_samples .gt. 1)then
-       if(is_left_operand)then
-          use_sum_reduced = associated(parent%get_partial_left_val_sum)
-       else
-          use_sum_reduced = associated(parent%get_partial_right_val_sum)
+    if(.not. associated(node%grad)) then
+       ctx = context_of(this)
+       grad => allocate_value_storage(ctx, 1, &
+            [node%shape, size(node%val, 2)])
+       grad%is_scalar = node%is_scalar
+       grad%is_sample_dependent = node%is_sample_dependent
+       grad%requires_grad = .true.
+       grad%operation = 'none'
+       if(allocated(node%indices)) then
+          allocate(grad%indices(size(node%indices)))
+          grad%indices = node%indices
        end if
+       grad%val = 1.0_real32
+       node%grad => grad
     end if
 
-    if(use_sum_reduced)then
-       ! For leaf nodes without directional derivatives, write the reduced
-       ! gradient directly into the destination buffer and avoid an extra copy.
-       if(.not. needs_recurse .and. .not. has_direction .and. &
-            .not. associated(array%grad))then
-          allocate(array%grad)
-          call array%grad%allocate(array_shape=[array%shape, 1])
-          if(is_left_operand)then
-             call parent%get_partial_left_val_sum(upstream_grad, array%grad%val(:,1))
-          else
-             call parent%get_partial_right_val_sum(upstream_grad, array%grad%val(:,1))
+    ctx = context_of_node(node)
+    call checkpoint_context(ctx)
+    if(size(node%grad%val) == 1) then
+       call reverse_accumulate(node, node%grad%val, 0, .true., node%grad%val(1,1))
+    else
+       call reverse_accumulate(node, node%grad%val, 0)
+    end if
+
+    ! Value-level partials create no graph nodes, so the region only needs
+    ! sweeping when the graph-building fallback was used (matmul, gather-style
+    ! layouts). Skipping the walk keeps small backward passes overhead-free.
+    if(scratch_nodes_created) then
+       diffstruc__visit_counter = diffstruc__visit_counter + 1
+       call mark_graph(node, diffstruc__visit_counter)
+       if(associated(node%grad)) node%grad%visit_tag = diffstruc__visit_counter
+       call sweep_region(ctx, diffstruc__visit_counter)
+    end if
+  end subroutine grad_reverse
+!###############################################################################
+
+
+!###############################################################################
+  recursive subroutine reverse_accumulate(node, upstream, depth, uniform, uvalue)
+    !! Accumulates gradients by walking the graph backwards.
+    type(array_type), intent(inout), target :: node
+    !! Node whose operands receive gradient
+    real(real32), dimension(:,:), intent(in) :: upstream
+    !! Gradient of the node's value
+    integer, intent(in) :: depth
+    !! Current recursion depth
+    logical, intent(in), optional :: uniform
+    !! Whether the upstream gradient is the same value at every element
+    real(real32), intent(in), optional :: uvalue
+    !! That value, when `uniform` is present and true
+
+    if(depth > diffstruc__max_recursion_depth) then
+       write(error_unit, '(A,I0)') 'MAX RECURSION DEPTH IN REVERSE MODE ', depth
+       return
+    end if
+
+    node%is_forward = .false.
+
+    call accumulate_side(node, node%left_operand, 1, upstream, depth, uniform, uvalue)
+    call accumulate_side(node, node%right_operand, 2, upstream, depth, uniform, uvalue)
+  end subroutine reverse_accumulate
+!###############################################################################
+
+
+!###############################################################################
+  subroutine fuse_uniform_unary(node, child, uvalue, n_elem, n_samples, &
+       depth, handled)
+    !! Fuses `unary partial -> add (pass-through) -> multiply partial`.
+    !!
+    !! With a scalar upstream gradient, the derivative of
+    !!
+    !!   unary( w * d + other )
+    !!
+    !! (with `w` a single-column, non-sample-dependent operand and `d` the
+    !! sample-dependent one) is evaluated in a single pass over the data: the
+    !! unary partial `g`, the full partial of `d` (`g*w`), and the reduced
+    !! gradients `sum_s(g*d)` and `sum_s(g)` of `w` and of the remaining addend.
+    !! Only `g*w` is written; both reductions stay in registers. The
+    !! intermediate unary partial is therefore never materialised and then read
+    !! back three times.
+    !!
+    !! Every per-element expression and the order of every summation match the
+    !! separate kernels exactly, including the reduction layout of a broadcast
+    !! multiply (which reduces against the first column of the sample-dependent
+    !! operand). The order in which operands receive their contribution also
+    !! follows the unfused traversal, so repeated contributions to one
+    !! accumulator are summed in the same order.
+    type(array_type), intent(inout), target :: node
+    !! The unary operation node
+    type(array_type), pointer, intent(in) :: child
+    !! Its operand (the addition)
+    real(real32), intent(in) :: uvalue
+    !! The (uniform) upstream gradient
+    integer, intent(in) :: n_elem
+    !! Number of elements
+    integer, intent(in) :: n_samples
+    !! Number of samples
+    integer, intent(in) :: depth
+    !! Current recursion depth
+    logical, intent(out) :: handled
+    !! Whether the fusion applied
+
+    ! Local variables
+    type(array_type), pointer :: mult, other, ml, mr, d, w
+    type(array_context_type) :: ctx
+    real(real32), dimension(:,:), pointer :: dd, dwp, oap, basis
+    integer :: op, i
+    logical :: mult_left
+
+    handled = .false.
+    if(n_samples <= 1) return
+    if(.not. associated(child)) return
+    if(trim(child%operation) /= 'add') return
+    if(allocated(child%direction)) return
+    select case(trim(node%operation))
+    case('tanh')
+       op = 1
+       basis => node%val
+    case('squared')
+       op = 2
+       basis => child%val
+    case('exp')
+       op = 3
+       basis => node%val
+    case('negate')
+       op = 4
+       basis => node%val
+    case default
+       return
+    end select
+    if(size(basis, 1) /= n_elem .or. size(basis, 2) /= n_samples) return
+
+    ! The addition must have a multiply operand; the other operand (if any) is
+    ! the broadcast addend.
+    nullify(mult, other)
+    mult_left = .true.
+    if(associated(child%left_operand)) then
+       if(trim(child%left_operand%operation) == 'multiply') then
+          mult => child%left_operand
+          other => child%right_operand
+       end if
+    end if
+    if(.not. associated(mult)) then
+       if(associated(child%right_operand)) then
+          if(trim(child%right_operand%operation) == 'multiply') then
+             mult => child%right_operand
+             other => child%left_operand
+             mult_left = .false.
           end if
-          array%grad%is_scalar = array%is_scalar
-          array%grad%is_sample_dependent = array%is_sample_dependent
-          array%grad%requires_grad = .not. array%is_scalar
-          array%grad%grad => null()
-          array%grad%owns_gradient = .false.
-          array%owns_gradient = .true.
-          array%grad%is_temporary = array%is_temporary
-          return
        end if
+    end if
+    if(.not. associated(mult)) return
+    if(allocated(mult%direction)) return
+    ml => mult%left_operand
+    mr => mult%right_operand
+    if(.not. associated(ml) .or. .not. associated(mr)) return
+    ! Only the `broadcast * sample-dependent` order is fused: it is the shape
+    ! the value-level kernels are written for, and it fixes which reduction
+    ! layout (and which of the two operands carries the samples) applies.
+    if(ml%is_sample_dependent) return
+    if(.not. mr%is_sample_dependent) return
+    w => ml
+    d => mr
+    if(w%is_scalar) return
+    if(w%size /= n_elem .or. size(w%val, 2) /= 1) return
+    if(d%size /= n_elem .or. size(d%val, 2) /= n_samples) return
+    if(associated(other)) then
+       if(other%is_sample_dependent) return
+       if(other%size /= n_elem) return
+       if(size(other%val, 2) /= 1) return
+    end if
 
-       !----------------------------------------------------------------------
-       ! Sum-reduced fast path: compute sum(partial, dim=2) directly
-       ! Avoids allocating the large grad(n_elem, num_samples) array entirely
-       !----------------------------------------------------------------------
-#ifdef __flang__
-       allocate(out_grad(n_elem, 1))
-#endif
-       if(is_left_operand)then
-          call parent%get_partial_left_val_sum(upstream_grad, out_grad(:,1))
-       else
-          call parent%get_partial_right_val_sum(upstream_grad, out_grad(:,1))
-       end if
+    ctx = context_of_node(node)
+    dd => acquire_scratch(ctx, [n_elem, n_samples])
+    dwp => acquire_scratch(ctx, [n_elem, 1])
+    oap => acquire_scratch(ctx, [n_elem, 1])
+    dwp = 0.0_real32
+    oap = 0.0_real32
 
-       ! Apply direction if needed
-       if(has_direction)then
-          do concurrent( i = 1 : n_elem )
-             out_grad(i,1) = out_grad(i,1) * array%direction(i)
+    call unary_add_mult_kernel(op, n_elem, n_samples, uvalue, basis, &
+         w%val, d%val, dd, dwp(:, 1), oap(:, 1))
+
+    ! Contributions in the same order as the unfused traversal: the add visits
+    ! its left operand first and the multiply visits its left operand first.
+    if(.not. mult_left) call fuse_push_other()
+    call fuse_push_w()
+    call fuse_push_d()
+    if(mult_left) call fuse_push_other()
+
+    call release_scratch(ctx, dd)
+    call release_scratch(ctx, dwp)
+    call release_scratch(ctx, oap)
+    handled = .true.
+
+  contains
+
+    subroutine fuse_push_d()
+      if(.not. d%requires_grad) return
+      if(is_variable(d)) then
+         d%grad => ensure_gradient(ctx, d, n_samples)
+         call add_to_gradient(d%grad, dd)
+      end if
+      if(associated(d%left_operand) .or. associated(d%right_operand)) then
+         call reverse_accumulate(d, dd, depth + 1)
+      end if
+    end subroutine fuse_push_d
+
+    subroutine fuse_push_w()
+      if(.not. w%requires_grad) return
+      if(is_variable(w)) then
+         w%grad => ensure_gradient(ctx, w, 1)
+         call add_to_gradient(w%grad, dwp)
+      end if
+      if(associated(w%left_operand) .or. associated(w%right_operand)) then
+         call reverse_accumulate(w, dwp, depth + 1)
+      end if
+    end subroutine fuse_push_w
+
+    subroutine fuse_push_other()
+      if(.not. associated(other)) return
+      if(.not. other%requires_grad) return
+      if(is_variable(other)) then
+         other%grad => ensure_gradient(ctx, other, 1)
+         call add_to_gradient(other%grad, oap)
+      end if
+      if(associated(other%left_operand) .or. &
+           associated(other%right_operand)) then
+         call reverse_accumulate(other, oap, depth + 1)
+      end if
+    end subroutine fuse_push_other
+
+    subroutine unary_add_mult_kernel(op, n_elem, n_samples, uvalue, t, &
+         w, d, dd, dw, oa)
+      !! One pass: unary partial, multiply partial and both reductions.
+      integer, intent(in) :: op
+      integer, intent(in) :: n_elem
+      integer, intent(in) :: n_samples
+      real(real32), intent(in) :: uvalue
+      real(real32), dimension(:,:), intent(in) :: t
+      real(real32), dimension(:,:), intent(in) :: w
+      real(real32), dimension(:,:), intent(in) :: d
+      real(real32), dimension(:,:), intent(out) :: dd
+      real(real32), dimension(:), intent(inout) :: dw
+      real(real32), dimension(:), intent(inout) :: oa
+      real(real32) :: av
+      integer :: i, s
+
+      select case(op)
+      case(1)
+         do s = 1, n_samples
+            !$omp simd
+            do i = 1, n_elem
+               av = uvalue * (1.0_real32 - t(i,s) * t(i,s))
+               dd(i,s) = av * w(i,1)
+               dw(i) = dw(i) + av * d(i,1)
+               oa(i) = oa(i) + av
+            end do
+         end do
+      case(2)
+         do s = 1, n_samples
+            !$omp simd
+            do i = 1, n_elem
+               av = uvalue * t(i,s) * 2.0_real32
+               dd(i,s) = av * w(i,1)
+               dw(i) = dw(i) + av * d(i,1)
+               oa(i) = oa(i) + av
+            end do
+         end do
+      case(3)
+         do s = 1, n_samples
+            !$omp simd
+            do i = 1, n_elem
+               av = uvalue * t(i,s)
+               dd(i,s) = av * w(i,1)
+               dw(i) = dw(i) + av * d(i,1)
+               oa(i) = oa(i) + av
+            end do
+         end do
+      case default
+         do s = 1, n_samples
+            !$omp simd
+            do i = 1, n_elem
+               av = -uvalue
+               dd(i,s) = av * w(i,1)
+               dw(i) = dw(i) + av * d(i,1)
+               oa(i) = oa(i) + av
+            end do
+         end do
+      end select
+    end subroutine unary_add_mult_kernel
+
+  end subroutine fuse_uniform_unary
+!###############################################################################
+
+
+!###############################################################################
+  subroutine add_to_gradient(grad, values)
+    !! Adds values to a gradient accumulator, overwriting stale contents.
+    !!
+    !! The first contribution of a pass overwrites the accumulator, so a pass
+    !! never has to zero (or read) the gradient array first. Later
+    !! contributions from other paths add to it.
+    type(array_type), intent(inout) :: grad
+    !! Gradient accumulator
+    real(real32), dimension(:,:), intent(in) :: values
+    !! Contribution
+
+    integer :: i, n, s
+
+    n = min(size(grad%store, 2), size(values, 2))
+#ifdef DIFFSTRUC_SLOW_REVERSE
+    do s = 1, n
+       !$omp simd
+       do i = 1, size(grad%store, 1)
+          grad%store(i,s) = grad%store(i,s) + values(i,s)
+       end do
+    end do
+#else
+    if(grad%phase /= accumulate_phase) then
+       do s = 1, n
+          !$omp simd
+          do i = 1, size(grad%store, 1)
+             grad%store(i,s) = values(i,s)
           end do
-       end if
-
-       ! Fast path: leaf node with existing gradient
-       if(.not. needs_recurse .and. associated(array%grad))then
-          array%grad%is_temporary = .true.
-          do concurrent( i = 1 : n_elem )
-             array%grad%val(i,1) = array%grad%val(i,1) + out_grad(i,1)
-          end do
-#ifdef __flang__
-          deallocate(out_grad)
-#endif
-          return
-       end if
+       end do
+       grad%phase = accumulate_phase
     else
-       !----------------------------------------------------------------------
-       ! Standard path: compute full gradient then reduce
-       !----------------------------------------------------------------------
-#ifdef __flang__
-       allocate(grad(n_elem, num_samples))
+       do s = 1, n
+          !$omp simd
+          do i = 1, size(grad%store, 1)
+             grad%store(i,s) = grad%store(i,s) + values(i,s)
+          end do
+       end do
+    end if
 #endif
-       if(is_left_operand)then
-          call parent%get_partial_left_val(upstream_grad, grad)
-       else
-          call parent%get_partial_right_val(upstream_grad, grad)
-       end if
+  end subroutine add_to_gradient
+!###############################################################################
 
-       ! Fast path: leaf node with existing gradient — direct accumulation
-       if(.not. needs_recurse .and. associated(array%grad))then
-          array%grad%is_temporary = .true.
-          if(num_samples .eq. 1)then
-             if(has_direction)then
-                do concurrent( i = 1 : n_elem )
-                   array%grad%val(i,1) = array%grad%val(i,1) + &
-                        grad(i,1) * array%direction(i)
+
+!###############################################################################
+  recursive subroutine accumulate_side(node, child, side, upstream, depth, &
+       uniform, uvalue)
+    !! Accumulates the contribution of one operand and recurses into it.
+    !!
+    !! Three paths, in order of cost:
+    !!
+    !! 1. A non-sample-dependent operand whose operation has a sum-reduced
+    !!    value partial: the reduced gradient is written straight into the
+    !!    operand's accumulator, so no (elements x samples) buffer exists.
+    !! 2. A value-level partial evaluated into one pooled scratch buffer.
+    !! 3. The graph-building partial, used for layouts the value-level
+    !!    procedures do not cover (matmul, outer products, ...).
+    type(array_type), intent(inout), target :: node
+    !! Parent operation node
+    type(array_type), pointer :: child
+    !! The operand (may be null)
+    integer, intent(in) :: side
+    !! 1 for the left operand, 2 for the right operand
+    real(real32), dimension(:,:), intent(in) :: upstream
+    !! Gradient of the parent's value
+    integer, intent(in) :: depth
+    !! Current recursion depth
+    logical, intent(in), optional :: uniform
+    !! Whether the upstream gradient is the same value at every element
+    real(real32), intent(in), optional :: uvalue
+    !! That value, when `uniform` is present and true
+
+    ! Local variables
+    type(array_type) :: tmp
+    type(array_type), pointer :: upnode, nleft
+    type(array_context_type) :: ctx
+    real(real32), dimension(:, :), pointer :: pval
+    real(real32), dimension(:, :), pointer :: reduced
+    real(real32), dimension(:, :), allocatable :: partial
+    real(real32), dimension(:), allocatable :: column
+    integer :: i, n_elem, ncols, n_samples, s
+    logical :: has_direction, value_ok, sum_ok, needs_recurse, done
+
+    if(.not. associated(child)) return
+    if(.not. child%requires_grad) return
+
+    n_elem = child%size
+    n_samples = max(size(child%val, 2), size(upstream, 2))
+    has_direction = allocated(child%direction)
+    needs_recurse = associated(child%left_operand) .or. &
+         associated(child%right_operand)
+    ctx = context_of_node(child)
+
+    if(side == 1) then
+       value_ok = associated(node%get_partial_left_val)
+       sum_ok = associated(node%get_partial_left_val_sum)
+    else
+       value_ok = associated(node%get_partial_right_val)
+       sum_ok = associated(node%get_partial_right_val_sum)
+    end if
+    value_ok = value_ok .and. has_value_partial(node%operation)
+    ! The sum-reduced partials of matmul write a vector of the operand's
+    ! element count, which is exactly the layout a non-sample-dependent operand
+    ! needs; they are usable even though the full value partial is not.
+    sum_ok = sum_ok .and. (has_value_partial(node%operation) .or. &
+         has_sum_partial(node%operation))
+#ifdef DIFFSTRUC_SLOW_REVERSE
+    ! Benchmark reference path: the pre-optimisation engine, which built a
+    ! derivative node for every partial instead of evaluating values directly.
+    value_ok = .false.
+    sum_ok = .false.
+#endif
+
+    ! Fused uniform upstream: a scalar loss (`sum(y)`, `mean(y)`, `sum(y, dim)`
+    ! collapsing to one element) makes the partial a single value. Consuming
+    ! that value directly saves materialising a full broadcast buffer and then
+    ! reading it back.
+#ifndef DIFFSTRUC_SLOW_REVERSE
+    if(present(uniform)) then
+       if(uniform .and. .not. has_direction .and. present(uvalue)) then
+          select case(trim(node%operation))
+          case('sum_all_array')
+             if(is_variable(child)) then
+                child%grad => ensure_gradient(ctx, child, 1)
+                if(child%grad%phase /= accumulate_phase) then
+                   child%grad%val(:, 1) = uvalue * real(n_samples, real32)
+                   child%grad%phase = accumulate_phase
+                else
+                   child%grad%val(:, 1) = child%grad%val(:, 1) + &
+                        uvalue * real(n_samples, real32)
+                end if
+             end if
+             if(needs_recurse) then
+                call reverse_accumulate(child, upstream, depth + 1, &
+                     .true., uvalue)
+             end if
+             return
+          case('tanh', 'squared', 'exp', 'negate')
+             ! A unary node whose operand is `multiply(w, d) + other` with a
+             ! broadcast `w` is the common chain shape. Evaluate the unary
+             ! partial, the multiply partial and both reductions in one pass.
+#ifndef DIFFSTRUC_NO_FUSE
+             call fuse_uniform_unary(node, child, uvalue, n_elem, n_samples, &
+                  depth, done)
+             if(done) return
+#endif
+             pval => acquire_scratch(ctx, [n_elem, n_samples])
+             select case(trim(node%operation))
+             case('tanh')
+                do s = 1, n_samples
+                   !$omp simd
+                   do i = 1, n_elem
+                      pval(i,s) = uvalue * &
+                           (1.0_real32 - node%val(i,s) * node%val(i,s))
+                   end do
                 end do
+             case('squared')
+                ! The derivative of x*x is 2*x, i.e. twice the *operand* value.
+                nleft => node%left_operand
+                do s = 1, n_samples
+                   !$omp simd
+                   do i = 1, n_elem
+                      pval(i,s) = uvalue * nleft%val(i,s) * 2.0_real32
+                   end do
+                end do
+             case('exp')
+                do s = 1, n_samples
+                   !$omp simd
+                   do i = 1, n_elem
+                      pval(i,s) = uvalue * node%val(i,s)
+                   end do
+                end do
+             case default
+                do s = 1, n_samples
+                   !$omp simd
+                   do i = 1, n_elem
+                      pval(i,s) = -uvalue
+                   end do
+                end do
+             end select
+             if(child%is_sample_dependent .and. n_samples > 1) then
+                if(is_variable(child)) then
+                   child%grad => ensure_gradient(ctx, child, n_samples)
+                   call add_to_gradient(child%grad, pval)
+                end if
+                if(needs_recurse) call reverse_accumulate(child, pval, depth + 1)
              else
-                do concurrent( i = 1 : n_elem )
-                   array%grad%val(i,1) = array%grad%val(i,1) + grad(i,1)
+                allocate(column(n_elem))
+                column = sum(pval, dim=2)
+                if(is_variable(child)) then
+                   child%grad => ensure_gradient(ctx, child, 1)
+                   call add_to_gradient(child%grad, reshape(column, [n_elem, 1]))
+                end if
+                if(needs_recurse) call reverse_accumulate(child, &
+                     reshape(column, [n_elem, 1]), depth + 1)
+                deallocate(column)
+             end if
+             call release_scratch(ctx, pval)
+             return
+          end select
+       end if
+    end if
+#endif
+
+    ! Addition passes the upstream gradient through unchanged, so the operand
+    ! can consume it directly: no partial buffer is needed at all.
+#ifndef DIFFSTRUC_SLOW_REVERSE
+    if(trim(node%operation) == 'add') then
+       if(has_direction .or. (.not. child%is_sample_dependent .and. &
+            n_samples > 1)) then
+          ! fall through to the buffered value path, which scales the values
+       else
+          if(is_variable(child)) then
+             child%grad => ensure_gradient(ctx, child, max(1, n_samples))
+             if(child%grad%phase /= accumulate_phase) then
+                ncols = min(n_samples, size(child%grad%store, 2))
+                do s = 1, ncols
+                   !$omp simd
+                   do i = 1, size(child%grad%store, 1)
+                      child%grad%store(i,s) = upstream(i,s)
+                   end do
+                end do
+                child%grad%phase = accumulate_phase
+             else
+                call add_to_gradient(child%grad, upstream)
+             end if
+          end if
+          if(needs_recurse) call reverse_accumulate(child, upstream, depth + 1)
+          return
+       end if
+    end if
+#endif
+
+    ! Path 1: reduced accumulation directly into the accumulator.
+    if(sum_ok .and. .not. has_direction .and. n_samples > 1 .and. &
+         .not. child%is_sample_dependent) then
+#ifndef DIFFSTRUC_SLOW_REVERSE
+       if(is_variable(child)) then
+          child%grad => ensure_gradient(ctx, child, 1)
+          if(child%grad%phase /= accumulate_phase) then
+             ! First contribution of the pass: write it straight into the
+             ! accumulator instead of buffering and adding.
+             if(side == 1) then
+                call node%get_partial_left_val_sum(upstream, child%grad%val(:, 1))
+             else
+                call node%get_partial_right_val_sum(upstream, child%grad%val(:, 1))
+             end if
+             child%grad%phase = accumulate_phase
+             if(needs_recurse) call reverse_accumulate(child, &
+                  spread(child%grad%val(:, 1), 2, 1), depth + 1)
+             return
+          end if
+       end if
+#endif
+       reduced => acquire_scratch(ctx, [n_elem, 1])
+       if(side == 1) then
+          call node%get_partial_left_val_sum(upstream, reduced(:, 1))
+       else
+          call node%get_partial_right_val_sum(upstream, reduced(:, 1))
+       end if
+       if(is_variable(child)) call add_to_gradient(child%grad, reduced)
+       if(needs_recurse) call reverse_accumulate(child, reduced, depth + 1)
+       call release_scratch(ctx, reduced)
+       return
+    end if
+
+    ! Path 2: value-level partial into one pooled scratch buffer.
+    if(value_ok) then
+       ! First contribution to a variable whose accumulator already has the
+       ! right width can be written straight into the accumulator, which saves
+       ! a buffer and a separate add pass.
+#ifndef DIFFSTRUC_SLOW_REVERSE
+       if(is_variable(child)) then
+          child%grad => ensure_gradient(ctx, child, max(1, n_samples))
+          if(child%grad%phase /= accumulate_phase .and. &
+               n_samples == size(child%grad%val, 2)) then
+             if(side == 1) then
+                call node%get_partial_left_val(upstream, child%grad%val)
+             else
+                call node%get_partial_right_val(upstream, child%grad%val)
+             end if
+             if(has_direction) then
+                do s = 1, n_samples
+                   child%grad%val(:, s) = child%grad%val(:, s) * child%direction
                 end do
              end if
-          else if(.not. has_direction)then
-             do concurrent( s = 1 : num_samples, i = 1 : n_elem )
-                array%grad%val(i,1) = array%grad%val(i,1) + grad(i,s)
-             end do
-          else
-#ifdef __flang__
-             allocate(out_grad(n_elem, 1))
-#endif
-             out_grad(:,1) = grad(:,1)
-             do concurrent( s = 2 : num_samples, i = 1 : n_elem )
-                out_grad(i,1) = out_grad(i,1) + grad(i,s)
-             end do
-             do concurrent( i = 1 : n_elem )
-                array%grad%val(i,1) = array%grad%val(i,1) + &
-                     out_grad(i,1) * array%direction(i)
-             end do
-#ifdef __flang__
-             deallocate(out_grad)
-#endif
+             child%grad%phase = accumulate_phase
+             if(needs_recurse) call reverse_accumulate(child, &
+                  child%grad%val, depth + 1)
+             return
           end if
-#ifdef __flang__
-          deallocate(grad)
-#endif
-          return
        end if
-
-       ! General path: compute out_grad with reduction
-#ifdef __flang__
-       allocate(out_grad(n_elem, 1))
 #endif
-       if(num_samples .eq. 1)then
-          if(has_direction)then
-             do concurrent( i = 1 : n_elem )
-                out_grad(i,1) = grad(i,1) * array%direction(i)
-             end do
-          else
-             out_grad(:,1) = grad(:,1)
-          end if
+       pval => acquire_scratch(ctx, [n_elem, n_samples])
+       if(side == 1) then
+          call node%get_partial_left_val(upstream, pval)
        else
-          out_grad(:,1) = grad(:,1)
-          do concurrent( s = 2 : num_samples, i = 1 : n_elem )
-             out_grad(i,1) = out_grad(i,1) + grad(i,s)
-          end do
-          if(has_direction)then
-             do concurrent( i = 1 : n_elem )
-                out_grad(i,1) = out_grad(i,1) * array%direction(i)
-             end do
-          end if
+          call node%get_partial_right_val(upstream, pval)
        end if
-
-       ! Free large workspace BEFORE recursion
-#ifdef __flang__
-       deallocate(grad)
-#endif
-    end if
-
-    ! Accumulate gradient
-    if(.not. associated(array%grad))then
-       allocate(array%grad)
-       call array%grad%allocate(array_shape=[array%shape, 1])
-       array%grad%val = out_grad
-       array%grad%is_scalar = array%is_scalar
-       array%grad%is_sample_dependent = array%is_sample_dependent
-       array%grad%requires_grad = .not. array%is_scalar
-       array%grad%grad => null()
-       array%grad%owns_gradient = .false.
-       array%owns_gradient = .true.
-       array%grad%is_temporary = array%is_temporary
-    else
-       array%grad%is_temporary = .true.
-       do concurrent( i = 1 : n_elem )
-          array%grad%val(i,1) = array%grad%val(i,1) + out_grad(i,1)
-       end do
-    end if
-
-    ! Recurse if needed
-    if(needs_recurse)then
-       call reverse_mode(array, out_grad, depth+1)
-    end if
-  end subroutine accumulate_gradient_single
-!###############################################################################
-
-
-!###############################################################################
-  recursive subroutine accumulate_gradient_samples( &
-       array, parent, upstream_grad, num_samples, is_left_operand, depth &
-  )
-    !! Accumulate gradient for array - optimized with fused direction+accumulate
-    implicit none
-    class(array_type), intent(inout) :: array
-    class(array_type), intent(inout) :: parent
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    integer, intent(in) :: num_samples
-    logical, intent(in) :: is_left_operand
-    integer, intent(in) :: depth
-
-    integer :: s, i, n_elem, n_samples_actual
-#ifdef __flang__
-    real(real32), dimension(:, :), allocatable :: grad
-#else
-    real(real32), dimension(size(array%val, 1), num_samples) :: grad
-#endif
-    logical :: has_direction, needs_recurse
-
-    ! Cache array dimensions
-    n_elem = size(array%val, 1)
-
-    ! Check direction once
-    has_direction = allocated(array%direction)
-    if(has_direction) has_direction = (size(array%direction).gt.0)
-
-    ! Check recursion need
-    needs_recurse = associated(array%left_operand) .or. &
-         associated(array%right_operand)
-
-    ! Direct-write fast path: first gradient can be written straight into
-    ! persistent storage, then optionally scaled and recursed from there.
-    if(.not. associated(array%grad))then
-       allocate(array%grad)
-       call array%grad%allocate(array_shape=[array%shape, num_samples])
-       if(is_left_operand)then
-          call parent%get_partial_left_val(upstream_grad, array%grad%val)
-       else
-          call parent%get_partial_right_val(upstream_grad, array%grad%val)
-       end if
-       if(has_direction)then
-          do concurrent( s = 1 : num_samples, i = 1 : n_elem )
-             array%grad%val(i,s) = array%grad%val(i,s) * array%direction(i)
+       if(has_direction) then
+          do s = 1, n_samples
+             pval(:, s) = pval(:, s) * child%direction
           end do
        end if
-       array%grad%is_scalar = array%is_scalar
-       array%grad%is_sample_dependent = array%is_sample_dependent
-       array%grad%requires_grad = .not. array%is_scalar
-       array%grad%grad => null()
-       array%grad%owns_gradient = .false.
-       array%owns_gradient = .true.
-       array%grad%is_temporary = array%is_temporary
-       if(needs_recurse) call reverse_mode(array, array%grad%val, depth+1)
+       if(child%is_sample_dependent .and. n_samples > 1) then
+          if(is_variable(child)) then
+             child%grad => ensure_gradient(ctx, child, n_samples)
+             call add_to_gradient(child%grad, pval)
+          end if
+          if(needs_recurse) call reverse_accumulate(child, pval, depth + 1)
+       else
+          allocate(column(n_elem))
+          column = sum(pval, dim=2)
+          if(is_variable(child)) then
+             child%grad => ensure_gradient(ctx, child, 1)
+             call add_to_gradient(child%grad, reshape(column, [n_elem, 1]))
+          end if
+          if(needs_recurse) call reverse_accumulate(child, &
+               reshape(column, [n_elem, 1]), depth + 1)
+          deallocate(column)
+       end if
+       call release_scratch(ctx, pval)
        return
     end if
 
-    ! General path: compute partial into temp grad array
-#ifdef __flang__
-    allocate(grad(n_elem, num_samples))
-#endif
-    if(is_left_operand)then
-       call parent%get_partial_left_val(upstream_grad, grad)
+    ! Path 3: graph-building partial (any layout).
+    upnode => allocate_value_storage(ctx, 1, &
+         [size(upstream, 1), size(upstream, 2)])
+    upnode%val = upstream
+    if(side == 1) then
+       tmp = node%get_partial_left(upnode)
     else
-       call parent%get_partial_right_val(upstream_grad, grad)
+       tmp = node%get_partial_right(upnode)
+    end if
+    pval => null()
+    if(associated(tmp%val)) pval => tmp%val
+    if(.not. associated(pval)) return
+
+    if(size(pval, 1) /= child%size) then
+       allocate(partial(child%size, n_samples))
+       partial = 0.0_real32
+       call partial_values(node, upstream, side, partial)
+    else
+       allocate(partial(size(pval, 1), size(pval, 2)))
+       partial = pval
+    end if
+    pval => null()
+
+    if(has_direction) then
+       n_samples = size(partial, 2)
+       do s = 1, n_samples
+          partial(:, s) = partial(:, s) * child%direction
+       end do
     end if
 
-    ! Leaf node fast path: fuse direction into accumulation, skip grad modification
-    if(.not. needs_recurse .and. has_direction)then
-       if(.not. associated(array%grad))then
-          allocate(array%grad)
-          call array%grad%allocate(array_shape=[array%shape, size(array%val,2)])
-          do concurrent( s = 1 : num_samples, i = 1 : n_elem )
-             array%grad%val(i,s) = grad(i,s) * array%direction(i)
-          end do
-          array%grad%is_scalar = array%is_scalar
-          array%grad%is_sample_dependent = array%is_sample_dependent
-          array%grad%requires_grad = .not. array%is_scalar
-          array%grad%grad => null()
-          array%grad%owns_gradient = .false.
-          array%owns_gradient = .true.
-          array%grad%is_temporary = array%is_temporary
+    n_elem = size(partial, 1)
+    n_samples = size(partial, 2)
+    if(child%is_sample_dependent .and. n_samples > 1) then
+       if(is_variable(child)) then
+          child%grad => ensure_gradient(ctx, child, n_samples)
+          call add_to_gradient(child%grad, partial)
+       end if
+       if(needs_recurse) call reverse_accumulate(child, partial, depth + 1)
+    else
+       if(is_variable(child)) then
+          child%grad => ensure_gradient(ctx, child, 1)
+          allocate(column(n_elem))
+          column = sum(partial, dim=2)
+          call add_to_gradient(child%grad, reshape(column, [n_elem, 1]))
+          deallocate(column)
+       end if
+       if(needs_recurse) then
+          partial = spread(sum(partial, dim=2), 2, 1)
+          call reverse_accumulate(child, partial, depth + 1)
+       end if
+    end if
+  end subroutine accumulate_side
+
+
+!###############################################################################
+  pure logical function has_sum_partial(operation)
+    !! Whether a sum-reduced value partial is available for the operation.
+    character(len=*), intent(in) :: operation
+
+    select case(trim(operation))
+    case('matmul', 'matmul_scalar')
+       has_sum_partial = .true.
+    case default
+       has_sum_partial = .false.
+    end select
+  end function has_sum_partial
+!###############################################################################
+
+
+!###############################################################################
+  pure logical function has_value_partial(operation)
+    !! Whether a value-level partial derivative is available and matches the
+    !! operand's storage layout for the given operation.
+    character(len=*), intent(in) :: operation
+    !! Operation name of the node
+
+    select case(trim(operation))
+    case('add', 'subtract', 'negate', 'multiply', 'divide', 'power', &
+         'power_scalar', 'scalar_power', 'exp', 'log', 'sin', 'cos', 'tan', &
+         'tanh', 'abs', 'sqrt', 'sigmoid', 'squared', 'cubed', 'log10', &
+         'gaussian', 'sum_array', 'sum_all_array', 'mean_array', &
+         'mean_all_array', 'multiply_scalar', 'multiply_real2d', &
+         'multiply_logical', 'divide_scalar', 'divide_real1d', &
+         'scalar_divide', 'subtract_scalar')
+       has_value_partial = .true.
+    case default
+       has_value_partial = .false.
+    end select
+  end function has_value_partial
+!###############################################################################
+
+
+!###############################################################################
+  function ensure_gradient(ctx, node, n_samples) result(grad)
+    !! Ensures a variable has a gradient accumulator of the given width.
+    type(array_context_type), intent(in) :: ctx
+    !! The owning context
+    type(array_type), intent(inout), target :: node
+    !! The variable
+    integer, intent(in) :: n_samples
+    !! Number of samples the accumulator holds
+    type(array_type), pointer :: grad
+    !! The accumulator
+
+    if(associated(node%grad)) then
+       grad => node%grad
+       return
+    end if
+    grad => allocate_value_storage(ctx, 1, [node%shape, max(1, n_samples)])
+    grad%is_scalar = node%is_scalar
+    grad%is_sample_dependent = node%is_sample_dependent
+    grad%requires_grad = .not. node%is_scalar
+    grad%operation = 'none'
+    grad%val = 0.0_real32
+    node%grad => grad
+  end function ensure_gradient
+!###############################################################################
+
+
+!###############################################################################
+  function context_of_node(node) result(ctx)
+    !! The context that owns a record.
+    type(array_type), intent(in) :: node
+    !! The record
+    type(array_context_type) :: ctx
+    !! Its context
+
+    ctx%slot = max(1, min(max_contexts, node%ctx))
+    ctx%gen = node%gen
+  end function context_of_node
+!###############################################################################
+
+
+!###############################################################################
+  subroutine partial_values(node, upstream, side, partial)
+    !! Evaluates a node's partial derivative numerically into a buffer.
+    type(array_type), intent(inout), target :: node
+    !! Operation node
+    real(real32), dimension(:,:), intent(in) :: upstream
+    !! Gradient of the node's value
+    integer, intent(in) :: side
+    !! Which operand
+    real(real32), dimension(:,:), intent(out) :: partial
+    !! Receives the partial derivative
+
+    ! Local variables
+    type(array_type) :: tmp
+    type(array_type), pointer :: handle
+    type(array_context_type) :: ctx
+    logical :: has_val_partial
+
+    if(side == 1) then
+       has_val_partial = associated(node%get_partial_left_val)
+    else
+       has_val_partial = associated(node%get_partial_right_val)
+    end if
+
+    if(has_val_partial) then
+       if(side == 1) then
+          call node%get_partial_left_val(upstream, partial)
        else
-          array%grad%is_temporary = .true.
-          n_samples_actual = size(array%grad%val, 2)
-          do concurrent( s = 1 : n_samples_actual, i = 1 : n_elem )
-             array%grad%val(i,s) = array%grad%val(i,s) + &
-                  grad(i,s) * array%direction(i)
-          end do
+          call node%get_partial_right_val(upstream, partial)
        end if
        return
     end if
 
-    ! Apply directional derivative in-place (needed for recursion)
-    if(has_direction)then
-       do concurrent( s = 1 : num_samples, i = 1 : n_elem )
-          grad(i, s) = grad(i, s) * array%direction(i)
-       end do
-    end if
 
-    ! Accumulate gradient
-    if(.not. associated(array%grad))then
-       allocate(array%grad)
-       call array%grad%allocate(array_shape=[array%shape, size(array%val,2)])
-       array%grad%val = grad
-       array%grad%is_scalar = array%is_scalar
-       array%grad%is_sample_dependent = array%is_sample_dependent
-       array%grad%requires_grad = .not. array%is_scalar
-       array%grad%grad => null()
-       array%grad%owns_gradient = .false.
-       array%owns_gradient = .true.
-       array%grad%is_temporary = array%is_temporary
+    ! Fall back to the graph-building partial derivative.
+    scratch_nodes_created = .true.
+    ctx = context_of_node(node)
+    handle => allocate_value_storage(ctx, 1, &
+         [size(upstream, 1), size(upstream, 2)])
+    handle%val = upstream
+    if(side == 1) then
+       tmp = node%get_partial_left(handle)
     else
-       ! In-place addition
-       array%grad%is_temporary = .true.
-       n_samples_actual = size(array%grad%val, 2)
-       do concurrent( s = 1 : n_samples_actual, i = 1 : n_elem )
-          array%grad%val(i,s) = array%grad%val(i,s) + grad(i,s)
-       end do
+       tmp = node%get_partial_right(handle)
     end if
-
-    ! Recurse if needed
-    if(needs_recurse)then
-       call reverse_mode(array, grad, depth+1)
-    end if
-  end subroutine accumulate_gradient_samples
+    partial = tmp%val
+  end subroutine partial_values
 !###############################################################################
-
-
-
-!##############################################################################!
-! * * * * * * * * * * * * * * * * * * *  * * * * * * * * * * * * * * * * * * * !
-!##############################################################################!
 
 
 !###############################################################################
   module subroutine zero_grad(this)
-    !! Zero the gradients of this array
-    implicit none
+    !! Zeroes this array's gradient.
     class(array_type), intent(inout) :: this
+    !! Handle whose gradient is zeroed
 
-    if(associated(this%grad))then
-       if(allocated(this%grad%val)) this%grad%val = 0.0_real32
+    ! Local variables
+    type(array_type), pointer :: node
+
+    node => canonical(this)
+    if(associated(node)) then
+       if(associated(node%grad)) then
+          node%grad%val = 0.0_real32
+          node%grad%phase = 0
+       end if
     end if
   end subroutine zero_grad
 !###############################################################################
@@ -1207,2467 +1136,840 @@ contains
 
 !###############################################################################
   recursive module subroutine zero_all_grads(this)
-    !! Zero the gradients of this array
-    implicit none
+    !! Zeroes the gradients of every node reachable from this array.
     class(array_type), intent(inout) :: this
+    !! Root of the graph
 
-    if(associated(this%left_operand))then
-       call this%left_operand%zero_all_grads()
-    end if
-    if(associated(this%right_operand))then
-       call this%right_operand%zero_all_grads()
-    end if
-    if(associated(this%grad))then
-       if(allocated(this%grad%val)) this%grad%val = 0.0_real32
-    end if
+    ! Local variables
+    type(array_type), pointer :: node
+    integer :: visit
+
+    node => canonical(this)
+    if(.not. associated(node)) return
+    diffstruc__visit_counter = diffstruc__visit_counter + 1
+    visit = diffstruc__visit_counter
+    call zero_grads_inner(node, visit)
   end subroutine zero_all_grads
 !###############################################################################
 
 
 !###############################################################################
-  recursive subroutine zero_all_fixed_pointer_grads(this)
-    !! Zero the gradients of all fixed-pointer nodes in the graph
-    implicit none
-    type(array_type), intent(inout) :: this
+  recursive subroutine zero_grads_inner(node, visit)
+    !! Zeroes gradients below a node, visiting each record once.
+    type(array_type), intent(inout) :: node
+    !! Current node
+    integer, intent(in) :: visit
+    !! Traversal marker
 
-    ! Use visit_tag for O(1) cycle detection
-    integer, save :: local_visit_id = 0
-
-    diffstruc__visit_counter = diffstruc__visit_counter + 1
-    local_visit_id = diffstruc__visit_counter
-    call zero_fixed_grads_inner(this, local_visit_id)
-  end subroutine zero_all_fixed_pointer_grads
-!-------------------------------------------------------------------------------
-  recursive subroutine zero_fixed_grads_inner(this, visit_id)
-    implicit none
-    type(array_type), intent(inout) :: this
-    integer, intent(in) :: visit_id
-
-    if(this%visit_tag .eq. visit_id) return
-    this%visit_tag = visit_id
-
-    if(associated(this%left_operand))then
-       call zero_fixed_grads_inner(this%left_operand, visit_id)
+    if(node%visit_tag == visit) return
+    node%visit_tag = visit
+    if(associated(node%left_operand)) call zero_grads_inner(node%left_operand, visit)
+    if(associated(node%right_operand)) call zero_grads_inner(node%right_operand, visit)
+    if(associated(node%grad)) then
+       if(associated(node%grad%val)) node%grad%val = 0.0_real32
+       node%grad%phase = 0
     end if
-    if(associated(this%right_operand))then
-       call zero_fixed_grads_inner(this%right_operand, visit_id)
-    end if
-    if(this%fix_pointer.and.associated(this%grad))then
-       if(allocated(this%grad%val)) this%grad%val = 0.0_real32
-    end if
-  end subroutine zero_fixed_grads_inner
+  end subroutine zero_grads_inner
 !###############################################################################
 
 
 !###############################################################################
-  recursive module subroutine reset_graph(this)
-    !! Reset the gradient graph of this array
-    implicit none
+  recursive subroutine mark_graph(node, visit)
+    !! Marks a graph and the gradient accumulators it references.
+    type(array_type), intent(inout), target :: node
+    !! Current node
+    integer, intent(in) :: visit
+    !! Traversal stamp
+
+    if(node%visit_tag == visit) return
+    node%visit_tag = visit
+    if(associated(node%grad)) node%grad%visit_tag = visit
+    if(associated(node%left_operand)) call mark_graph(node%left_operand, visit)
+    if(associated(node%right_operand)) call mark_graph(node%right_operand, visit)
+  end subroutine mark_graph
+!###############################################################################
+
+
+!###############################################################################
+  recursive subroutine zero_variable_grads(node, visit)
+    !! Zeroes the gradient accumulators of every variable below a node.
+    type(array_type), intent(inout) :: node
+    !! Current node
+    integer, intent(in) :: visit
+    !! Traversal marker
+
+    if(node%visit_tag == visit) return
+    node%visit_tag = visit
+    if(associated(node%left_operand)) call zero_variable_grads(node%left_operand, visit)
+    if(associated(node%right_operand)) call zero_variable_grads(node%right_operand, visit)
+    if(is_variable(node) .and. associated(node%grad)) node%grad%val = 0.0_real32
+  end subroutine zero_variable_grads
+!###############################################################################
+
+
+!###############################################################################
+  module subroutine reset_graph(this)
+    !! Releases the gradient side of this array's graph.
     class(array_type), intent(inout) :: this
+    !! Root of the graph
 
-    integer, save :: local_visit_id = 0
-
-    diffstruc__visit_counter = diffstruc__visit_counter + 1
-    local_visit_id = diffstruc__visit_counter
-    call reset_graph_inner(this, local_visit_id)
+    call reset_graph_of(this)
   end subroutine reset_graph
-!-------------------------------------------------------------------------------
-  recursive subroutine reset_graph_inner(this, visit_id)
-    implicit none
+!###############################################################################
+
+
+!###############################################################################
+  subroutine invalidate_gradients(this)
+    !! Makes every gradient accumulator in the graph stale for the next pass.
+    !!
+    !! Because a pass overwrites each accumulator on its first contribution,
+    !! clearing gradients only needs to reset a per-pass tag; no array is
+    !! touched.
     class(array_type), intent(inout) :: this
-    integer, intent(in) :: visit_id
+    !! Root of the graph
 
-    if(this%visit_tag .eq. visit_id) return
-    this%visit_tag = visit_id
+    ! Local variables
+    type(array_type), pointer :: node
+    integer :: visit
 
-    if(associated(this%left_operand))then
-       call reset_graph_inner(this%left_operand, visit_id)
-    end if
-
-    if(associated(this%right_operand))then
-       call reset_graph_inner(this%right_operand, visit_id)
-    end if
-
-    if(associated(this%grad))then
-       if(this%owns_gradient)then
-          this%grad => null()
-       else if(allocated(this%grad%val))then
-          this%grad%val = 0.0_real32
-       end if
-    end if
-
-    this%owns_gradient = .false.
-
-  end subroutine reset_graph_inner
-!###############################################################################
-
-
-!##############################################################################!
-! * * * * * * * * * * * * * * * * * * *  * * * * * * * * * * * * * * * * * * * !
-!##############################################################################!
-
-
-!###############################################################################
-! Map helper functions for graph traversal
-!###############################################################################
-  subroutine double_map_add(src_map, dst_map, src_ptr, dst_ptr)
-    !! Add pointer pair to double-array map (grow if needed)
-    implicit none
-    type(array_ptr), allocatable :: src_map(:), dst_map(:)
-    type(array_type), intent(in), target :: src_ptr, dst_ptr
-    integer :: n, i, newcap
-    if(.not. allocated(src_map)) allocate(src_map(diffstruc__init_map_cap))
-    if(.not. allocated(dst_map)) allocate(dst_map(diffstruc__init_map_cap))
-    n = size(src_map)
-    ! find first null slot
-    do i = 1, n
-       if(.not. associated(src_map(i)%p))then
-          src_map(i)%p => src_ptr
-          dst_map(i)%p => dst_ptr
-          return
-       end if
-    end do
-    ! no slot -> grow (double capacity)
-    newcap = n
-    block
-      type(array_ptr) :: src_tmp(n), dst_tmp(n)
-      src_tmp = src_map
-      dst_tmp = dst_map
-      deallocate(src_map, dst_map)
-      allocate(src_map(n + newcap))
-      allocate(dst_map(n + newcap))
-      src_map(1:n) = src_tmp
-      dst_map(1:n) = dst_tmp
-    end block
-    ! store at next free
-    src_map(n+1)%p => src_ptr
-    dst_map(n+1)%p => dst_ptr
-  end subroutine double_map_add
-!-------------------------------------------------------------------------------
-  subroutine single_map_add(map, ptr)
-    !! Add pointer to single-array map (grow if needed)
-    implicit none
-    type(array_ptr), allocatable :: map(:)
-    type(array_type), intent(in), target :: ptr
-    integer :: n, i
-
-    if(.not. allocated(map))then
-       allocate(map(diffstruc__init_map_cap))
-    end if
-    n = size(map)
-    ! find first null slot
-    do i = 1, n
-       if(.not. associated(map(i)%p))then
-          map(i)%p => ptr
-          return
-       end if
-    end do
-    ! no slot -> grow (double capacity)
-    block
-      type(array_ptr) :: tmp(n)
-      integer :: newcap
-      newcap = n
-      tmp = map
-      deallocate(map)
-      allocate(map(n + newcap))
-      map(1:n) = tmp
-    end block
-    map(n+1)%p => ptr
-  end subroutine single_map_add
-!-------------------------------------------------------------------------------
-  function map_find(map, target) result(idx)
-    !! Check if target pointer exists in single-array map
-    implicit none
-    type(array_ptr), allocatable :: map(:)
-    type(array_type), intent(in), target :: target
-    integer :: idx, n, i
-
-    idx = 0
-    if(.not. allocated(map)) return
-    n = size(map)
-    do i = 1, n
-       if(associated(map(i)%p, target))then
-          idx = i
-          return
-       end if
-    end do
-  end function map_find
-!-------------------------------------------------------------------------------
-  subroutine map_free(map)
-    !! Free array map (nullify pointers and deallocate array)
-    implicit none
-    type(array_ptr), allocatable :: map(:)
-    integer :: i
-
-    if(allocated(map))then
-       do i = 1, size(map)
-          if(associated(map(i)%p))then
-             nullify(map(i)%p)
-          end if
-       end do
-       deallocate(map)
-    end if
-  end subroutine map_free
-!-------------------------------------------------------------------------------
-  subroutine dealloc_list_append(list, count, ptr)
-    !! Append pointer to dealloc list using count-based tracking (O(1) amortized)
-    implicit none
-    type(array_ptr), allocatable, intent(inout) :: list(:)
-    integer, intent(inout) :: count
-    type(array_type), intent(in), target :: ptr
-    integer :: cap
-
-    if(.not. allocated(list))then
-       allocate(list(diffstruc__init_map_cap))
-       count = 0
-    end if
-    cap = size(list)
-    if(count .ge. cap)then
-       ! Double capacity
-       block
-         type(array_ptr) :: tmp(cap)
-         tmp = list(1:cap)
-         deallocate(list)
-         allocate(list(cap * 2))
-         list(1:cap) = tmp
-       end block
-    end if
-    count = count + 1
-    list(count)%p => ptr
-  end subroutine dealloc_list_append
+    node => canonical(this)
+    if(.not. associated(node)) return
+    diffstruc__visit_counter = diffstruc__visit_counter + 1
+    visit = diffstruc__visit_counter
+    call invalidate_inner(node, visit)
+  end subroutine invalidate_gradients
 !###############################################################################
 
 
 !###############################################################################
-  recursive subroutine nullify_graph_recursive(this, dealloc_list, dealloc_count, &
-       ignore_ownership, visit_id, dealloc_id &
-  )
-    !! Recursive helper using visit_tag for O(1) cycle detection
-    !! Collects nodes to deallocate in a second pass
-    implicit none
-    class(array_type), intent(inout), target :: this
-    type(array_ptr), allocatable, intent(inout) :: dealloc_list(:)
-    integer, intent(inout) :: dealloc_count
-    logical, intent(in) :: ignore_ownership
-    integer, intent(in) :: visit_id, dealloc_id
+  recursive subroutine invalidate_inner(node, visit)
+    !! Resets the pass tag of every accumulator in a graph.
+    type(array_type), intent(inout) :: node
+    !! Current node
+    integer, intent(in) :: visit
+    !! Traversal marker
 
-    ! O(1) visited check via tag
-    if(this%visit_tag .eq. visit_id) return
-    this%visit_tag = visit_id
+    if(node%visit_tag == visit) return
+    node%visit_tag = visit
+    if(associated(node%grad)) node%grad%phase = 0
+    if(associated(node%left_operand)) call invalidate_inner(node%left_operand, visit)
+    if(associated(node%right_operand)) call invalidate_inner(node%right_operand, visit)
+  end subroutine invalidate_inner
+!###############################################################################
 
-    ! Recurse into children
-    if(ignore_ownership)then
-       if(associated(this%left_operand))then
-          call nullify_graph_recursive( &
-               this%left_operand, dealloc_list, dealloc_count, &
-               ignore_ownership, visit_id, dealloc_id &
-          )
-       end if
-       if(associated(this%right_operand))then
-          call nullify_graph_recursive( &
-               this%right_operand, dealloc_list, dealloc_count, &
-               ignore_ownership, visit_id, dealloc_id &
-          )
-       end if
-       if(associated(this%grad))then
-          call nullify_graph_recursive( &
-               this%grad, dealloc_list, dealloc_count, &
-               ignore_ownership, visit_id, dealloc_id &
-          )
-       end if
-    else
-       if(associated(this%left_operand).and.this%owns_left_operand)then
-          call nullify_graph_recursive( &
-               this%left_operand, dealloc_list, dealloc_count, &
-               ignore_ownership, visit_id, dealloc_id &
-          )
-       end if
-       if(associated(this%right_operand).and.this%owns_right_operand)then
-          call nullify_graph_recursive( &
-               this%right_operand, dealloc_list, dealloc_count, &
-               ignore_ownership, visit_id, dealloc_id &
-          )
-       end if
-       if(associated(this%grad).and.this%owns_gradient)then
-          call nullify_graph_recursive( &
-               this%grad, dealloc_list, dealloc_count, &
-               ignore_ownership, visit_id, dealloc_id &
-          )
+
+!###############################################################################
+  subroutine reset_graph_of(this)
+    !! Implementation of `reset_graph`.
+    class(array_type), intent(inout) :: this
+    !! Root of the graph
+
+    ! Local variables
+    type(array_type), pointer :: node
+    integer :: visit
+
+    node => canonical(this)
+    if(.not. associated(node)) return
+    diffstruc__visit_counter = diffstruc__visit_counter + 1
+    visit = diffstruc__visit_counter
+    call reset_grads_inner(node, visit)
+  end subroutine reset_graph_of
+!###############################################################################
+
+
+!###############################################################################
+  recursive subroutine reset_grads_inner(node, visit)
+    !! Releases non-variable gradients and zeroes variable gradients.
+    type(array_type), intent(inout), target :: node
+    !! Current node
+    integer, intent(in) :: visit
+    !! Traversal marker
+
+    ! Local variables
+    type(array_context_type) :: ctx
+    logical :: is_var
+
+    if(node%visit_tag == visit) return
+    node%visit_tag = visit
+    is_var = is_variable(node)
+    if(associated(node%left_operand)) call reset_grads_inner(node%left_operand, visit)
+    if(associated(node%right_operand)) call reset_grads_inner(node%right_operand, visit)
+    if(associated(node%grad)) then
+       if(is_var) then
+          if(associated(node%grad%val)) node%grad%val = 0.0_real32
+          node%grad%phase = 0
+       else
+          ctx = context_of_node(node)
+          call release_node(ctx, node%grad)
+          node%grad => null()
        end if
     end if
-
-    ! Collect nodes for deallocation (use dealloc_id tag to avoid duplicates)
-    if(associated(this%left_operand))then
-       if(.not.this%left_operand%fix_pointer .and. this%owns_left_operand)then
-          if(this%left_operand%visit_tag .ne. dealloc_id)then
-             this%left_operand%visit_tag = dealloc_id
-             call dealloc_list_append(dealloc_list, dealloc_count, this%left_operand)
-          end if
-       end if
-       nullify(this%left_operand)
-    end if
-
-    if(associated(this%right_operand))then
-       if(.not.this%right_operand%fix_pointer .and. this%owns_right_operand)then
-          if(this%right_operand%visit_tag .ne. dealloc_id)then
-             this%right_operand%visit_tag = dealloc_id
-             call dealloc_list_append(dealloc_list, dealloc_count, this%right_operand)
-          end if
-       end if
-       nullify(this%right_operand)
-    end if
-
-    if(associated(this%grad))then
-       if(.not.this%grad%fix_pointer .and. this%owns_gradient)then
-          if(this%grad%visit_tag .ne. dealloc_id)then
-             this%grad%visit_tag = dealloc_id
-             call dealloc_list_append(dealloc_list, dealloc_count, this%grad)
-          end if
-       end if
-       nullify(this%grad)
-    end if
-
-    ! Reset ownership and procedure pointers
-    this%owns_left_operand = .false.
-    this%owns_right_operand = .false.
-    this%owns_gradient = .false.
-    nullify(this%get_partial_left)
-    nullify(this%get_partial_right)
-    nullify(this%get_partial_left_val)
-    nullify(this%get_partial_right_val)
-    nullify(this%get_partial_left_val_sum)
-    nullify(this%get_partial_right_val_sum)
-
-  end subroutine nullify_graph_recursive
+  end subroutine reset_grads_inner
 !###############################################################################
 
 
 !###############################################################################
   module subroutine nullify_graph(this, ignore_ownership)
-    !! Nullify graph using visit_tag for O(1) cycle detection
-    implicit none
+    !! Releases the graph structure rooted at this array.
+    !!
+    !! Operand and gradient records are returned to the context and the links
+    !! are nullified. Root variables of the graph are kept alive: they are the
+    !! persistent inputs a caller builds new expressions from. The optional
+    !! `ignore_ownership` argument is accepted for source compatibility; the
+    !! context owns every record, so ownership never restricts the release.
     class(array_type), intent(inout), target :: this
+    !! Root of the graph to release
     logical, intent(in), optional :: ignore_ownership
-    type(array_ptr), allocatable :: dealloc_list(:)
-    type(array_type), pointer :: node_to_dealloc
-    integer :: i, dealloc_count, visit_id, dealloc_id
-    logical :: ignore_ownership_
+    !! Ignored; retained for source compatibility
 
-    ignore_ownership_ = .not.this%is_forward
-    if(present(ignore_ownership)) ignore_ownership_ = ignore_ownership
+    ! Local variables
+    type(array_type), pointer :: node
+    integer :: visit
+    logical :: release_root
 
-    ! Increment global counter by 2: one for visited, one for dealloc tracking
-    diffstruc__visit_counter = diffstruc__visit_counter + 2
-    visit_id = diffstruc__visit_counter - 1
-    dealloc_id = diffstruc__visit_counter
-
-    dealloc_count = 0
-
-    ! Traverse graph with O(1) visited checks via visit_tag
-    call nullify_graph_recursive(this, dealloc_list, dealloc_count, &
-         ignore_ownership_, visit_id, dealloc_id)
-
-    ! Deallocate collected nodes
-    if(allocated(dealloc_list))then
-       do i = 1, dealloc_count
-          if(associated(dealloc_list(i)%p))then
-             node_to_dealloc => dealloc_list(i)%p
-             if(node_to_dealloc%allocated)then
-                call node_to_dealloc%deallocate()
-             end if
-             node_to_dealloc%is_temporary = .true.
-             deallocate(node_to_dealloc)
-             nullify(dealloc_list(i)%p)
-          end if
-       end do
-       deallocate(dealloc_list)
+    node => canonical(this)
+    if(.not. associated(node)) return
+    ! Decide this before the operands are released: nullifying them would make
+    ! the root look like a root variable even when it is a temporary.
+    release_root = node%is_temporary .and. .not. is_variable(node)
+    diffstruc__visit_counter = diffstruc__visit_counter + 1
+    visit = diffstruc__visit_counter
+    call release_operands(node, visit)
+    if(release_root) then
+       ! The root of the released graph is a temporary expression node: the
+       ! context takes its storage back and the handle is unbound.
+       call release_node(context_of_node(node), node)
+       this%id = 0
+       this%allocated = .false.
+       this%val => null()
+       this%grad => null()
+       this%left_operand => null()
+       this%right_operand => null()
+    else
+       call bind_handle(this, node)
     end if
-
   end subroutine nullify_graph
 !###############################################################################
 
 
 !###############################################################################
-  recursive function duplicate_pointer(input_ptr, src_map, dst_map, owns_self) &
-       result(output_ptr)
-    implicit none
-    type(array_type), target :: input_ptr
-    type(array_ptr), allocatable :: src_map(:), dst_map(:)
-    type(array_type), pointer :: output_ptr
-    logical, intent(out):: owns_self
-    integer :: idx
-    logical :: tmp_logical
+  recursive subroutine release_operands(node, visit)
+    !! Releases the operand subtrees of a node, keeping root variables.
+    type(array_type), intent(inout), target :: node
+    !! Node whose operands are released
+    integer, intent(in) :: visit
+    !! Traversal marker
+    logical :: was_variable
 
-    owns_self = .false.
-    idx = map_find(src_map, input_ptr)
-    if(idx .ne. 0)then
-       output_ptr => dst_map(idx)%p
-       return
-    elseif(input_ptr%fix_pointer)then
-       ! If pointer is fixed, do not duplicate; just return original
-       output_ptr => input_ptr
-       return
+    if(node%id <= 0) return
+    if(node%visit_tag == visit) return
+    node%visit_tag = visit
+    ! Decide before the children are released: nullifying the operands would
+    ! otherwise make every operation node look like a root variable.
+    was_variable = is_variable(node)
+    call release_child(node%left_operand, visit)
+    call release_child(node%right_operand, visit)
+    if(associated(node%grad)) then
+       if(was_variable) then
+          if(associated(node%grad%val)) node%grad%val = 0.0_real32
+       else
+          call release_operands(node%grad, visit)
+          call release_node(context_of_node(node), node%grad)
+          node%grad => null()
+       end if
     end if
+    node%get_partial_left => null()
+    node%get_partial_right => null()
+    node%get_partial_left_val => null()
+    node%get_partial_right_val => null()
+    node%get_partial_left_val_sum => null()
+    node%get_partial_right_val_sum => null()
+  end subroutine release_operands
+!###############################################################################
 
-    ! Create duplicate node (caller may want ownership policies)
-    allocate(output_ptr)
-    call output_ptr%assign_shallow(input_ptr)
-    ! Mark that output_ptr is a duplicate (so callers can deallocate later)
-    owns_self = .true.
-    output_ptr%is_temporary = .true.
 
-    ! Add to map BEFORE recursing to handle cycles / shared nodes
-    call double_map_add(src_map, dst_map, input_ptr, output_ptr)
+!###############################################################################
+  recursive subroutine release_child(child, visit)
+    !! Releases one operand subtree, keeping root variables alive.
+    type(array_type), pointer, intent(inout) :: child
+    !! The operand to release
+    integer, intent(in) :: visit
+    !! Traversal marker
+    type(array_context_type) :: ctx
 
-    ! Now recursively duplicate children (use pointer assignment to map results)
-    if(associated(input_ptr%left_operand))then
-       output_ptr%left_operand => duplicate_pointer( &
-            input_ptr%left_operand, src_map, dst_map, tmp_logical &
-       )
-       output_ptr%owns_left_operand = tmp_logical
+    if(.not. associated(child)) return
+    if(is_variable(child) .or. .not. child%is_temporary) then
+       ! Keep the variable's accumulator: the next backward pass overwrites it
+       ! on its first contribution, so nothing has to be cleared here.
+       if(associated(child%grad)) child%grad%phase = 0
+    else
+       call release_operands(child, visit)
+       ctx = context_of_node(child)
+       call release_node(ctx, child)
     end if
-    if(associated(input_ptr%right_operand))then
-       output_ptr%right_operand => duplicate_pointer( &
-            input_ptr%right_operand, src_map, dst_map, tmp_logical &
-       )
-       output_ptr%owns_right_operand = tmp_logical
-    end if
-    if(associated(input_ptr%grad))then
-       output_ptr%grad => duplicate_pointer(&
-            input_ptr%grad, src_map, dst_map, tmp_logical &
-       )
-       output_ptr%owns_gradient = .true.
-    end if
+    child => null()
+  end subroutine release_child
+!###############################################################################
 
-  end function duplicate_pointer
+
+!###############################################################################
+  module function get_ptr_from_id(this, id) result(ptr)
+    !! Finds the node of this array's graph with the given id.
+    class(array_type), intent(in), target :: this
+    !! Any handle of the graph
+    integer, intent(in) :: id
+    !! Id to look for
+    type(array_type), pointer :: ptr
+    !! The record
+
+    ! Local variables
+    type(array_context_type) :: ctx
+
+    ctx = context_of(this)
+    ptr => find_node(ctx, id)
+  end function get_ptr_from_id
 !###############################################################################
 
 
 !###############################################################################
   module function duplicate_graph(this) result(output_ptr)
-    implicit none
+    !! Deep-copies this array's computation graph.
+    !!
+    !! Every node reachable from this array is copied into a new record of the
+    !! same context. Root variables (independent inputs) are shared, so the
+    !! copy differentiates with respect to the same variables.
     class(array_type), intent(inout) :: this
-    type(array_ptr), allocatable :: src_map(:), dst_map(:)
+    !! Root of the graph to copy
     type(array_type), pointer :: output_ptr
-    logical :: tmp_logical
+    !! The copy
 
-    output_ptr => duplicate_pointer(this, src_map, dst_map, tmp_logical)
-    output_ptr%is_temporary = .true.
+    ! Local variables
+    type(array_type), pointer :: node
+    type(array_context_type) :: ctx
+    integer, allocatable :: map(:)
 
-    ! Clean up the maps
-    call map_free(src_map)
-    call map_free(dst_map)
+    node => live(this)
+    ctx = context_of(this)
+    allocate(map(max(1, node%id)))
+    map = 0
+    output_ptr => copy_node(node, ctx, map)
+
+  contains
+
+    recursive function copy_node(source, ctx, map) result(copy)
+      type(array_type), intent(in), target :: source
+      type(array_context_type), intent(in) :: ctx
+      integer, intent(inout) :: map(:)
+      type(array_type), pointer :: copy
+
+      if(is_variable(source)) then
+         copy => ctx_find(ctx, source%id)
+         return
+      end if
+      if(source%id > 0 .and. source%id <= size(map)) then
+         if(map(source%id) > 0) then
+            copy => ctx_find(ctx, map(source%id))
+            return
+         end if
+      end if
+      copy => allocate_node(ctx)
+      call clone_record(copy, source)
+      if(source%id > 0 .and. source%id <= size(map)) map(source%id) = copy%id
+      if(associated(source%left_operand)) &
+           copy%left_operand => copy_node(source%left_operand, ctx, map)
+      if(associated(source%right_operand)) &
+           copy%right_operand => copy_node(source%right_operand, ctx, map)
+      if(associated(source%grad)) &
+           copy%grad => copy_node(source%grad, ctx, map)
+    end function copy_node
 
   end function duplicate_graph
 !###############################################################################
 
 
-!##############################################################################!
-! * * * * * * * * * * * * * * * * * * *  * * * * * * * * * * * * * * * * * * * !
-!##############################################################################!
-
-
 !###############################################################################
-  recursive module function get_ptr_from_id(this, id) result(ptr)
-    use iso_c_binding
-    implicit none
-    class(array_type), intent(in), target :: this
+  function ctx_find(ctx, id) result(node)
+    !! Finds a record of a context by id.
+    type(array_context_type), intent(in) :: ctx
     integer, intent(in) :: id
-    type(array_type), pointer :: ptr
+    type(array_type), pointer :: node
 
-    ptr => null()
-    if(this%id .eq. id)then
-       ptr => this
-       return
-    end if
-    if(associated(this%left_operand))then
-       ptr => this%left_operand%get_ptr_from_id(id)
-       if(associated(ptr)) return
-    end if
-    if(associated(this%right_operand))then
-       ptr => this%right_operand%get_ptr_from_id(id)
-       if(associated(ptr)) return
-    end if
-  end function get_ptr_from_id
+    node => find_node(ctx, id)
+  end function ctx_find
 !###############################################################################
-
-
-!##############################################################################!
-! * * * * * * * * * * * * * * * * * * *  * * * * * * * * * * * * * * * * * * * !
-!##############################################################################!
-
-
-!###############################################################################
-  module subroutine detach(this)
-    !! Detach this array from the computation graph
-    implicit none
-    class(array_type), intent(inout) :: this
-
-    this%requires_grad = .false.
-    this%operation = 'none'
-    if(this%owns_left_operand.and.associated(this%left_operand))then
-       call this%left_operand%deallocate()
-       deallocate(this%left_operand)
-    end if
-    if(this%owns_right_operand.and.associated(this%right_operand))then
-       call this%right_operand%deallocate()
-       deallocate(this%right_operand)
-    end if
-    this%left_operand => null()
-    this%right_operand => null()
-    this%owns_left_operand = .false.
-    this%owns_right_operand = .false.
-  end subroutine detach
-!###############################################################################
-
-
-!##############################################################################!
-! * * * * * * * * * * * * * * * * * * *  * * * * * * * * * * * * * * * * * * * !
-!##############################################################################!
-
-
-!###############################################################################
-  pure module subroutine set_requires_grad(this, requires_grad)
-    !! Set the requires_grad flag
-    implicit none
-    class(array_type), intent(inout) :: this
-    logical, intent(in) :: requires_grad
-
-    this%requires_grad = requires_grad
-  end subroutine set_requires_grad
-!###############################################################################
-
-
-!###############################################################################
-  module subroutine set_direction(this, direction)
-    !! Set the direction for the array (for higher-order derivatives)
-    implicit none
-    class(array_type), intent(inout) :: this
-    real(real32), dimension(:), intent(in) :: direction
-
-    if(allocated(this%direction)) deallocate(this%direction)
-    if(size(this%val,1).ne.size(direction))then
-       call stop_program('Direction size does not match array size in set_direction')
-    end if
-    this%direction = direction
-
-  end subroutine set_direction
-!###############################################################################
-
-
-!##############################################################################!
-! * * * * * * * * * * * * * * * * * * *  * * * * * * * * * * * * * * * * * * * !
-!##############################################################################!
 
 
 !###############################################################################
   module subroutine print_graph(this, print_location)
-    implicit none
+    !! Prints the computation graph rooted at this array.
     class(array_type), intent(in) :: this
+    !! Root of the graph
     logical, intent(in), optional :: print_location
-    logical :: print_location_
+    !! Whether to print node addresses
 
-    if(present(print_location))then
-       print_location_ = print_location
-    else
-       print_location_ = .true.
+    ! Local variables
+    type(array_type), pointer :: node
+    logical :: show_location
+
+    show_location = .false.
+    if(present(print_location)) show_location = print_location
+    node => canonical(this)
+    if(.not. associated(node)) then
+       write(*, '(A)') 'empty graph'
+       return
     end if
-    print *, '--- Computation Graph Tree ---'
-    call print_tree(this, '')
-    print *, '--- End Graph ---'
-
-  contains
-    recursive subroutine print_tree(node, prefix)
-      class(array_type), intent(in) :: node
-      character(len=*), intent(in) :: prefix
-      character(len=1024) :: new_prefix
-      character(len=1) :: ownership_char
-      ! ownership character
-      character(len=20) :: node_addr
-
-      if(print_location_) then
-         write(node_addr, '(" @", I0)') loc(node)
-      else
-         node_addr = ''
-      end if
-      write(*,*) trim(prefix) // '└─ [' // trim(node%operation) // &
-           ']' // trim(adjustl(node_addr))
-
-      ! Print left operand
-      if(associated(node%left_operand))then
-         if(node%owns_left_operand)then
-            ownership_char = '*'
-         else
-            ownership_char = ' '
-         end if
-         if(associated(node%right_operand))then
-            new_prefix = trim(prefix) // '   ├─' // ownership_char // 'L: '
-         else
-            new_prefix = trim(prefix) // '   └─' // ownership_char // 'L: '
-         end if
-         call print_tree(node%left_operand, new_prefix)
-      end if
-
-      ! Print right operand
-      if(associated(node%right_operand))then
-         if(node%owns_right_operand)then
-            ownership_char = '*'
-         else
-            ownership_char = ' '
-         end if
-         new_prefix = trim(prefix) // '   └─' // ownership_char // 'R: '
-         call print_tree(node%right_operand, new_prefix)
-      end if
-    end subroutine print_tree
-
+    diffstruc__visit_counter = diffstruc__visit_counter + 1
+    call print_graph_inner(node, diffstruc__visit_counter, 0, show_location)
   end subroutine print_graph
 !###############################################################################
 
 
-!##############################################################################!
-! * * * * * * * * * * * * * * * * * * *  * * * * * * * * * * * * * * * * * * * !
-!##############################################################################!
+!###############################################################################
+  recursive subroutine print_graph_inner(node, visit, depth, show_location)
+    !! Prints one node and its operands.
+    type(array_type), intent(inout), target :: node
+    !! Current node
+    integer, intent(in) :: visit
+    !! Traversal marker
+    integer, intent(in) :: depth
+    !! Indentation depth
+    logical, intent(in) :: show_location
+    !! Whether to print node ids
+
+    character(len=256) :: line
+
+    if(node%visit_tag == visit) return
+    node%visit_tag = visit
+    if(show_location) then
+       write(line, '(A,I0,A,I0,A,A)') repeat(' ', depth), node%id, &
+            ' (', depth, ') ', trim(node%operation)
+    else
+       write(line, '(A,A)') repeat(' ', depth), trim(node%operation)
+    end if
+    write(*, '(A)') trim(line)
+    if(associated(node%left_operand)) &
+         call print_graph_inner(node%left_operand, visit, depth + 2, show_location)
+    if(associated(node%right_operand)) &
+         call print_graph_inner(node%right_operand, visit, depth + 2, show_location)
+  end subroutine print_graph_inner
+!###############################################################################
 
 
 !###############################################################################
-  module function add_arrays(a, b) result(c)
-    !! Add two autodiff arrays
-    implicit none
-    class(array_type), intent(in), target :: a, b
-    type(array_type), pointer :: c
-
-    integer :: i, s
-
-    ! Safely create result array
-    c => a%create_result()
-    if(b%is_sample_dependent)then
-       c%val = a%val + b%val
-    else
-       do concurrent(s = 1:size(a%val, 2), i = 1:size(a%val,1))
-          c%val(i,s) = a%val(i,s) + b%val(i,1)
-       end do
-    end if
-
-    c%get_partial_left => get_partial_add
-    c%get_partial_right => get_partial_add
-    c%get_partial_left_val => get_partial_add_val
-    c%get_partial_right_val => get_partial_add_val
-    c%get_partial_left_val_sum => get_partial_add_val_sum
-    c%get_partial_right_val_sum => get_partial_add_val_sum
-    ! Set up computation graph
-    if(a%requires_grad .or. b%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward .or. b%is_forward
-       c%operation = 'add'
-       c%left_operand => a
-       c%right_operand => b
-       c%owns_left_operand = a%is_temporary
-       c%owns_right_operand = b%is_temporary
-    end if
-  end function add_arrays
-!-------------------------------------------------------------------------------
-  module function add_real2d(a, b) result(c)
-    !! Add a real array to an autodiff array
-    implicit none
-    class(array_type), intent(in), target :: a
-    real(real32), dimension(:,:), intent(in) :: b
-    type(array_type), pointer :: c
-
-    c => a%create_result()
-    c%val = a%val + b
-
-    c%get_partial_left => get_partial_add
-    c%get_partial_left_val => get_partial_add_val
-    if(a%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward
-       c%operation = 'add'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
-    end if
-  end function add_real2d
-!-------------------------------------------------------------------------------
-  module function real2d_add(a, b) result(c)
-    !! Add a real array to an autodiff array
-    implicit none
-    real(real32), dimension(:,:), intent(in) :: a
-    class(array_type), intent(in), target :: b
-    type(array_type), pointer :: c
-
-    c => add_real2d(b, a)
-  end function real2d_add
-!-------------------------------------------------------------------------------
-  module function add_real1d(a, b) result(c)
-    !! Add a real array to an autodiff array
-    implicit none
-    class(array_type), intent(in), target :: a
-    real(real32), dimension(:), intent(in) :: b
-    type(array_type), pointer :: c
-
-    integer :: s
-
-    c => a%create_result()
-    do concurrent(s=1:size(a%val,2))
-       c%val(:,s) = a%val(:,s) + b(:)
-    end do
-
-    c%get_partial_left => get_partial_add
-    c%get_partial_left_val => get_partial_add_val
-    if(a%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward
-       c%operation = 'add'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
-    end if
-  end function add_real1d
-!-------------------------------------------------------------------------------
-  module function real1d_add(a, b) result(c)
-    !! Add a real array to an autodiff array
-    implicit none
-    real(real32), dimension(:), intent(in) :: a
-    class(array_type), intent(in), target :: b
-    type(array_type), pointer :: c
-
-    c => add_real1d(b, a)
-  end function real1d_add
-!-------------------------------------------------------------------------------
-  module function add_scalar(a, b) result(c)
-    !! Add a scalar to an autodiff array
-    implicit none
-    class(array_type), intent(in), target :: a
-    real(real32), intent(in) :: b
-    type(array_type), pointer :: c
-
-    c => a%create_result()
-    c%val = a%val + b
-
-    c%get_partial_left => get_partial_add
-    c%get_partial_left_val => get_partial_add_val
-    if(a%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward
-       c%operation = 'add'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
-    end if
-  end function add_scalar
-!-------------------------------------------------------------------------------
-  module function scalar_add(a, b) result(c)
-    !! Add a scalar to an autodiff array
-    implicit none
-    real(real32), intent(in) :: a
-    class(array_type), intent(in), target :: b
-    type(array_type), pointer :: c
-
-    c => add_scalar(b, a)
-  end function scalar_add
-!-------------------------------------------------------------------------------
-  function get_partial_add(this, upstream_grad) result(output)
-    !! Get partial derivative with respect to left operand
-    implicit none
+  module function get_partial(this, upstream_grad) result(output)
+    !! The partial derivative of this node's operation.
+    !!
+    !! This is the default forward-mode partial used when a caller asks a node
+    !! directly. Operation nodes bind their own partial procedures; for a node
+    !! without one (a variable or a constant) the derivative is the upstream
+    !! gradient itself.
     class(array_type), intent(inout) :: this
+    !! Operation node
     type(array_type), intent(in) :: upstream_grad
+    !! Gradient of the node's value
     type(array_type) :: output
+    !! The partial derivative
 
-    output = upstream_grad
-  end function get_partial_add
-!-------------------------------------------------------------------------------
-  pure subroutine get_partial_add_val(this, upstream_grad, output)
-    implicit none
-    class(array_type), intent(in) :: this
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    real(real32), dimension(:,:), intent(out) :: output
+    ! Local variables
+    type(array_type), pointer :: deriv
 
-    if(size(upstream_grad,2).ne.size(output,2))then
-       if(size(output,1).eq.1)then
-          output(1,1) = sum(upstream_grad)
-       else
-          output(:,1) = sum(upstream_grad, dim=2)
-       end if
+    if(associated(this%get_partial_left)) then
+       deriv => partial_node(this, upstream_grad, 1)
+    else if(associated(this%get_partial_right)) then
+       deriv => partial_node(this, upstream_grad, 2)
     else
-       if(size(output,1).eq.1.and.size(output,1).ne.size(upstream_grad,1))then
-          output(1,:) = sum(upstream_grad,1)
-       else
-          output = upstream_grad
-       end if
+       deriv => canonical(upstream_grad)
     end if
-  end subroutine get_partial_add_val
-!-------------------------------------------------------------------------------
-  pure subroutine get_partial_add_val_sum(this, upstream_grad, output)
-    !! Fused partial+sum for add: output(:,1) = sum_over_samples(upstream_grad)
-    implicit none
-    class(array_type), intent(in) :: this
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    real(real32), dimension(:), intent(out) :: output
-
-    integer :: s, n_samples
-
-    n_samples = size(upstream_grad, 2)
-    if(size(output,1).eq.1 .and. size(upstream_grad,1).gt.1)then
-       output(1) = sum(upstream_grad)
-    else if(n_samples .eq. 1)then
-       output(:) = upstream_grad(:,1)
-    else
-       output(:) = upstream_grad(:,1)
-       do s = 2, n_samples
-          output(:) = output(:) + upstream_grad(:,s)
-       end do
-    end if
-  end subroutine get_partial_add_val_sum
+    output = deriv
+  end function get_partial
 !###############################################################################
-
-
-!###############################################################################
-  module function subtract_arrays(a, b) result(c)
-    !! Subtract two autodiff arrays
-    implicit none
-    class(array_type), intent(in), target :: a, b
-    type(array_type), pointer :: c
-
-    integer :: i, s
-
-    c => a%create_result()
-    if(.not.b%is_sample_dependent)then
-       do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
-          c%val(i,s) = a%val(i,s) - b%val(i,1)
-       end do
-    else
-       do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
-          c%val(i,s) = a%val(i,s) - b%val(i,s)
-       end do
-    end if
-
-    c%get_partial_left => get_partial_add
-    c%get_partial_right => get_partial_negate
-    c%get_partial_left_val => get_partial_add_val
-    c%get_partial_right_val => get_partial_negate_val
-    c%get_partial_left_val_sum => get_partial_add_val_sum
-    c%get_partial_right_val_sum => get_partial_negate_val_sum
-    if(a%requires_grad .or. b%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward .or. b%is_forward
-       c%operation = 'subtract'
-       c%left_operand => a
-       c%right_operand => b
-       c%owns_left_operand = a%is_temporary
-       c%owns_right_operand = b%is_temporary
-    end if
-  end function subtract_arrays
-!-------------------------------------------------------------------------------
-  module function subtract_real2d(a, b) result(c)
-    !! Subtract a real array from an autodiff array
-    implicit none
-    class(array_type), intent(in), target :: a
-    real(real32), dimension(:,:), intent(in) :: b
-    type(array_type), pointer :: c
-
-    integer :: i, s
-
-    c => a%create_result()
-    do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
-       c%val(i,s) = a%val(i,s) - b(i,s)
-    end do
-
-    c%get_partial_left => get_partial_add
-    c%get_partial_left_val => get_partial_add_val
-    if(a%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward
-       c%operation = 'subtract_scalar'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
-    end if
-  end function subtract_real2d
-!-------------------------------------------------------------------------------
-  module function subtract_real1d(a, b) result(c)
-    !! Subtract a real array from an autodiff array
-    implicit none
-    class(array_type), intent(in), target :: a
-    real(real32), dimension(:), intent(in) :: b
-    type(array_type), pointer :: c
-
-    integer :: s
-
-    c => a%create_result()
-    do concurrent(s=1:size(a%val,2))
-       c%val(:,s) = a%val(:,s) - b(s)
-    end do
-
-    c%get_partial_left => get_partial_add
-    c%get_partial_left_val => get_partial_negate_val
-    if(a%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward
-       c%operation = 'subtract_scalar'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
-    end if
-  end function subtract_real1d
-!-------------------------------------------------------------------------------
-  module function subtract_scalar(a, b) result(c)
-    !! Subtract a scalar from an autodiff array
-    implicit none
-    class(array_type), intent(in), target :: a
-    real(real32), intent(in) :: b
-    type(array_type), pointer :: c
-
-    c => a%create_result()
-    c%val = a%val - b
-
-    c%get_partial_left => get_partial_add
-    c%get_partial_left_val => get_partial_add_val
-    if(a%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward
-       c%operation = 'subtract_scalar'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
-    end if
-  end function subtract_scalar
-!-------------------------------------------------------------------------------
-  module function scalar_subtract(a, b) result(c)
-    !! Subtract an autodiff array from a scalar
-    implicit none
-    real(real32), intent(in) :: a
-    class(array_type), intent(in), target :: b
-    type(array_type), pointer :: c
-
-    c => negate_array(b)
-    c%val = a + c%val
-
-    if(b%requires_grad)then
-       c%operation = 'subtract_scalar'
-    end if
-  end function scalar_subtract
-!-------------------------------------------------------------------------------
-  module function negate_array(a) result(c)
-    !! Negate an autodiff array
-    implicit none
-    class(array_type), intent(in), target :: a
-    type(array_type), pointer :: c
-
-    c => a%create_result()
-    c%val = -a%val
-
-    c%get_partial_left => get_partial_negate
-    c%get_partial_left_val => get_partial_negate_val
-    if(a%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward
-       c%operation = 'negate'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
-    end if
-  end function negate_array
-!-------------------------------------------------------------------------------
-  function get_partial_negate(this, upstream_grad) result(output)
-    !! Get partial derivative with respect to left operand
-    implicit none
-    class(array_type), intent(inout) :: this
-    type(array_type), intent(in) :: upstream_grad
-    type(array_type) :: output
-    type(array_type), pointer :: ptr
-
-    ptr => -upstream_grad
-    call output%assign_and_deallocate_source(ptr)
-  end function get_partial_negate
-!-------------------------------------------------------------------------------
-  pure subroutine get_partial_negate_val(this, upstream_grad, output)
-    implicit none
-    class(array_type), intent(in) :: this
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    real(real32), dimension(:,:), intent(out) :: output
-
-    if(size(upstream_grad,2).ne.size(output,2))then
-       if(size(output,1).eq.1)then
-          output(1,1) = -sum(upstream_grad)
-       else
-          output(:,1) = -sum(upstream_grad, dim=2)
-       end if
-    else
-       if(size(output,1).eq.1.and.size(output,1).ne.size(upstream_grad,1))then
-          output(1,:) = -sum(upstream_grad,1)
-       else
-          output = -upstream_grad
-       end if
-    end if
-  end subroutine get_partial_negate_val
-!-------------------------------------------------------------------------------
-  pure subroutine get_partial_negate_val_sum(this, upstream_grad, output)
-    !! Fused partial+sum for negate: output(:,1) = -sum_over_samples(upstream_grad)
-    implicit none
-    class(array_type), intent(in) :: this
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    real(real32), dimension(:), intent(out) :: output
-
-    integer :: s, n_samples
-
-    n_samples = size(upstream_grad, 2)
-    if(size(output,1).eq.1 .and. size(upstream_grad,1).gt.1)then
-       output(1) = -sum(upstream_grad)
-    else if(n_samples .eq. 1)then
-       output(:) = -upstream_grad(:,1)
-    else
-       output(:) = -upstream_grad(:,1)
-       do s = 2, n_samples
-          output(:) = output(:) - upstream_grad(:,s)
-       end do
-    end if
-  end subroutine get_partial_negate_val_sum
-!###############################################################################
-
-
-!###############################################################################
-  module function multiply_arrays(a, b) result(c)
-    !! Multiply two autodiff arrays (element-wise)
-    implicit none
-    class(array_type), intent(in), target :: a, b
-    type(array_type), pointer :: c
-
-    integer :: i, s
-
-    if(b%is_scalar)then
-       c => a%create_result()
-       c%val = a%val * b%val(1,1)
-    elseif(.not.b%is_sample_dependent)then
-       c => a%create_result()
-       do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
-          c%val(i,s) = a%val(i,s) * b%val(i,1)
-       end do
-    elseif(.not.a%is_sample_dependent)then
-       c => b%create_result()
-       do concurrent(s = 1:size(b%val,2), i = 1:size(b%val,1))
-          c%val(i,s) = a%val(1,1) * b%val(i,s)
-       end do
-    elseif(size(a%val,1).ne.size(b%val,1).and.size(a%val,2).eq.size(b%val,2))then
-       if(size(a%val,1) .eq. 1)then
-          c => b%create_result()
-          do concurrent(s = 1:size(a%val,2), i = 1:size(b%val,1))
-             c%val(i,s) = a%val(1,s) * b%val(i,s)
-          end do
-       elseif(size(b%val,1) .eq. 1)then
-          c => a%create_result()
-          do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
-             c%val(i,s) = a%val(i,s) * b%val(1,s)
-          end do
-       end if
-    else
-       c => a%create_result()
-       c%val = a%val * b%val
-    end if
-
-    c%get_partial_left => get_partial_multiply_left
-    c%get_partial_right => get_partial_multiply_right
-    c%get_partial_left_val => get_partial_multiply_left_val
-    c%get_partial_right_val => get_partial_multiply_right_val
-    c%get_partial_left_val_sum => get_partial_multiply_left_val_sum
-    c%get_partial_right_val_sum => get_partial_multiply_right_val_sum
-    if(a%requires_grad .or. b%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward .or. b%is_forward
-       c%operation = 'multiply'
-       c%left_operand => a
-       c%right_operand => b
-       c%owns_left_operand = a%is_temporary
-       c%owns_right_operand = b%is_temporary
-    end if
-  end function multiply_arrays
-!-------------------------------------------------------------------------------
-  module function multiply_real2d(a, b) result(c)
-    !! Multiply autodiff array by real array (element-wise)
-    implicit none
-    class(array_type), intent(in), target :: a
-    real(real32), dimension(:,:), intent(in) :: b
-    type(array_type), pointer :: c
-    type(array_type), pointer :: b_array
-
-    integer :: s, i
-
-    c => a%create_result()
-    do concurrent(s=1:size(a%val,2), i=1:size(a%val,1))
-       c%val(i,s) = a%val(i,s) * b(i,s)
-    end do
-
-    c%get_partial_left => get_partial_multiply_left
-    if(a%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward
-       c%operation = 'multiply_real2d'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
-    end if
-    allocate(b_array)
-    b_array%is_scalar = .false.
-    b_array%requires_grad = .false.
-    call b_array%allocate(array_shape=shape(b))
-    b_array%val(:,:) = b
-    c%right_operand => b_array
-    c%owns_right_operand = .true.
-  end function multiply_real2d
-!-------------------------------------------------------------------------------
-  module function real2d_multiply(a, b) result(c)
-    !! Multiply scalar by autodiff array
-    implicit none
-    real(real32), dimension(:,:), intent(in) :: a
-    class(array_type), intent(in), target :: b
-    type(array_type), pointer :: c
-
-    c => multiply_real2d(b, a)
-  end function real2d_multiply
-!-------------------------------------------------------------------------------
-  module function multiply_scalar(a, scalar) result(c)
-    !! Multiply autodiff array by scalar
-    implicit none
-    class(array_type), intent(in), target :: a
-    real(real32), intent(in) :: scalar
-    type(array_type), pointer :: c
-    type(array_type), pointer :: b_array
-
-    c => a%create_result()
-    c%val = a%val * scalar
-
-    c%get_partial_left => get_partial_multiply_left
-    c%get_partial_left_val => get_partial_multiply_left_val
-    c%get_partial_left_val_sum => get_partial_multiply_left_val_sum
-    if(a%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward
-       c%operation = 'multiply_scalar'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
-    end if
-    allocate(b_array)
-    b_array%is_scalar = .true.
-    b_array%requires_grad = .false.
-    call b_array%allocate(array_shape=[1, 1])
-    b_array%val(1, 1) = scalar
-    c%right_operand => b_array
-    c%owns_right_operand = .true.
-  end function multiply_scalar
-!-------------------------------------------------------------------------------
-  module function scalar_multiply(scalar, a) result(c)
-    !! Multiply scalar by autodiff array
-    implicit none
-    real(real32), intent(in) :: scalar
-    class(array_type), intent(in), target :: a
-    type(array_type), pointer :: c
-
-    c => multiply_scalar(a, scalar)
-  end function scalar_multiply
-!-------------------------------------------------------------------------------
-  module function multiply_logical(a, b) result(c)
-    !! Multiply two logical arrays (element-wise)
-    implicit none
-    class(array_type), intent(in), target :: a
-    logical, dimension(:,:), intent(in) :: b
-    type(array_type), pointer :: c
-
-    integer :: s, i
-
-    c => a%create_result()
-    do concurrent(s=1:size(a%val,2), i=1:size(a%val,1))
-       if(b(i,s))then
-          c%val(i,s) = a%val(i,s)
-       else
-          c%val(i,s) = 0._real32
-       end if
-    end do
-    c%mask = b
-
-    c%get_partial_left => get_partial_multiply_logical_left
-    c%get_partial_left_val => get_partial_multiply_logical_left_val
-    if(a%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward
-       c%operation = 'multiply_logical'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
-    end if
-
-  end function multiply_logical
-!-------------------------------------------------------------------------------
-  function get_partial_multiply_left(this, upstream_grad) result(output)
-    !! Get partial derivative with respect to left operand
-    implicit none
-    class(array_type), intent(inout) :: this
-    type(array_type), intent(in) :: upstream_grad
-    type(array_type) :: output
-    logical :: right_is_temporary_local
-    type(array_type), pointer :: ptr
-
-    right_is_temporary_local = this%right_operand%is_temporary
-    this%right_operand%is_temporary = .false.
-    if(this%right_operand%is_scalar)then
-       ptr => upstream_grad * this%right_operand%val(1,1)
-    else
-       ptr => upstream_grad * this%right_operand
-    end if
-    this%right_operand%is_temporary = right_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
-  end function get_partial_multiply_left
-!-------------------------------------------------------------------------------
-  function get_partial_multiply_right(this, upstream_grad) result(output)
-    !! Get partial derivative with respect to right operand
-    implicit none
-    class(array_type), intent(inout) :: this
-    type(array_type), intent(in) :: upstream_grad
-    type(array_type) :: output
-    logical :: left_is_temporary_local
-    type(array_type), pointer :: ptr
-
-    left_is_temporary_local = this%left_operand%is_temporary
-    this%left_operand%is_temporary = .false.
-    if(this%left_operand%is_scalar)then
-       ptr => upstream_grad * this%left_operand%val(1,1)
-    else
-       ptr => upstream_grad * this%left_operand
-    end if
-    this%left_operand%is_temporary = left_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
-  end function get_partial_multiply_right
-!-------------------------------------------------------------------------------
-  pure subroutine get_partial_multiply_left_val(this, upstream_grad, output)
-    implicit none
-    class(array_type), intent(in) :: this
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    real(real32), dimension(:,:), intent(out) :: output
-
-    integer :: i, s
-
-    if(this%right_operand%is_scalar)then
-       output = upstream_grad * this%right_operand%val(1,1)
-    elseif(.not.this%left_operand%is_sample_dependent)then
-       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
-          output(i,s) = upstream_grad(i,s) * this%right_operand%val(i,1)
-       end do
-    elseif(.not.this%right_operand%is_sample_dependent)then
-       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
-          output(i,s) = upstream_grad(i,s) * this%right_operand%val(i,1)
-       end do
-    elseif(size(upstream_grad,2).ne.size(output,2))then
-       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
-          output(i,s) = upstream_grad(i,s) * this%right_operand%val(i,1)
-       end do
-    else
-       output = upstream_grad * this%right_operand%val
-    end if
-  end subroutine get_partial_multiply_left_val
-!-------------------------------------------------------------------------------
-  pure subroutine get_partial_multiply_right_val(this, upstream_grad, output)
-    implicit none
-    class(array_type), intent(in) :: this
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    real(real32), dimension(:,:), intent(out) :: output
-
-    integer :: i, s
-
-    if(this%left_operand%is_scalar)then
-       output = upstream_grad * this%left_operand%val(1,1)
-    elseif(.not.this%left_operand%is_sample_dependent)then
-       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
-          output(i,s) = upstream_grad(i,s) * this%left_operand%val(i,1)
-       end do
-    elseif(.not.this%right_operand%is_sample_dependent)then
-       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
-          output(i,s) = upstream_grad(i,s) * this%left_operand%val(i,1)
-       end do
-    elseif(size(upstream_grad,2).ne.size(output,2))then
-       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
-          output(i,s) = upstream_grad(i,s) * this%left_operand%val(i,1)
-       end do
-    else
-       output = upstream_grad * this%left_operand%val
-    end if
-  end subroutine get_partial_multiply_right_val
-!-------------------------------------------------------------------------------
-  pure subroutine get_partial_multiply_left_val_sum(this, upstream_grad, output)
-    !! Fused partial+sum for multiply left: output(:,1) = sum_s(upstream*right_op)
-    implicit none
-    class(array_type), intent(in) :: this
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    real(real32), dimension(:), intent(out) :: output
-
-    integer :: s, n_samples
-
-    n_samples = size(upstream_grad, 2)
-    if(this%right_operand%is_scalar)then
-       output(:) = upstream_grad(:,1)
-       do s = 2, n_samples
-          output(:) = output(:) + upstream_grad(:,s)
-       end do
-       output(:) = output(:) * this%right_operand%val(1,1)
-    elseif(.not.this%left_operand%is_sample_dependent .or. &
-         .not.this%right_operand%is_sample_dependent)then
-       output(:) = upstream_grad(:,1) * this%right_operand%val(:,1)
-       do s = 2, n_samples
-          output(:) = output(:) + upstream_grad(:,s) * this%right_operand%val(:,1)
-       end do
-    else
-       output(:) = upstream_grad(:,1) * this%right_operand%val(:,1)
-       do s = 2, n_samples
-          output(:) = output(:) + upstream_grad(:,s) * this%right_operand%val(:,s)
-       end do
-    end if
-  end subroutine get_partial_multiply_left_val_sum
-!-------------------------------------------------------------------------------
-  pure subroutine get_partial_multiply_right_val_sum(this, upstream_grad, output)
-    !! Fused partial+sum for multiply right: output(:,1) = sum_s(upstream*left_op)
-    implicit none
-    class(array_type), intent(in) :: this
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    real(real32), dimension(:), intent(out) :: output
-
-    integer :: s, n_samples
-
-    n_samples = size(upstream_grad, 2)
-    if(this%left_operand%is_scalar)then
-       output(:) = upstream_grad(:,1)
-       do s = 2, n_samples
-          output(:) = output(:) + upstream_grad(:,s)
-       end do
-       output(:) = output(:) * this%left_operand%val(1,1)
-    elseif(.not.this%left_operand%is_sample_dependent .or. &
-         .not.this%right_operand%is_sample_dependent)then
-       output(:) = upstream_grad(:,1) * this%left_operand%val(:,1)
-       do s = 2, n_samples
-          output(:) = output(:) + upstream_grad(:,s) * this%left_operand%val(:,1)
-       end do
-    else
-       output(:) = upstream_grad(:,1) * this%left_operand%val(:,1)
-       do s = 2, n_samples
-          output(:) = output(:) + upstream_grad(:,s) * this%left_operand%val(:,s)
-       end do
-    end if
-  end subroutine get_partial_multiply_right_val_sum
-!-------------------------------------------------------------------------------
-  function get_partial_multiply_logical_left(this, upstream_grad) result(output)
-    implicit none
-    class(array_type), intent(inout) :: this
-    type(array_type), intent(in) :: upstream_grad
-    type(array_type) :: output
-    type(array_type), pointer :: ptr
-
-    ptr => upstream_grad * this%mask
-    call output%assign_and_deallocate_source(ptr)
-  end function get_partial_multiply_logical_left
-!-------------------------------------------------------------------------------
-  pure subroutine get_partial_multiply_logical_left_val(this, upstream_grad, output)
-    implicit none
-    class(array_type), intent(in) :: this
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    real(real32), dimension(:,:), intent(out) :: output
-
-    integer :: i, s
-
-    do concurrent(s=1:size(output,2), i=1:size(output,1))
-       if(this%mask(i,s))then
-          output(i,s) = upstream_grad(i,s)
-       else
-          output(i,s) = 0._real32
-       end if
-    end do
-  end subroutine get_partial_multiply_logical_left_val
-!###############################################################################
-
-
-!###############################################################################
-  module function divide_arrays(a, b) result(c)
-    !! Divide two autodiff arrays (element-wise)
-    implicit none
-    class(array_type), intent(in), target :: a, b
-    type(array_type), pointer :: c
-
-    integer :: i, s
-
-    if(.not.b%is_sample_dependent)then
-       c => a%create_result()
-       do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
-          c%val(i,s) = a%val(i,s) / b%val(i,1)
-       end do
-    elseif(all(shape(a%val) .eq. shape(b%val)))then
-       c => a%create_result()
-       c%val = a%val / b%val
-    elseif(size(a%val,1).ne.size(b%val,1).and.size(a%val,2).eq.size(b%val,2))then
-       if(size(a%val,1) .eq. 1)then
-          c => b%create_result()
-          do concurrent(s = 1:size(a%val,2), i = 1:size(b%val,1))
-             c%val(i,s) = a%val(1,s) / b%val(i,s)
-          end do
-       elseif(size(b%val,1) .eq. 1)then
-          c => a%create_result()
-          do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
-             c%val(i,s) = a%val(i,s) / b%val(1,s)
-          end do
-       end if
-    end if
-
-    c%get_partial_left => get_partial_divide_left
-    c%get_partial_right => get_partial_divide_right
-    c%get_partial_left_val => get_partial_divide_left_val
-    c%get_partial_right_val => get_partial_divide_right_val
-    if(a%requires_grad .or. b%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward .or. b%is_forward
-       c%operation = 'divide'
-       c%left_operand => a
-       c%right_operand => b
-       c%owns_left_operand = a%is_temporary
-       c%owns_right_operand = b%is_temporary
-    end if
-  end function divide_arrays
-!-------------------------------------------------------------------------------
-  module function divide_scalar(a, scalar) result(c)
-    !! Divide autodiff array by scalar
-    implicit none
-    class(array_type), intent(in), target :: a
-    real(real32), intent(in) :: scalar
-    type(array_type), pointer :: c
-    type(array_type), pointer :: b_array
-
-    integer :: i, s
-    real(real32) :: scalar_tmp
-
-    c => a%create_result()
-    scalar_tmp = 1._real32 / scalar
-    do concurrent(i = 1:size(a%val,1), s = 1:size(a%val,2))
-       c%val(i,s) = a%val(i,s) * scalar_tmp
-    end do
-
-    c%get_partial_left => get_partial_divide_left
-    c%get_partial_left_val => get_partial_divide_left_val
-    if(a%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward
-       c%operation = 'divide_scalar'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
-    end if
-    allocate(b_array)
-    b_array%is_scalar = .true.
-    b_array%is_sample_dependent = .false.
-    b_array%requires_grad = .false.
-    call b_array%allocate(array_shape=[1, 1])
-    b_array%val(1, 1) = scalar
-    c%right_operand => b_array
-    c%owns_right_operand = .true.
-  end function divide_scalar
-!-------------------------------------------------------------------------------
-  module function scalar_divide(scalar, a) result(c)
-    !! Divide scalar by autodiff array
-    implicit none
-    real(real32), intent(in) :: scalar
-    class(array_type), intent(in), target :: a
-    type(array_type), pointer :: c
-    type(array_type), pointer :: b_array
-
-    c => a%create_result()
-    c%val = scalar / a%val
-
-    c%get_partial_right => get_partial_divide_right
-    c%get_partial_right_val => get_partial_divide_right_val
-    if(a%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward
-       c%operation = 'scalar_divide'
-       c%right_operand => a
-       c%owns_right_operand = a%is_temporary
-    end if
-    allocate(b_array)
-    b_array%is_scalar = .true.
-    b_array%is_sample_dependent = .false.
-    b_array%requires_grad = .false.
-    call b_array%allocate(array_shape=[1, 1])
-    b_array%val(1, 1) = scalar
-    c%left_operand => b_array
-    c%owns_left_operand = .true.
-  end function scalar_divide
-!-------------------------------------------------------------------------------
-  module function divide_real1d(a, b) result(c)
-    !! Divide autodiff array by a real array
-    implicit none
-    class(array_type), intent(in), target :: a
-    real(real32), dimension(:), intent(in) :: b
-    type(array_type), pointer :: c
-    type(array_type), pointer :: b_array
-
-    integer :: i, s
-
-    c => a%create_result()
-    do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
-       c%val(i,s) = a%val(i,s) / b(s)
-    end do
-
-    c%get_partial_left => get_partial_divide_left
-    c%get_partial_left_val => get_partial_divide_left_val
-    if(a%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward
-       c%operation = 'divide_real1d'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
-    end if
-    allocate(b_array)
-    b_array%is_sample_dependent = .false.
-    b_array%requires_grad = .false.
-    call b_array%allocate(array_shape=[1, size(b)])
-    b_array%val(1,:) = b
-    c%right_operand => b_array
-    c%owns_right_operand = .true.
-  end function divide_real1d
-!-------------------------------------------------------------------------------
-  function get_partial_divide_left(this, upstream_grad) result(output)
-    !! Get partial derivative with respect to left operand
-    implicit none
-    class(array_type), intent(inout) :: this
-    type(array_type), intent(in) :: upstream_grad
-    type(array_type) :: output
-    logical :: right_is_temporary_local
-    type(array_type), pointer :: ptr
-
-    right_is_temporary_local = this%right_operand%is_temporary
-    this%right_operand%is_temporary = .false.
-    if(this%right_operand%is_scalar)then
-       ptr => upstream_grad / this%right_operand%val(1,1)
-    else
-       ptr => upstream_grad / this%right_operand
-    end if
-    this%right_operand%is_temporary = right_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
-  end function get_partial_divide_left
-!-------------------------------------------------------------------------------
-  function get_partial_divide_right(this, upstream_grad) result(output)
-    !! Get partial derivative with respect to right operand
-    implicit none
-    class(array_type), intent(inout) :: this
-    type(array_type), intent(in) :: upstream_grad
-    type(array_type) :: output
-    logical :: left_is_temporary_local, right_is_temporary_local
-    type(array_type), pointer :: ptr
-
-    left_is_temporary_local = this%left_operand%is_temporary
-    right_is_temporary_local = this%right_operand%is_temporary
-    this%left_operand%is_temporary = .false.
-    this%right_operand%is_temporary = .false.
-    if(this%left_operand%is_scalar)then
-       ptr => (-upstream_grad * this%left_operand%val(1,1)) / &
-            (this%right_operand * this%right_operand)
-    else
-       ptr => (-upstream_grad * this%left_operand) / &
-            (this%right_operand * this%right_operand)
-    end if
-    this%left_operand%is_temporary = left_is_temporary_local
-    this%right_operand%is_temporary = right_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
-  end function get_partial_divide_right
-!-------------------------------------------------------------------------------
-  pure subroutine get_partial_divide_left_val(this, upstream_grad, output)
-    implicit none
-    class(array_type), intent(in) :: this
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    real(real32), dimension(:,:), intent(out) :: output
-
-    integer :: i, s
-
-    if(this%right_operand%is_scalar)then
-       output = upstream_grad / this%right_operand%val(1,1)
-    elseif(.not.this%right_operand%is_sample_dependent)then
-       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
-          output(i,s) = upstream_grad(i,s) / this%right_operand%val(i,1)
-       end do
-    elseif(size(upstream_grad,2).ne.size(output,2))then
-       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
-          output(i,s) = upstream_grad(i,s) / this%right_operand%val(i,1)
-       end do
-    else
-       output = upstream_grad / this%right_operand%val
-    end if
-  end subroutine get_partial_divide_left_val
-!-------------------------------------------------------------------------------
-  pure subroutine get_partial_divide_right_val(this, upstream_grad, output)
-    implicit none
-    class(array_type), intent(in) :: this
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    real(real32), dimension(:,:), intent(out) :: output
-
-    integer :: i, s
-
-    if(this%left_operand%is_scalar)then
-       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
-          output(i,s) = (-upstream_grad(i,s) * this%left_operand%val(1,1)) / &
-               (this%right_operand%val(i,1) * this%right_operand%val(i,1))
-       end do
-    elseif(.not.this%left_operand%is_sample_dependent)then
-       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
-          output(i,s) = (-upstream_grad(i,s) * this%left_operand%val(i,1)) / &
-               (this%right_operand%val(i,1) * this%right_operand%val(i,1))
-       end do
-    elseif(.not.this%right_operand%is_sample_dependent)then
-       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
-          output(i,s) = (-upstream_grad(i,s) * this%left_operand%val(i,s)) / &
-               (this%right_operand%val(i,1) * this%right_operand%val(i,1))
-       end do
-    else
-       do concurrent( s = 1 : size(output,2), i = 1 : size(output,1) )
-          output(i,s) = (-upstream_grad(i,s) * this%left_operand%val(i,s)) / &
-               (this%right_operand%val(i,s) * this%right_operand%val(i,s))
-       end do
-    end if
-  end subroutine get_partial_divide_right_val
-!###############################################################################
-
-
-!###############################################################################
-  module function power_arrays(a, b) result(c)
-    !! Raise autodiff array to power of another array
-    implicit none
-    class(array_type), intent(in), target :: a, b
-    type(array_type), pointer :: c
-
-    c => a%create_result()
-    c%val = a%val ** b%val
-
-    c%get_partial_left => get_partial_power_base
-    c%get_partial_right => get_partial_power_exponent
-    if(a%requires_grad .or. b%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward .or. b%is_forward
-       c%operation = 'power'
-       c%left_operand => a
-       c%right_operand => b
-       c%owns_left_operand = a%is_temporary
-       c%owns_right_operand = b%is_temporary
-    end if
-  end function power_arrays
-!-------------------------------------------------------------------------------
-  module function power_real_scalar(a, scalar) result(c)
-    !! Raise autodiff array to scalar power
-    implicit none
-    class(array_type), intent(in), target :: a
-    real(real32), intent(in) :: scalar
-    type(array_type), pointer :: c
-    type(array_type), pointer :: b_array
-
-    integer :: i, s
-
-    c => a%create_result()
-    do concurrent(s = 1:size(a%val,2), i = 1:size(a%val,1))
-       c%val(i,s) = a%val(i,s) ** scalar
-    end do
-
-    c%get_partial_left => get_partial_power_base
-    c%get_partial_left_val => get_partial_power_base_val
-    c%get_partial_left_val_sum => get_partial_power_base_val_sum
-    if(a%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward
-       c%operation = 'power_scalar'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
-    end if
-    allocate(b_array)
-    b_array%is_scalar = .true.
-    b_array%is_sample_dependent = .false.
-    b_array%requires_grad = .false.
-    call b_array%allocate(array_shape=[1, 1])
-    b_array%val(1, 1) = scalar
-    c%right_operand => b_array
-    c%owns_right_operand = .true.
-
-  end function power_real_scalar
-!-------------------------------------------------------------------------------
-  module function power_int_scalar(a, scalar) result(c)
-    !! Raise autodiff array to scalar power
-    implicit none
-    class(array_type), intent(in), target :: a
-    integer, intent(in) :: scalar
-    type(array_type), pointer :: c
-
-    c => power_real_scalar(a, real(scalar, real32))
-  end function power_int_scalar
-!-------------------------------------------------------------------------------
-  module function scalar_power(scalar, a) result(c)
-    implicit none
-    real(real32), intent(in) :: scalar
-    class(array_type), intent(in), target :: a
-    type(array_type), pointer :: c
-    type(array_type), pointer :: b_array
-
-    c => a%create_result()
-    c%val = scalar ** a%val
-
-    c%get_partial_left => get_partial_power_base
-    if(a%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward
-       c%operation = 'scalar_power'
-       c%right_operand => a
-       c%owns_right_operand = a%is_temporary
-    end if
-    allocate(b_array)
-    b_array%is_scalar = .true.
-    b_array%is_sample_dependent = .false.
-    b_array%requires_grad = .false.
-    call b_array%allocate(array_shape=[1, 1])
-    b_array%val(1, 1) = scalar
-    c%left_operand => b_array
-    c%owns_left_operand = .true.
-
-  end function scalar_power
-!-------------------------------------------------------------------------------
-  module function int_scalar_power(scalar, a) result(c)
-    implicit none
-    integer, intent(in) :: scalar
-    class(array_type), intent(in), target :: a
-    type(array_type), pointer :: c
-
-    c => scalar_power(real(scalar, real32), a)
-  end function int_scalar_power
-!-------------------------------------------------------------------------------
-  function get_partial_power_base(this, upstream_grad) result(output)
-    !! Get the partial gradient with respect to the base of the power operation
-    implicit none
-    class(array_type), intent(inout) :: this
-    type(array_type), intent(in) :: upstream_grad
-    type(array_type) :: output
-    logical :: left_is_temporary_local, right_is_temporary_local
-    type(array_type), pointer :: ptr
-
-    left_is_temporary_local = this%left_operand%is_temporary
-    right_is_temporary_local = this%right_operand%is_temporary
-    this%left_operand%is_temporary = .false.
-    this%right_operand%is_temporary = .false.
-    if(all(abs(this%right_operand%val - 1._real32).lt.1.E-6_real32))then
-       output = upstream_grad
-       return
-    elseif(all(abs(this%right_operand%val - 2._real32).lt.1.E-6_real32))then
-       ptr => upstream_grad * this%left_operand * 2._real32
-    else
-       if(this%right_operand%is_scalar)then
-          ptr => upstream_grad * this%right_operand%val(1,1) * &
-               this%left_operand ** ( this%right_operand%val(1,1) - 1.0_real32 )
-       else
-          ptr => upstream_grad * this%right_operand * &
-               this%left_operand ** ( this%right_operand - 1.0_real32 )
-       end if
-    end if
-    this%left_operand%is_temporary = left_is_temporary_local
-    this%right_operand%is_temporary = right_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
-  end function get_partial_power_base
-!-------------------------------------------------------------------------------
-  function get_partial_power_exponent(this, upstream_grad) result(output)
-    !! Get the partial gradient with respect to the exponent of the power operation
-    implicit none
-    class(array_type), intent(inout) :: this
-    type(array_type), intent(in) :: upstream_grad
-    type(array_type) :: output
-    logical :: left_is_temporary_local, this_is_temporary_local
-    type(array_type), pointer :: ptr
-
-    left_is_temporary_local = this%left_operand%is_temporary
-    this_is_temporary_local = this%is_temporary
-    this%left_operand%is_temporary = .false.
-    this%is_temporary = .false.
-    if(this%left_operand%is_scalar)then
-       ptr => upstream_grad * log(this%left_operand%val(1,1)) * this
-    else
-       ptr => upstream_grad * log(this%left_operand) * this
-    end if
-    this%left_operand%is_temporary = left_is_temporary_local
-    this%is_temporary = this_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
-  end function get_partial_power_exponent
-!-------------------------------------------------------------------------------
-  pure subroutine get_partial_power_base_val(this, upstream_grad, output)
-    implicit none
-    class(array_type), intent(in) :: this
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    real(real32), dimension(:,:), intent(out) :: output
-
-    if(all(abs(this%right_operand%val - 1._real32).lt.1.E-6_real32))then
-       output = upstream_grad
-    elseif(all(abs(this%right_operand%val - 2._real32).lt.1.E-6_real32))then
-       output = upstream_grad * this%left_operand%val * 2._real32
-    else
-       if(this%right_operand%is_scalar)then
-          output = upstream_grad * this%right_operand%val(1,1) * &
-               this%left_operand%val ** ( this%right_operand%val(1,1) - 1.0_real32 )
-       else
-          output = upstream_grad * this%right_operand%val * &
-               this%left_operand%val ** ( this%right_operand%val - 1.0_real32 )
-       end if
-    end if
-  end subroutine get_partial_power_base_val
-!-------------------------------------------------------------------------------
-  pure subroutine get_partial_power_base_val_sum(this, upstream_grad, output)
-    !! Fused partial+sum for power base: output(:,1) = sum_s(d(a^n)/da * upstream)
-    implicit none
-    class(array_type), intent(in) :: this
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    real(real32), dimension(:), intent(out) :: output
-
-    integer :: s, n_samples
-    real(real32) :: exp_val
-
-    n_samples = size(upstream_grad, 2)
-    if(all(abs(this%right_operand%val - 1._real32).lt.1.E-6_real32))then
-       output(:) = upstream_grad(:,1)
-       do s = 2, n_samples
-          output(:) = output(:) + upstream_grad(:,s)
-       end do
-    elseif(all(abs(this%right_operand%val - 2._real32).lt.1.E-6_real32))then
-       if(.not.this%left_operand%is_sample_dependent)then
-          output(:) = upstream_grad(:,1)
-          do s = 2, n_samples
-             output(:) = output(:) + upstream_grad(:,s)
-          end do
-          output(:) = output(:) * this%left_operand%val(:,1) * 2._real32
-       else
-          output(:) = upstream_grad(:,1) * this%left_operand%val(:,1) * 2._real32
-          do s = 2, n_samples
-             output(:) = output(:) + &
-                  upstream_grad(:,s) * this%left_operand%val(:,s) * 2._real32
-          end do
-       end if
-    else
-       exp_val = this%right_operand%val(1,1)
-       if(this%right_operand%is_scalar)then
-          if(.not.this%left_operand%is_sample_dependent)then
-             output(:) = upstream_grad(:,1)
-             do s = 2, n_samples
-                output(:) = output(:) + upstream_grad(:,s)
-             end do
-             output(:) = output(:) * exp_val * &
-                  this%left_operand%val(:,1) ** (exp_val - 1._real32)
-          else
-             output(:) = upstream_grad(:,1) * exp_val * &
-                  this%left_operand%val(:,1) ** (exp_val - 1._real32)
-             do s = 2, n_samples
-                output(:) = output(:) + upstream_grad(:,s) * exp_val * &
-                     this%left_operand%val(:,s) ** (exp_val - 1._real32)
-             end do
-          end if
-       else
-          output(:) = upstream_grad(:,1) * this%right_operand%val(:,1) * &
-               this%left_operand%val(:,1) ** (this%right_operand%val(:,1) - 1._real32)
-          do s = 2, n_samples
-             output(:) = output(:) + upstream_grad(:,s) * &
-                  this%right_operand%val(:,s) * &
-                  this%left_operand%val(:,s) ** ( &
-                       this%right_operand%val(:,s) - 1._real32 &
-                  )
-          end do
-       end if
-    end if
-  end subroutine get_partial_power_base_val_sum
-!###############################################################################
-
-
-!##############################################################################!
-! * * * * * * * * * * * * * * * * * * *  * * * * * * * * * * * * * * * * * * * !
-!##############################################################################!
 
 
 !###############################################################################
   module function exp_array(a) result(c)
-    !! Exponential function for autodiff arrays
-    implicit none
+    !! Exponential function for autodiff arrays.
     class(array_type), intent(in), target :: a
     type(array_type), pointer :: c
+    type(array_type), pointer :: na, nc
+    integer :: i, s
 
     c => a%create_result()
-    c%val = exp(a%val)
-
+    na => canonical(a)
+    nc => c
+    do s = 1, size(na%store, 2)
+       !$omp simd
+       do i = 1, size(na%store, 1)
+          nc%store(i,s) = exp(na%store(i,s))
+       end do
+    end do
     c%get_partial_left => get_partial_exp
     c%get_partial_left_val => get_partial_exp_val
     c%get_partial_left_val_sum => get_partial_exp_val_sum
-    if(a%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward
-       c%operation = 'exp'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
-    end if
+    call link_unary(c, a, 'exp')
   end function exp_array
 !-------------------------------------------------------------------------------
   function get_partial_exp(this, upstream_grad) result(output)
-    !! Get partial derivative with respect to left operand
-    implicit none
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
-    logical :: this_is_temporary_local
     type(array_type), pointer :: ptr
 
-    this_is_temporary_local = this%is_temporary
-    this%is_temporary = .false.
     ptr => upstream_grad * this
-    this%is_temporary = this_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_exp
 !-------------------------------------------------------------------------------
   pure subroutine get_partial_exp_val(this, upstream_grad, output)
-    implicit none
     class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
-    output = upstream_grad * this%val
+    integer :: i, s
+
+    do s = 1, size(output, 2)
+       !$omp simd
+       do i = 1, size(output, 1)
+          output(i,s) = upstream_grad(i,s) * this%val(i,s)
+       end do
+    end do
   end subroutine get_partial_exp_val
 !-------------------------------------------------------------------------------
   pure subroutine get_partial_exp_val_sum(this, upstream_grad, output)
-    !! Fused partial+sum for exp: output(:,1) = sum_s(upstream * exp(x))
-    implicit none
     class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:), intent(out) :: output
 
-    integer :: s, n_samples
+    integer :: s
 
-    n_samples = size(upstream_grad, 2)
-    if(.not.this%is_sample_dependent)then
-       output(:) = upstream_grad(:,1)
-       do s = 2, n_samples
-          output(:) = output(:) + upstream_grad(:,s)
-       end do
-       output(:) = output(:) * this%val(:,1)
-    else
-       output(:) = upstream_grad(:,1) * this%val(:,1)
-       do s = 2, n_samples
-          output(:) = output(:) + upstream_grad(:,s) * this%val(:,s)
-       end do
-    end if
+    output = 0.0_real32
+    do s = 1, size(upstream_grad, 2)
+       output(:) = output(:) + upstream_grad(:, s) * this%val(:, min(s, size(this%val, 2)))
+    end do
   end subroutine get_partial_exp_val_sum
 !###############################################################################
 
 
 !###############################################################################
   module function log_array(a) result(c)
-    !! Natural logarithm function for autodiff arrays
-    implicit none
+    !! Natural logarithm for autodiff arrays.
     class(array_type), intent(in), target :: a
     type(array_type), pointer :: c
+    type(array_type), pointer :: na, nc
+    integer :: i, s
 
     c => a%create_result()
-    c%val = log(a%val)
-
+    na => canonical(a)
+    nc => c
+    do s = 1, size(na%store, 2)
+       !$omp simd
+       do i = 1, size(na%store, 1)
+          nc%store(i,s) = log(na%store(i,s))
+       end do
+    end do
     c%get_partial_left => get_partial_log
     c%get_partial_left_val => get_partial_log_val
-    if(a%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward
-       c%operation = 'log'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
-    end if
+    call link_unary(c, a, 'log')
   end function log_array
 !-------------------------------------------------------------------------------
   function get_partial_log(this, upstream_grad) result(output)
-    implicit none
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
-    logical :: left_is_temporary_local
     type(array_type), pointer :: ptr
 
-    left_is_temporary_local = this%left_operand%is_temporary
-    this%left_operand%is_temporary = .false.
     ptr => upstream_grad / this%left_operand
-    this%left_operand%is_temporary = left_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_log
 !-------------------------------------------------------------------------------
   pure subroutine get_partial_log_val(this, upstream_grad, output)
-    implicit none
     class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
-    output = upstream_grad / this%left_operand%val
+    integer :: i, s
+
+    do s = 1, size(output, 2)
+       !$omp simd
+       do i = 1, size(output, 1)
+          output(i,s) = upstream_grad(i,s) / this%left_operand%val(i,s)
+       end do
+    end do
   end subroutine get_partial_log_val
 !###############################################################################
 
 
-!##############################################################################!
-! * * * * * * * * * * * * * * * * * * *  * * * * * * * * * * * * * * * * * * * !
-!##############################################################################!
+!###############################################################################
+  subroutine link_unary(c, a, operation)
+    !! Records the graph edge of a unary elementwise operation.
+    type(array_type), pointer, intent(inout) :: c
+    !! Result node
+    class(array_type), intent(in), target :: a
+    !! Operand
+    character(len=*), intent(in) :: operation
+    !! Operation name
 
+    if(a%requires_grad) then
+       c%requires_grad = .true.
+       c%is_forward = a%is_forward
+       c%operation = operation
+       c%left_operand => canonical(a)
+    else
+       c%operation = operation
+    end if
+  end subroutine link_unary
+!###############################################################################
 
 
 !###############################################################################
-  module function mean_array(a, dim) result(c)
-    !! Compute mean values along a dimension - optimized version
-    implicit none
-    class(array_type), intent(in), target :: a
-    integer, intent(in) :: dim
-    type(array_type), pointer :: c
+  subroutine link_binary(c, a, b, operation)
+    !! Records the graph edges of a binary elementwise operation.
+    type(array_type), pointer, intent(inout) :: c
+    !! Result node
+    class(array_type), intent(in), target :: a, b
+    !! Operands
+    character(len=*), intent(in) :: operation
+    !! Operation name
 
-    integer :: s, i, n_rows, n_cols
-    real(real32) :: rtmp1, inv_count
-
-    ! if(size(a%shape) .ne. 1)then
-    !    call stop_program("mean_array: only 1D arrays can be used")
-    ! end if
-
-    ! Cache dimensions to avoid repeated size() calls
-    n_rows = size(a%val, 1)
-    n_cols = size(a%val, 2)
-
-    if(dim.eq.1)then
-       c => a%create_result(array_shape = [1, n_cols])
-       rtmp1 = real(n_rows, real32)
-       inv_count = 1.0_real32 / rtmp1
-
-       c%val(1,:) = sum(a%val, dim=1) * inv_count
-
-    else if(dim.eq.2)then
-       c => a%create_result(array_shape = [a%shape, 1])
-       rtmp1 = real(n_cols, real32)
-       inv_count = 1.0_real32 / rtmp1
-
-       c%val(:,1) = sum(a%val, dim=2) * inv_count
-
-       c%is_sample_dependent = .false.
-    else
-       call stop_program("mean_array: only 1 or 2 dimensions are supported")
-    end if
-    c%indices = [dim, 1]
-
-    c%get_partial_left => get_partial_mean
-    c%get_partial_left_val => get_partial_mean_val
-    if(a%requires_grad)then
+    if(a%requires_grad .or. b%requires_grad) then
        c%requires_grad = .true.
-       c%is_forward = a%is_forward
-       c%operation = 'mean_array'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
-    end if
-
-  end function mean_array
-!-------------------------------------------------------------------------------
-  module function mean_all_array(a) result(c)
-    !! Compute mean value of all elements in an autodiff array
-    implicit none
-    class(array_type), intent(in), target :: a
-    type(array_type), pointer :: c
-
-    integer :: i, s, n_rows, n_cols
-    real(real32) :: rtmp1, inv_count
-
-    n_rows = size(a%val, 1)
-    n_cols = size(a%val, 2)
-
-    c => a%create_result(array_shape = [1, 1])
-    rtmp1 = real(n_rows * n_cols, real32)
-    inv_count = 1.0_real32 / rtmp1
-
-    c%val(1,1) = sum(a%val) * inv_count
-
-    c%indices = [1, 1]
-
-    c%get_partial_left => get_partial_mean_all
-    c%get_partial_left_val => get_partial_mean_all_val
-    if(a%requires_grad)then
-       c%requires_grad = .true.
-       c%is_forward = a%is_forward
-       c%operation = 'mean_all_array'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
-    end if
-
-  end function mean_all_array
-!-------------------------------------------------------------------------------
-  function get_partial_mean(this, upstream_grad) result(output)
-    implicit none
-    class(array_type), intent(inout) :: this
-    type(array_type), intent(in) :: upstream_grad
-    type(array_type) :: output
-
-    real(real32) :: rtmp1
-    type(array_type), pointer :: ptr
-
-    ! Calculate the number of elements that were averaged
-    rtmp1 = real(size(this%left_operand%val, this%indices(1)), real32)
-
-    if(this%is_forward)then
-       ptr => sum( upstream_grad, dim = this%indices(1) ) / rtmp1
+       c%is_forward = a%is_forward .or. b%is_forward
+       c%operation = operation
+       c%left_operand => canonical(a)
+       c%right_operand => canonical(b)
     else
-       ptr => spread( &
-            upstream_grad / rtmp1, &
-            dim=this%indices(1), &
-            index=this%indices(2), &
-            ncopies= size(this%left_operand%val, this%indices(1)) &
-       )
+       c%operation = operation
     end if
-    call output%assign_and_deallocate_source(ptr)
-  end function get_partial_mean
-!-------------------------------------------------------------------------------
-  pure subroutine get_partial_mean_val(this, upstream_grad, output)
-    implicit none
-    class(array_type), intent(in) :: this
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    real(real32), dimension(:,:), intent(out) :: output
-
-    integer :: i, s, dim, n_rows, n_cols
-    real(real32) :: inv_count
-
-    ! Cache values to avoid repeated accesses
-    dim = this%indices(1)
-    n_rows = size(output, 1)
-    n_cols = size(output, 2)
-    inv_count = 1.0_real32 / real(size(this%left_operand%val, dim), real32)
-
-    if(dim.eq.1)then
-       do concurrent(s = 1:n_cols, i = 1:n_rows)
-          output(i,s) = upstream_grad(1,s) * inv_count
-       end do
-    else if(dim.eq.2)then
-       do concurrent(s = 1:n_cols, i = 1:n_rows)
-          output(i,s) = upstream_grad(i,1) * inv_count
-       end do
-    end if
-  end subroutine get_partial_mean_val
-!-------------------------------------------------------------------------------
-  function get_partial_mean_all(this, upstream_grad) result(output)
-    implicit none
-    class(array_type), intent(inout) :: this
-    type(array_type), intent(in) :: upstream_grad
-    type(array_type) :: output
-
-    real(real32) :: rtmp1
-    type(array_type), pointer :: ptr
-
-    ! Calculate the number of elements that were averaged
-    rtmp1 = real(product(shape(this%left_operand%val)), real32)
-
-    if(this%is_forward)then
-       ptr => sum( upstream_grad ) / rtmp1
-    else
-       ptr => spread( &
-            upstream_grad / rtmp1, &
-            dim=1, &
-            index=1, &
-            ncopies= size(this%left_operand%val, 1) &
-       )
-       ptr => spread( &
-            ptr, &
-            dim=2, &
-            index=1, &
-            ncopies= size(this%left_operand%val, 2) &
-       )
-    end if
-    call output%assign_and_deallocate_source(ptr)
-  end function get_partial_mean_all
-!-------------------------------------------------------------------------------
-  pure subroutine get_partial_mean_all_val(this, upstream_grad, output)
-    implicit none
-    class(array_type), intent(in) :: this
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    real(real32), dimension(:,:), intent(out) :: output
-
-    integer :: i, s, n_rows, n_cols
-    real(real32) :: inv_count
-
-    ! Cache values to avoid repeated accesses
-    n_rows = size(output, 1)
-    n_cols = size(output, 2)
-    inv_count = 1.0_real32 / real(product(shape(this%left_operand%val)), real32)
-
-    do concurrent(s = 1:n_cols, i = 1:n_rows)
-       output(i,s) = upstream_grad(1,1) * inv_count
-    end do
-  end subroutine get_partial_mean_all_val
+  end subroutine link_binary
 !###############################################################################
 
 
 !###############################################################################
   module function sum_array(a, dim) result(c)
-    !! Sum values along a dimension - optimized version
-    implicit none
+    !! Sums values along a dimension.
     class(array_type), intent(in), target :: a
     integer, intent(in) :: dim
     type(array_type), pointer :: c
 
-    integer :: s, i, n_rows, n_cols
+    integer :: n_cols
 
-    ! Cache dimensions
-    n_rows = size(a%val, 1)
     n_cols = size(a%val, 2)
-
-    if(dim.eq.1)then
+    if(dim == 1) then
        c => a%create_result(array_shape=[1, n_cols])
-       c%val(1,:) = sum(a%val, dim=1)
-    else if(dim.eq.2)then
+       c%val(1, :) = sum(a%val, dim=1)
+    else if(dim == 2) then
        c => a%create_result(array_shape=[a%shape, 1])
-       c%val(:,1) = sum(a%val, dim=2)
+       c%val(:, 1) = sum(a%val, dim=2)
        c%is_sample_dependent = .false.
     else
-       call stop_program("sum_array: only 1 or 2 dimensions are supported")
+       call stop_program('sum_array: only 1 or 2 dimensions are supported')
+       nullify(c)
+       return
     end if
     c%indices = [dim, 1]
 
     c%get_partial_left => get_partial_sum
-    !c%get_partial_right => get_partial_sum_forward
     c%get_partial_left_val => get_partial_sum_val
     c%get_partial_left_val_sum => get_partial_sum_val_sum
-    if(a%requires_grad)then
+    if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'sum_array'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
-
   end function sum_array
 !-------------------------------------------------------------------------------
+  function get_partial_sum(this, upstream_grad) result(output)
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+    type(array_type), pointer :: ptr
+
+    if(this%is_forward) then
+       ptr => sum(upstream_grad, dim=this%indices(1))
+    else
+       ptr => spread(upstream_grad, dim=this%indices(1), index=this%indices(2), &
+            ncopies=size(this%left_operand%val, this%indices(1)))
+    end if
+    output = ptr
+  end function get_partial_sum
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_sum_val(this, upstream_grad, output)
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, s, dim, n_rows, n_cols
+
+    dim = this%indices(1)
+    n_rows = size(output, 1)
+    n_cols = size(output, 2)
+    if(dim == 1) then
+       do concurrent(s = 1:n_cols, i = 1:n_rows)
+          output(i, s) = upstream_grad(1, s)
+       end do
+    else
+       do concurrent(s = 1:n_cols, i = 1:n_rows)
+          output(i, s) = upstream_grad(i, 1)
+       end do
+    end if
+  end subroutine get_partial_sum_val
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_sum_val_sum(this, upstream_grad, output)
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:), intent(out) :: output
+
+    integer :: dim, n_samples
+
+    dim = this%indices(1)
+    n_samples = size(upstream_grad, 2)
+    if(dim == 1) then
+       output(:) = upstream_grad(1, 1) * real(n_samples, real32)
+    else
+       output(:) = upstream_grad(:, 1) * real(n_samples, real32)
+    end if
+  end subroutine get_partial_sum_val_sum
+!###############################################################################
+
+
+!###############################################################################
   module function sum_all_array(a) result(c)
-    !! Sum all elements in an autodiff array
-    implicit none
+    !! Sums all values of an autodiff array.
     class(array_type), intent(in), target :: a
     type(array_type), pointer :: c
+    type(array_type), pointer :: na
 
-    integer :: i, s, n_rows, n_cols
-
-    n_rows = size(a%val, 1)
-    n_cols = size(a%val, 2)
-
+    na => canonical(a)
     c => a%create_result(array_shape=[1, 1])
-    c%val(1,1) = sum(a%val)
-
+    c%store(1, 1) = sum(na%store)
+    allocate(c%indices(2))
     c%indices = [1, 1]
 
     c%get_partial_left => get_partial_sum_all
     c%get_partial_left_val => get_partial_sum_all_val
     c%get_partial_left_val_sum => get_partial_sum_all_val_sum
-    if(a%requires_grad)then
+    if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'sum_all_array'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
-
   end function sum_all_array
 !-------------------------------------------------------------------------------
+  function get_partial_sum_all(this, upstream_grad) result(output)
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+    type(array_type), pointer :: ptr
+
+    if(this%is_forward) then
+       ptr => sum(upstream_grad)
+    else
+       ptr => spread(upstream_grad, dim=1, index=1, &
+            ncopies=size(this%left_operand%val, 1))
+       ptr => spread(ptr, dim=2, index=1, &
+            ncopies=size(this%left_operand%val, 2))
+    end if
+    output = ptr
+  end function get_partial_sum_all
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_sum_all_val(this, upstream_grad, output)
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, s
+
+    do s = 1, size(output, 2)
+       !$omp simd
+       do i = 1, size(output, 1)
+          output(i,s) = upstream_grad(1, 1)
+       end do
+    end do
+  end subroutine get_partial_sum_all_val
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_sum_all_val_sum(this, upstream_grad, output)
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:), intent(out) :: output
+
+    output(:) = upstream_grad(1, 1) * real(size(upstream_grad, 2), real32)
+  end subroutine get_partial_sum_all_val_sum
+!###############################################################################
+
+
+!###############################################################################
   module function sum_and_pad_array(a, dim, new_dim_index, new_dim_size) result(c)
-    !! Sum values along a dimension and return an autodiff array
-    implicit none
+    !! Sums a 1-D array along a dimension and places the result at an index.
     class(array_type), intent(in), target :: a
     integer, intent(in) :: dim
     integer, intent(in) :: new_dim_index
     integer, intent(in) :: new_dim_size
     type(array_type), pointer :: c
 
-    if(size(a%shape) .ne. 1)then
-       call stop_program("sum_and_pad_array: only 1D arrays can be used")
+    if(size(a%shape) /= 1) then
+       call stop_program('sum_and_pad_array: only 1D arrays can be used')
     end if
-
-    ! sum 1D array by using shape to swap dimensions
-    if(dim.eq.1)then
-       c => a%create_result(array_shape=[new_dim_size, size(a%val,2)])
+    if(dim == 1) then
+       c => a%create_result(array_shape=[new_dim_size, size(a%val, 2)])
        c%val = 0.0_real32
-       c%val(new_dim_index,:) = sum(a%val(:,:), dim=1)
-    else if(dim.eq.2)then
-       c => a%create_result(array_shape=[size(a%val,1), new_dim_size])
+       c%val(new_dim_index, :) = sum(a%val, dim=1)
+    else if(dim == 2) then
+       c => a%create_result(array_shape=[size(a%val, 1), new_dim_size])
        c%val = 0.0_real32
-       c%val(:,new_dim_index) = sum(a%val(:,:), dim=2)
+       c%val(:, new_dim_index) = sum(a%val, dim=2)
+    else
+       call stop_program('sum_and_pad_array: only 1 or 2 dimensions are supported')
+       nullify(c)
+       return
     end if
+    allocate(c%indices(2))
     c%indices = [dim, new_dim_index]
+    c%is_sample_dependent = a%is_sample_dependent
 
     c%get_partial_left => get_partial_sum_and_pad
     c%get_partial_left_val => get_partial_sum_and_pad_val
-    c%is_sample_dependent = a%is_sample_dependent
-    if(a%requires_grad)then
+    if(a%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'sum_and_pad_array'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
-    c%indices = [dim, new_dim_index]
   end function sum_and_pad_array
 !-------------------------------------------------------------------------------
-!   function get_partial_sum_reverse(this, upstream_grad) result(output)
-!     implicit none
-!     class(array_type), intent(inout) :: this
-!     type(array_type), intent(in) :: upstream_grad
-!     type(array_type) :: output
-!     type(array_type), pointer :: ptr
-
-!     ptr => spread( &
-!          upstream_grad, &
-!          dim=this%indices(1), &
-!          index=this%indices(2), &
-!          ncopies= size(this%left_operand%val, this%indices(1)) &
-!     )
-!     call output%assign_and_deallocate_source(ptr)
-!   end function get_partial_sum_reverse
-! !-------------------------------------------------------------------------------
-  function get_partial_sum(this, upstream_grad) result(output)
-    implicit none
-    class(array_type), intent(inout) :: this
-    type(array_type), intent(in) :: upstream_grad
-    type(array_type) :: output
-    type(array_type), pointer :: ptr
-
-    if(this%is_forward)then
-       ptr => sum( &
-            upstream_grad, &
-            dim = this%indices(1) &
-       )
-    else
-       ptr => spread( &
-            upstream_grad, &
-            dim=this%indices(1), &
-            index=this%indices(2), &
-            ncopies= size(this%left_operand%val, this%indices(1)) &
-       )
-    end if
-    call output%assign_and_deallocate_source(ptr)
-  end function get_partial_sum
-!-------------------------------------------------------------------------------
-  pure subroutine get_partial_sum_val(this, upstream_grad, output)
-    implicit none
-    class(array_type), intent(in) :: this
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    real(real32), dimension(:,:), intent(out) :: output
-
-    integer :: i, s, dim, n_rows, n_cols
-
-    ! Cache values to avoid repeated accesses
-    dim = this%indices(1)
-    n_rows = size(output, 1)
-    n_cols = size(output, 2)
-
-    if(dim.eq.1)then
-       do concurrent(s = 1:n_cols, i = 1:n_rows)
-          output(i,s) = upstream_grad(1,s)
-       end do
-    else if(dim.eq.2)then
-       do concurrent(s = 1:n_cols, i = 1:n_rows)
-          output(i,s) = upstream_grad(i,1)
-       end do
-    end if
-  end subroutine get_partial_sum_val
-!-------------------------------------------------------------------------------
-  function get_partial_sum_all(this, upstream_grad) result(output)
-    implicit none
-    class(array_type), intent(inout) :: this
-    type(array_type), intent(in) :: upstream_grad
-    type(array_type) :: output
-    type(array_type), pointer :: ptr
-
-    if(this%is_forward)then
-       ptr => sum( upstream_grad )
-    else
-       ptr => spread( &
-            upstream_grad, &
-            dim=1, &
-            index=1, &
-            ncopies= size(this%left_operand%val, 1) &
-       )
-       ptr => spread( &
-            ptr, &
-            dim=2, &
-            index=1, &
-            ncopies= size(this%left_operand%val, 2) &
-       )
-    end if
-    call output%assign_and_deallocate_source(ptr)
-  end function get_partial_sum_all
-!-------------------------------------------------------------------------------
-  pure subroutine get_partial_sum_all_val(this, upstream_grad, output)
-    implicit none
-    class(array_type), intent(in) :: this
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    real(real32), dimension(:,:), intent(out) :: output
-
-    integer :: i, s, n_rows, n_cols
-
-    ! Cache values to avoid repeated accesses
-    n_rows = size(output, 1)
-    n_cols = size(output, 2)
-
-    do concurrent(s = 1:n_cols, i = 1:n_rows)
-       output(i,s) = upstream_grad(1,1)
-    end do
-  end subroutine get_partial_sum_all_val
-!-------------------------------------------------------------------------------
-  pure subroutine get_partial_sum_all_val_sum(this, upstream_grad, output)
-    !! Fused partial+sum for sum_all: output(:,1) = upstream_grad(1,1)*num_samples
-    implicit none
-    class(array_type), intent(in) :: this
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    real(real32), dimension(:), intent(out) :: output
-
-    output(:) = upstream_grad(1,1) * real(size(upstream_grad, 2), real32)
-  end subroutine get_partial_sum_all_val_sum
-!-------------------------------------------------------------------------------
-  pure subroutine get_partial_sum_val_sum(this, upstream_grad, output)
-    !! Fused partial+sum for sum: output(:,1) = sum_s(spread(upstream_grad))
-    implicit none
-    class(array_type), intent(in) :: this
-    real(real32), dimension(:,:), intent(in) :: upstream_grad
-    real(real32), dimension(:), intent(out) :: output
-
-    integer :: s, dim, n_samples
-
-    dim = this%indices(1)
-    n_samples = size(upstream_grad, 2)
-
-    if(dim.eq.1)then
-       output(:) = upstream_grad(1,1) * real(n_samples, real32)
-    else if(dim.eq.2)then
-       output(:) = upstream_grad(:,1) * real(n_samples, real32)
-    end if
-  end subroutine get_partial_sum_val_sum
-!-------------------------------------------------------------------------------
   function get_partial_sum_and_pad(this, upstream_grad) result(output)
-    implicit none
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
     type(array_type), pointer :: ptr
 
-    if(this%is_forward)then
-       ptr => sum( &
-            upstream_grad, &
-            dim = this%indices(1), &
-            new_dim_index = this%indices(2), &
-            new_dim_size = size(this%val, this%indices(1)) &
-       )
+    if(this%is_forward) then
+       ptr => sum(upstream_grad, dim=this%indices(1), &
+            new_dim_index=this%indices(2), &
+            new_dim_size=size(this%val, this%indices(1)))
     else
-       ptr => spread( &
-            upstream_grad, &
-            dim=this%indices(1), &
-            index=this%indices(2), &
-            ncopies= size(this%left_operand%val, this%indices(1)) &
-       )
+       ptr => spread(upstream_grad, dim=this%indices(1), index=this%indices(2), &
+            ncopies=size(this%left_operand%val, this%indices(1)))
     end if
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_sum_and_pad
 !-------------------------------------------------------------------------------
   pure subroutine get_partial_sum_and_pad_val(this, upstream_grad, output)
-    implicit none
     class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
     integer :: i, s, dim, n_rows, n_cols
 
-    ! Cache values to avoid repeated accesses
     dim = this%indices(1)
     n_rows = size(output, 1)
     n_cols = size(output, 2)
-
-    if(dim.eq.1)then
+    if(dim == 1) then
        do concurrent(s = 1:n_cols, i = 1:n_rows)
-          output(i,s) = upstream_grad(1,this%indices(2))
+          output(i, s) = upstream_grad(1, this%indices(2))
        end do
-    else if(dim.eq.2)then
+    else
        do concurrent(s = 1:n_cols, i = 1:n_rows)
-          output(i,s) = upstream_grad(this%indices(2),1)
+          output(i, s) = upstream_grad(this%indices(2), 1)
        end do
     end if
   end subroutine get_partial_sum_and_pad_val
@@ -3675,9 +1977,144 @@ contains
 
 
 !###############################################################################
+  module function mean_array(a, dim) result(c)
+    !! Computes the mean along a dimension.
+    class(array_type), intent(in), target :: a
+    integer, intent(in) :: dim
+    type(array_type), pointer :: c
+
+    integer :: n_cols
+    real(real32) :: inv_count
+
+    n_cols = size(a%val, 2)
+    if(dim == 1) then
+       c => a%create_result(array_shape=[1, n_cols])
+       c%val(1, :) = sum(a%val, dim=1) / real(size(a%val, 1), real32)
+    else if(dim == 2) then
+       c => a%create_result(array_shape=[a%shape, 1])
+       inv_count = 1.0_real32 / real(n_cols, real32)
+       c%val(:, 1) = sum(a%val, dim=2) * inv_count
+       c%is_sample_dependent = .false.
+    else
+       call stop_program('mean_array: only 1 or 2 dimensions are supported')
+       nullify(c)
+       return
+    end if
+    allocate(c%indices(2))
+    c%indices = [dim, 1]
+
+    c%get_partial_left => get_partial_mean
+    c%get_partial_left_val => get_partial_mean_val
+    if(a%requires_grad) then
+       c%requires_grad = .true.
+       c%is_forward = a%is_forward
+       c%operation = 'mean_array'
+       c%left_operand => canonical(a)
+    end if
+  end function mean_array
+!-------------------------------------------------------------------------------
+  function get_partial_mean(this, upstream_grad) result(output)
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+    real(real32) :: count
+    type(array_type), pointer :: ptr
+
+    count = real(size(this%left_operand%val, this%indices(1)), real32)
+    if(this%is_forward) then
+       ptr => sum(upstream_grad, dim=this%indices(1)) / count
+    else
+       ptr => spread(upstream_grad / count, dim=this%indices(1), &
+            index=this%indices(2), &
+            ncopies=size(this%left_operand%val, this%indices(1)))
+    end if
+    output = ptr
+  end function get_partial_mean
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_mean_val(this, upstream_grad, output)
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    integer :: i, s, dim, n_rows, n_cols
+    real(real32) :: inv_count
+
+    dim = this%indices(1)
+    n_rows = size(output, 1)
+    n_cols = size(output, 2)
+    inv_count = 1.0_real32 / real(size(this%left_operand%val, dim), real32)
+    if(dim == 1) then
+       do concurrent(s = 1:n_cols, i = 1:n_rows)
+          output(i, s) = upstream_grad(1, s) * inv_count
+       end do
+    else
+       do concurrent(s = 1:n_cols, i = 1:n_rows)
+          output(i, s) = upstream_grad(i, 1) * inv_count
+       end do
+    end if
+  end subroutine get_partial_mean_val
+!###############################################################################
+
+
+!###############################################################################
+  module function mean_all_array(a) result(c)
+    !! Computes the mean of all elements.
+    class(array_type), intent(in), target :: a
+    type(array_type), pointer :: c
+
+    real(real32) :: inv_count
+
+    c => a%create_result(array_shape=[1, 1])
+    inv_count = 1.0_real32 / real(size(a%val), real32)
+    c%val(1, 1) = sum(a%val) * inv_count
+    allocate(c%indices(2))
+    c%indices = [1, 1]
+
+    c%get_partial_left => get_partial_mean_all
+    c%get_partial_left_val => get_partial_mean_all_val
+    if(a%requires_grad) then
+       c%requires_grad = .true.
+       c%is_forward = a%is_forward
+       c%operation = 'mean_all_array'
+       c%left_operand => canonical(a)
+    end if
+  end function mean_all_array
+!-------------------------------------------------------------------------------
+  function get_partial_mean_all(this, upstream_grad) result(output)
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(in) :: upstream_grad
+    type(array_type) :: output
+    real(real32) :: inv_count
+    type(array_type), pointer :: ptr
+
+    inv_count = 1.0_real32 / real(size(this%left_operand%val), real32)
+    if(this%is_forward) then
+       ptr => sum(upstream_grad) * inv_count
+    else
+       ptr => spread(upstream_grad * inv_count, dim=1, index=1, &
+            ncopies=size(this%left_operand%val, 1))
+       ptr => spread(ptr, dim=2, index=1, &
+            ncopies=size(this%left_operand%val, 2))
+    end if
+    output = ptr
+  end function get_partial_mean_all
+!-------------------------------------------------------------------------------
+  pure subroutine get_partial_mean_all_val(this, upstream_grad, output)
+    class(array_type), intent(in) :: this
+    real(real32), dimension(:,:), intent(in) :: upstream_grad
+    real(real32), dimension(:,:), intent(out) :: output
+
+    real(real32) :: inv_count
+
+    inv_count = 1.0_real32 / real(size(this%left_operand%val), real32)
+    output = upstream_grad(1, 1) * inv_count
+  end subroutine get_partial_mean_all_val
+!###############################################################################
+
+
+!###############################################################################
   module function spread_array(source, dim, index, ncopies) result(c)
-    !! Spread an autodiff array along a dimension
-    implicit none
+    !! Spreads a 1-D autodiff array along a dimension.
     class(array_type), intent(in), target :: source
     integer, intent(in) :: dim
     integer, intent(in) :: index
@@ -3686,59 +2123,51 @@ contains
 
     integer :: s
 
-    if(size(source%shape) .ne. 1)then
-       call stop_program("spread: only 1D arrays can be used")
-    end if
-
-    if(dim.eq.1)then
-       c => source%create_result(array_shape=[ncopies, size(source%val,2)])
-       do concurrent(s=1:ncopies)
+    if(dim == 1) then
+       c => source%create_result(array_shape=[ncopies, size(source%val, 2)])
+       do concurrent(s = 1:ncopies)
           c%val(s, :) = source%val(index, :)
        end do
-    else if(dim.eq.2)then
-       c => source%create_result(array_shape=[size(source%val,1), ncopies])
-       do concurrent(s=1:ncopies)
+    else if(dim == 2) then
+       c => source%create_result(array_shape=[size(source%val, 1), ncopies])
+       do concurrent(s = 1:ncopies)
           c%val(:, s) = source%val(:, index)
        end do
     else
-       call stop_program("spread: only 1 or 2 dimensions are supported")
+       call stop_program('spread: only 1 or 2 dimensions are supported')
+       nullify(c)
+       return
     end if
+    allocate(c%indices(1))
     c%indices = [index]
-    allocate(c%adj_ja(2,1))
-    c%adj_ja(:,1) = [ dim, size(source%val,dim) ]
+    allocate(c%adj_ja(2, 1))
+    c%adj_ja(:, 1) = [dim, size(source%val, dim)]
 
     c%get_partial_left => get_partial_spread
-    if(source%requires_grad)then
+    if(source%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = source%is_forward
        c%operation = 'spread'
-       c%left_operand => source
-       c%owns_left_operand = source%is_temporary
+       c%left_operand => canonical(source)
     end if
   end function spread_array
 !-------------------------------------------------------------------------------
   function get_partial_spread(this, upstream_grad) result(output)
-    implicit none
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
     type(array_type), pointer :: ptr
 
-    ptr => unspread( &
-         upstream_grad, &
-         this%indices(1), &
-         this%adj_ja(1,1), &
-         this%adj_ja(2,1) &
-    )
-    call output%assign_and_deallocate_source(ptr)
+    ptr => unspread(upstream_grad, this%indices(1), this%adj_ja(1, 1), &
+         this%adj_ja(2, 1))
+    output = ptr
   end function get_partial_spread
 !###############################################################################
 
 
 !###############################################################################
   module function unspread_array(source, index, dim, new_size) result(c)
-    !! Unpack an autodiff array
-    implicit none
+    !! Gathers an autodiff array onto one index of a larger array.
     class(array_type), intent(in), target :: source
     integer, intent(in) :: index
     integer, intent(in) :: new_size, dim
@@ -3746,49 +2175,52 @@ contains
 
     integer :: i, s
 
-
-    if(dim.eq.1)then
-       c => source%create_result(array_shape = [ new_size, size(source%val,2) ])
+    if(dim == 1) then
+       c => source%create_result(array_shape=[new_size, size(source%val, 2)])
        c%val = 0.0_real32
-       do concurrent(i=1:size(source%val,1), s=1:size(source%val,2))
-          c%val(index,s) = c%val(index,s) + source%val(i,s)
+       do i = 1, size(source%val, 1)
+          do s = 1, size(source%val, 2)
+             c%val(index, s) = c%val(index, s) + source%val(i, s)
+          end do
        end do
-    elseif(dim.eq.2)then
-       c => source%create_result( array_shape = [ size(source%val,1), new_size ] )
+    else if(dim == 2) then
+       c => source%create_result(array_shape=[size(source%val, 1), new_size])
        c%val = 0.0_real32
-       do concurrent(i=1:size(source%val,1), s=1:size(source%val,2))
-          c%val(i,index) = c%val(i,index) + source%val(i,s)
+       do i = 1, size(source%val, 1)
+          do s = 1, size(source%val, 2)
+             c%val(i, index) = c%val(i, index) + source%val(i, s)
+          end do
        end do
+    else
+       call stop_program('unspread: only 1 or 2 dimensions are supported')
+       nullify(c)
+       return
     end if
+    allocate(c%indices(1))
     c%indices = [index]
-    allocate(c%adj_ja(2,1))
-    c%adj_ja(:,1) = [ dim, new_size ]
+    allocate(c%adj_ja(2, 1))
+    c%adj_ja(:, 1) = [dim, new_size]
 
     c%get_partial_left => get_partial_unspread
-    if(source%requires_grad)then
+    if(source%requires_grad) then
        c%requires_grad = .true.
        c%is_forward = source%is_forward
        c%operation = 'unspread'
-       c%left_operand => source
-       c%owns_left_operand = source%is_temporary
+       c%left_operand => canonical(source)
     end if
   end function unspread_array
 !-------------------------------------------------------------------------------
   function get_partial_unspread(this, upstream_grad) result(output)
-    implicit none
     class(array_type), intent(inout) :: this
     type(array_type), intent(in) :: upstream_grad
     type(array_type) :: output
     type(array_type), pointer :: ptr
 
-    ptr => spread( &
-         upstream_grad, &
-         this%indices(1), &
-         this%adj_ja(1,1), &
-         this%adj_ja(2,1) &
-    )
-    call output%assign_and_deallocate_source(ptr)
+    ptr => spread(upstream_grad, this%indices(1), this%adj_ja(1, 1), &
+         this%adj_ja(2, 1))
+    output = ptr
   end function get_partial_unspread
 !###############################################################################
+
 
 end submodule diffstruc__types_submodule

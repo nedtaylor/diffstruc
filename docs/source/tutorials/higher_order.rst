@@ -40,7 +40,6 @@ An example of computing the second derivative of a function is shown below.
      call f%nullify_graph()
      call df_dx%nullify_graph()
      call d2f_dx2%nullify_graph()
-     deallocate(f, df_dx, d2f_dx2)
 
    end program second_derivative
 
@@ -88,7 +87,6 @@ An example of computing the third derivative of a function is shown below.
      call df%nullify_graph()
      call d2f%nullify_graph()
      call d3f%nullify_graph()
-     deallocate(f, df, d2f, d3f)
 
    end program third_derivative
 
@@ -137,7 +135,6 @@ An example of computing mixed partial derivatives is shown below.
      call f%nullify_graph()
      call df_dx%nullify_graph()
      call d2f_dxdy%nullify_graph()
-     deallocate(f, df_dx, d2f_dxdy)
 
    end program mixed_partials
 
@@ -203,7 +200,6 @@ An example is provided below.
      call d2f_dxdy%nullify_graph()
      call d2f_dydx%nullify_graph()
      call d2f_dy2%nullify_graph()
-     deallocate(f, df_dx, df_dy, d2f_dx2, d2f_dxdy, d2f_dydx, d2f_dy2)
 
    end program hessian_example
 

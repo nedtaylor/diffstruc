@@ -58,31 +58,25 @@ program test_benchmark_matmul
      ! Build arrays for scenario A:  Y = matmul(W_ad, X_ad)
      !
      !  W_ad – 2D weight matrix [out_d, in_d], non-sample-dependent.
-     !          allocate(array_shape=[out_d*in_d, 1]) sets
-     !            val  ← (out_d*in_d, 1)
-     !            shape ← [out_d*in_d]   (1-element; overriding pre-set!)
-     !          We then reset shape to [out_d, in_d] so the matmul
-     !          elseif(.not.b%is_sample_dependent) branch treats it
-     !          as a 2D matrix.
+     !          allocate(array_shape=[out_d, in_d, 1]) sets
+     !            val   ← (out_d*in_d, 1)
+     !            shape ← [out_d, in_d]      (leading dims; last entry is samples)
+     !          so the matmul branch sees a 2D matrix directly.
      !
      !  X_ad – 1D input [in_d] per sample.
      !          allocate(array_shape=[in_d, batch]) sets
-     !            val  ← (in_d, batch)
-     !            shape ← [in_d]          (1-element, correct for 1D)
+     !            val   ← (in_d, batch)
+     !            shape ← [in_d]             (1D, batch samples)
      !-------------------------------------------------------------
-     call W_ad%allocate(array_shape=[out_d * in_d, 1])
-     W_ad%shape = [out_d, in_d]        ! MUST be reset after allocate
-     W_ad%is_sample_dependent = .false.
-     W_ad%is_temporary = .false.
+     call W_ad%allocate(array_shape=[out_d, in_d, 1], &
+          sample_dependent=.false., temporary=.false.)
      ! W does not require grad: only dL/dX is computed in backward,
      ! which is the path exercised by BLAS sgemm('T','N').
      W_ad%requires_grad = .false.
      call random_number(W_ad%val)
 
-     call X_ad%allocate(array_shape=[in_d, batch])
-     ! shape is already [in_d] after allocate; is_sample_dependent must be set.
-     X_ad%is_sample_dependent = .true.
-     X_ad%is_temporary = .false.
+     call X_ad%allocate(array_shape=[in_d, batch], sample_dependent=.true., &
+          temporary=.false.)
      call X_ad%set_requires_grad(.true.)
      call random_number(X_ad%val)
 
@@ -92,8 +86,6 @@ program test_benchmark_matmul
         Y_ad => matmul(W_ad, X_ad)
         checksum = checksum + Y_ad%val(1,1)
         Y_ad%is_temporary = .true.
-        call Y_ad%deallocate()
-        deallocate(Y_ad)
      end do
      call cpu_time(t1)
      t_fwdA = (t1 - t0) / real(N_FWD) * 1000.0
@@ -105,14 +97,7 @@ program test_benchmark_matmul
         Y_ad%is_temporary = .false.
         call Y_ad%grad_reverse(reset_graph=.true.)
         call Y_ad%nullify_graph()
-        if(associated(X_ad%grad)) then
-           call X_ad%grad%deallocate()
-           deallocate(X_ad%grad)
-           nullify(X_ad%grad)
-        end if
         Y_ad%is_temporary = .true.
-        call Y_ad%deallocate()
-        deallocate(Y_ad)
      end do
      call cpu_time(t1)
      t_revA = (t1 - t0) / real(N_REV) * 1000.0
@@ -132,9 +117,8 @@ program test_benchmark_matmul
      call random_number(W_real)
      call random_number(X_real)
 
-     call X_ad%allocate(array_shape=[in_d, batch])
-     X_ad%is_sample_dependent = .true.
-     X_ad%is_temporary = .false.
+     call X_ad%allocate(array_shape=[in_d, batch], sample_dependent=.true., &
+          temporary=.false.)
      call X_ad%set_requires_grad(.true.)
      X_ad%val = X_real
 
@@ -144,8 +128,6 @@ program test_benchmark_matmul
         Y_ad => matmul(W_real, X_ad)
         checksum = checksum + Y_ad%val(1,1)
         Y_ad%is_temporary = .true.
-        call Y_ad%deallocate()
-        deallocate(Y_ad)
      end do
      call cpu_time(t1)
      t_fwdB = (t1 - t0) / real(N_FWD) * 1000.0
@@ -157,18 +139,10 @@ program test_benchmark_matmul
         Y_ad%is_temporary = .false.
         call Y_ad%grad_reverse(reset_graph=.true.)
         call Y_ad%nullify_graph()
-        if(associated(X_ad%grad)) then
-           call X_ad%grad%deallocate()
-           deallocate(X_ad%grad)
-           nullify(X_ad%grad)
-        end if
         Y_ad%is_temporary = .true.
-        call Y_ad%deallocate()
-        deallocate(Y_ad)
      end do
      call cpu_time(t1)
      t_revB = (t1 - t0) / real(N_REV) * 1000.0
-
      call X_ad%deallocate()
      deallocate(W_real, X_real)
 

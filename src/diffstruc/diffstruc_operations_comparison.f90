@@ -1,7 +1,7 @@
 module diffstruc__operations_comparison
   !! This module contains comparison operations for the diffstruc library.
   use coreutils, only: real32, stop_program
-  use diffstruc__types, only: array_type, get_partial, &
+  use diffstruc__types, only: canonical, constant_node, array_type, get_partial, &
        operator(+), operator(-), operator(*), operator(**)
   implicit none
 
@@ -108,12 +108,14 @@ contains
 
     c => tsource%create_result(array_shape=[size(tsource%val,1), size(tsource%val,2)])
     ! merge 1D array by using shape to swap dimensions
-    do concurrent(i=1:size(tsource%val,1), j=1:size(tsource%val,2))
-       if(mask(i,j)) then
-          c%val(i,j) = tsource%val(i,j)
-       else
-          c%val(i,j) = fsource%val(i,j)
-       end if
+    do i = 1,size(tsource%val, 1)
+       do j = 1,size(tsource%val, 2)
+          if(mask(i,j)) then
+             c%val(i,j) = tsource%val(i,j)
+          else
+             c%val(i,j) = fsource%val(i,j)
+          end if
+       end do
     end do
     c%mask = mask
 
@@ -125,10 +127,8 @@ contains
        c%requires_grad = .true.
        c%is_forward = tsource%is_forward .or. fsource%is_forward
        c%operation = 'merge'
-       c%left_operand => tsource
-       c%right_operand => fsource
-       c%owns_left_operand = tsource%is_temporary
-       c%owns_right_operand = fsource%is_temporary
+       c%left_operand => canonical(tsource)
+       c%right_operand => canonical(fsource)
     end if
   end function merge_array
 !-------------------------------------------------------------------------------
@@ -148,12 +148,14 @@ contains
 
     c => tsource%create_result(array_shape=[size(tsource%val,1), size(tsource%val,2)])
     ! merge 1D array by using shape to swap dimensions
-    do concurrent(i=1:size(tsource%val,1), j=1:size(tsource%val,2))
-       if(mask(i,j)) then
-          c%val(i,j) = tsource%val(i,j)
-       else
-          c%val(i,j) = fsource
-       end if
+    do i = 1,size(tsource%val, 1)
+       do j = 1,size(tsource%val, 2)
+          if(mask(i,j)) then
+             c%val(i,j) = tsource%val(i,j)
+          else
+             c%val(i,j) = fsource
+          end if
+       end do
     end do
     c%mask = mask
 
@@ -163,8 +165,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = tsource%is_forward
        c%operation = 'merge_scalar'
-       c%left_operand => tsource
-       c%owns_left_operand = tsource%is_temporary
+       c%left_operand => canonical(tsource)
     end if
   end function merge_scalar
 !-------------------------------------------------------------------------------
@@ -201,19 +202,21 @@ contains
     ! merge 1D array by using shape to swap dimensions
     !  allocate(adj_ja_tmp(1, size(mask)))
     !  itmp1 = 0
-    do concurrent( i = 1: size(tsource%val,1), j = 1: size(tsource%val,2))
-       if(mask(i,j)) then
-          c%val(i,j) = tsource%val(i,j)
-          !  if(.not.allocated(c%indices))then
-          !    c%indices = [i]
-          !  elseif(c%indices(size(c%indices)) .ne. i) then
-          !    c%indices = [c%indices, i]
-          !  end if
-          !  itmp1 = itmp1 + 1
-          !  adj_ja_tmp(1,itmp1) = j
-       else
-          c%val(i,j) = fsource(i,j)
-       end if
+    do i = 1, size(tsource%val, 1)
+       do j = 1, size(tsource%val, 2)
+          if(mask(i,j)) then
+             c%val(i,j) = tsource%val(i,j)
+             !  if(.not.allocated(c%indices))then
+             !    c%indices = [i]
+             !  elseif(c%indices(size(c%indices)) .ne. i) then
+             !    c%indices = [c%indices, i]
+             !  end if
+             !  itmp1 = itmp1 + 1
+             !  adj_ja_tmp(1,itmp1) = j
+          else
+             c%val(i,j) = fsource(i,j)
+          end if
+       end do
     end do
     c%mask = mask
     !  allocate(c%adj_ja(1, itmp1))
@@ -226,8 +229,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = tsource%is_forward
        c%operation = 'merge'
-       c%left_operand => tsource
-       c%owns_left_operand = tsource%is_temporary
+       c%left_operand => canonical(tsource)
     end if
   end function merge_real2d
 !-------------------------------------------------------------------------------
@@ -239,7 +241,7 @@ contains
     type(array_type), pointer :: ptr
 
     ptr => merge(upstream_grad, 0._real32, this%mask)
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_merge_left
 !-------------------------------------------------------------------------------
   function get_partial_merge_right(this, upstream_grad) result(output)
@@ -250,7 +252,7 @@ contains
     type(array_type), pointer :: ptr
 
     ptr => merge(0._real32, upstream_grad, this%mask)
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_merge_right
 !-------------------------------------------------------------------------------
   pure subroutine get_partial_merge_left_val(this, upstream_grad, output)
@@ -261,12 +263,14 @@ contains
 
     integer :: i, j
 
-    do concurrent(i = 1:size(this%val,1), j = 1:size(this%val,2))
-       if(this%mask(i,j)) then
-          output(i,j) = upstream_grad(i,j)
-       else
-          output(i,j) = 0._real32
-       end if
+    do i = 1,size(this%val, 1)
+       do j = 1,size(this%val, 2)
+          if(this%mask(i,j)) then
+             output(i,j) = upstream_grad(i,j)
+          else
+             output(i,j) = 0._real32
+          end if
+       end do
     end do
 
   end subroutine get_partial_merge_left_val
@@ -279,12 +283,14 @@ contains
 
     integer :: i, j
 
-    do concurrent(i = 1:size(this%val,1), j = 1:size(this%val,2))
-       if(this%mask(i,j)) then
-          output(i,j) = 0._real32
-       else
-          output(i,j) = upstream_grad(i,j)
-       end if
+    do i = 1,size(this%val, 1)
+       do j = 1,size(this%val, 2)
+          if(this%mask(i,j)) then
+             output(i,j) = 0._real32
+          else
+             output(i,j) = upstream_grad(i,j)
+          end if
+       end do
     end do
 
   end subroutine get_partial_merge_right_val

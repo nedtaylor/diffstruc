@@ -44,5 +44,6 @@ An example of how to use the library is shown below:
 
    about
    install
+   porting
    tutorials
    Fortran API <api>

@@ -1,6 +1,7 @@
 submodule(diffstruc__operations_linalg) diffstruc__operations_linalg_sub
   !! Submodule containing implementations of linear algebra operations
   use coreutils, only: stop_program
+  use diffstruc__types, only: canonical, constant_node
 
 #ifdef USE_BLAS
   interface
@@ -37,7 +38,6 @@ contains
     integer :: s, m, k, n, num_samples
     character(len=128) :: err_msg
     real(real32), pointer :: temp(:,:)
-
     if(.not.a%is_sample_dependent)then
        if(size(b%shape).ne.1)then
           write(err_msg,'("Matrix multiplication not implemented for array ''b'' &
@@ -99,10 +99,8 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
        c%operation = 'matmul'
-       c%left_operand => a
-       c%right_operand => b
-       c%owns_left_operand = a%is_temporary
-       c%owns_right_operand = b%is_temporary
+       c%left_operand => canonical(a)
+       c%right_operand => canonical(b)
     end if
   end function matmul_arrays
 !-------------------------------------------------------------------------------
@@ -114,7 +112,6 @@ contains
     class(array_type), intent(in), target :: a
     real(real32), dimension(:,:), intent(in) :: b
     type(array_type), pointer :: c
-    type(array_type), pointer :: b_array
 
     integer :: s, i, rows, cols, num_samples
 
@@ -145,17 +142,10 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'matmul_scalar'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
-    allocate(b_array)
-    b_array%is_sample_dependent = .false.
-    b_array%shape = shape(b)
-    b_array%requires_grad = .false.
-    call b_array%allocate(array_shape=[size(b,1), size(b,2), 1])
-    b_array%val(:,1) = reshape(b, [size(b,1)*size(b,2)])
-    c%right_operand => b_array
-    c%owns_right_operand = .true.
+    c%right_operand => constant_node(a, reshape(b, [size(b,1)*size(b,2), 1]))
+    c%right_operand%shape = shape(b)
   end function matmul_real2d
 !-------------------------------------------------------------------------------
   module function real2d_matmul(a, b) result(c)
@@ -165,7 +155,6 @@ contains
     real(real32), dimension(:,:), intent(in) :: a
     class(array_type), intent(in), target :: b
     type(array_type), pointer :: c
-    type(array_type), pointer :: a_array
 
     integer :: s, i, m, k, num_samples
 
@@ -196,17 +185,10 @@ contains
        c%requires_grad = .true.
        c%is_forward = b%is_forward
        c%operation = 'matmul_scalar'
-       c%right_operand => b
-       c%owns_right_operand = b%is_temporary
+       c%right_operand => canonical(b)
     end if
-    allocate(a_array)
-    a_array%is_sample_dependent = .false.
-    a_array%shape = shape(a)
-    a_array%requires_grad = .false.
-    call a_array%allocate(array_shape=[size(a,1), size(a,2), 1])
-    a_array%val(:,1) = reshape(a, [size(a,1)*size(a,2)])
-    c%left_operand => a_array
-    c%owns_left_operand = .true.
+    c%left_operand => constant_node(b, reshape(a, [size(a,1)*size(a,2), 1]))
+    c%left_operand%shape = shape(a)
   end function real2d_matmul
 !-------------------------------------------------------------------------------
   function get_partial_matmul_left(this, upstream_grad) result(output)
@@ -237,7 +219,7 @@ contains
        ptr => upstream_grad .outer. this%right_operand
     end if
     this%right_operand%is_temporary = right_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
 
   end function get_partial_matmul_left
 !-------------------------------------------------------------------------------
@@ -269,7 +251,7 @@ contains
        ptr => this%left_operand .outer. upstream_grad
     end if
     this%left_operand%is_temporary = left_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
 
   end function get_partial_matmul_right
 !-------------------------------------------------------------------------------
@@ -653,7 +635,7 @@ contains
 
     c => a%create_result(array_shape = [size(a%val,1), size(b%val,1), size(a%val,2)])
     ! outer product 1D array by using shape to swap dimensions
-    do concurrent(s=1:size(a%val,2))
+    do s = 1,size(a%val, 2)
        do concurrent(i=1:size(a%val,1), j=1:size(b%val,1))
           c%val(i + (j-1)*size(a%val,1),s) = a%val(i,s) * b%val(j,s)
        end do
@@ -666,10 +648,8 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
        c%operation = 'outer_product'
-       c%left_operand => a
-       c%right_operand => b
-       c%owns_left_operand = a%is_temporary
-       c%owns_right_operand = b%is_temporary
+       c%left_operand => canonical(a)
+       c%right_operand => canonical(b)
     end if
   end function outer_product_arrays
 !-------------------------------------------------------------------------------
@@ -689,7 +669,7 @@ contains
        ptr => matmul(upstream_grad, this%right_operand)
     end if
     this%right_operand%is_temporary = right_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_outer_product_left
 !-------------------------------------------------------------------------------
   function get_partial_outer_product_right(this, upstream_grad) result(output)
@@ -710,7 +690,7 @@ contains
        ptr => matmul(this%left_operand, upstream_grad)
     end if
     this%left_operand%is_temporary = left_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_outer_product_right
 !###############################################################################
 
@@ -732,7 +712,7 @@ contains
     end if
 
     c => a%create_result(array_shape = [1, size(a%val,2)])
-    do concurrent(s=1:size(a%val,2))
+    do s = 1,size(a%val, 2)
        c%val(1,s) = dot_product(a%val(:,s), b%val(:,s))
     end do
 
@@ -745,10 +725,8 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward .or. b%is_forward
        c%operation = 'dot_product'
-       c%left_operand => a
-       c%right_operand => b
-       c%owns_left_operand = a%is_temporary
-       c%owns_right_operand = b%is_temporary
+       c%left_operand => canonical(a)
+       c%right_operand => canonical(b)
     end if
   end function dot_product_arrays
 !-------------------------------------------------------------------------------
@@ -768,7 +746,7 @@ contains
        ptr => upstream_grad * this%right_operand
     end if
     this%right_operand%is_temporary = right_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_dot_product_left
 !-------------------------------------------------------------------------------
   function get_partial_dot_product_right(this, upstream_grad) result(output)
@@ -787,7 +765,7 @@ contains
        ptr => upstream_grad * this%left_operand
     end if
     this%left_operand%is_temporary = left_is_temporary_local
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_dot_product_right
 !-------------------------------------------------------------------------------
   pure subroutine get_partial_dot_product_left_val(this, upstream_grad, output)
@@ -798,8 +776,11 @@ contains
 
     integer :: i, s
 
-    do concurrent(s=1:size(upstream_grad,2), i=1:size(this%right_operand%val,1))
-       output(i,s) = upstream_grad(1,s) * this%right_operand%val(i,s)
+    do s = 1,size(upstream_grad, 2)
+       !$omp simd
+       do i = 1,size(this%right_operand%val, 1)
+          output(i,s) = upstream_grad(1,s) * this%right_operand%val(i,s)
+       end do
     end do
   end subroutine get_partial_dot_product_left_val
 !-------------------------------------------------------------------------------
@@ -811,8 +792,11 @@ contains
 
     integer :: i, s
 
-    do concurrent(s=1:size(upstream_grad,2), i=1:size(this%left_operand%val,1))
-       output(i,s) = upstream_grad(1,s) * this%left_operand%val(i,s)
+    do s = 1,size(upstream_grad, 2)
+       !$omp simd
+       do i = 1,size(this%left_operand%val, 1)
+          output(i,s) = upstream_grad(1,s) * this%left_operand%val(i,s)
+       end do
     end do
   end subroutine get_partial_dot_product_right_val
 !###############################################################################
@@ -833,7 +817,7 @@ contains
     end if
     c => a%create_result(array_shape=[a%shape(2), a%shape(1), size(a%val,2)])
     ! transpose 1D array by using shape to swap dimensions
-    do concurrent(s=1:size(a%val,2))
+    do s = 1,size(a%val, 2)
        do concurrent(i=1:a%shape(1), j=1:a%shape(2))
           c%val( (i-1)*a%shape(2) + j, s) = a%val( (j-1)*a%shape(1) + i, s)
        end do
@@ -846,8 +830,7 @@ contains
        c%requires_grad = .true.
        c%is_forward = a%is_forward
        c%operation = 'transpose'
-       c%left_operand => a
-       c%owns_left_operand = a%is_temporary
+       c%left_operand => canonical(a)
     end if
   end function transpose_array
 !-------------------------------------------------------------------------------
@@ -859,7 +842,7 @@ contains
     type(array_type), pointer :: ptr
 
     ptr => transpose(upstream_grad)
-    call output%assign_and_deallocate_source(ptr)
+    output = ptr
   end function get_partial_transpose_left
 ! !-------------------------------------------------------------------------------
 ! !   function get_partial_transpose_right(this, upstream_grad) result(output)

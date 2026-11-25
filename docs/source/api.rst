@@ -35,8 +35,9 @@ Key types:
 
 * ``array_type``: The core type for differentiable arrays
 
-  * ``allocate()``: Allocate array storage
-  * ``deallocate()``: Free array storage
+  * ``allocate()``: Allocate array storage (last shape entry = sample count;
+    ``sample_dependent=``/``temporary=`` keyword flags)
+  * ``deallocate()``: Release this handle's node storage back to its context
   * ``set_requires_grad()``: Enable gradient tracking
   * ``grad_forward()``: Compute gradients using forward mode
   * ``grad_reverse()``: Compute gradients using reverse mode (backpropagation)
@@ -47,9 +48,16 @@ Key operations supported:
 
 * Arithmetic: ``+``, ``-``, ``*``, ``/``, ``**``
 * Trigonometric: ``sin``, ``cos``, ``tan``, ``asin``, ``acos``, ``atan``
-* Hyperbolic: ``sinh``, ``cosh``, ``tanh``
+* Hyperbolic: ``sinh``, ``cosh``, ``tanh``, ``tanhf`` (approximate kernel)
 * Exponential/Logarithmic: ``exp``, ``log``, ``log10``
 * Linear Algebra: ``matmul``, ``transpose``
 * Reduction: ``sum``, ``mean``
+
+Memory ownership:
+
+* ``array_context_type``: The owner of records, values and gradients
+* ``context_of()``, ``canonical()``, ``live()``: Resolve a handle to its record
+* ``default_context``, ``set_default_context()``, ``reset_default_context()``:
+  The process-wide context and bulk release
 
 For complete details and source code, please refer to the FORD documentation linked above.
