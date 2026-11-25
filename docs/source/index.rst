@@ -45,5 +45,6 @@ An example of how to use the library is shown below:
    about
    install
    porting
+   parallelism
    tutorials
    Fortran API <api>

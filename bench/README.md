@@ -18,20 +18,20 @@ tree, `-std=gnu` for the development branch, which uses the `LOC` extension).
 ```
 === test_benchmark_reverse: best of 3 whole-program runs (seconds) ===
 variant            chainA     chainB     chainC
-dev (HEAD)           0.76          -          -
-reference            1.61          -          -
-optimised            0.36          -          -
-opt+fast-tanh        0.28          -          -
-speedup vs dev (accurate):    2.11x
-speedup vs dev (fast tanh):   2.71x
-speedup vs ref (accurate):    4.47x
+dev (HEAD)           0.81          -          -
+reference            1.79          -          -
+optimised            0.39          -          -
+opt+fast-tanh        0.31          -          -
+speedup vs dev (accurate):    2.08x
+speedup vs dev (fast tanh):   2.61x
+speedup vs ref (accurate):    4.59x
 
 === per-chain times reported by the program (ms, last size) ===
 variant        chainA     chainB     chainC
-dev             0.275      0.483      0.227
-optimised       0.112      0.263      0.097
-fast tanh       0.109      0.163      0.098
-                2.46x      1.84x      2.34x   (accurate build)
+dev             0.291      0.515      0.242
+optimised       0.124      0.285      0.101
+fast tanh       0.127      0.184      0.101
+                2.35x      1.81x      2.40x   (accurate build)
 
 === accuracy: reverse-benchmark reference checksums ===
 dev        A=0.578015E+04 B=0.728472E+05 C=0.262214E+05
@@ -45,12 +45,19 @@ values compared: 51, max abs diff 0.000e+00, max rel diff 0.000e+00
   branch bit for bit, and the reverse-benchmark checksums are identical.
 - Against the implementation delivered by the ownership migration (the
   `reference` build) the engine is **4.47x faster** end to end.
-- Against the development branch: **2.11x** end to end with bit-identical
-  results, and **2.71x** with the opt-in fast `tanh` kernel
+- Against the development branch: **2.08x** end to end with bit-identical
+  results, and **2.61x** with the opt-in fast `tanh` kernel
   (`-DDIFFSTRUC_FAST_TANH`, accuracy 8.5e-5 absolute). Per chain: 2.46x (A),
   1.84x (B, 2.96x with the fast kernel) and 2.34x (C).
-- Every benchmark size is ahead of the development branch, from 1.6x at
-  32x512 (where fixed per-node cost dominates) to 2.9x at 128x256.
+- Every benchmark size is ahead of the development branch. The first version
+  of the thread-safety refactor cost ~15-20% on chains A and B because the
+  fused `unary -> add -> multiply` kernel stopped vectorising once it was a
+  contained procedure of the enlarged context-aware host. Moving that kernel
+  to a module procedure (plain array arguments) restored its 16-byte SIMD
+  loops: chain A went from 0.161 to 0.124 ms and chain B from 0.318 to
+  0.285 ms, i.e. back within ~3% of the pre-refactor build. The machine was
+  loaded during these runs (dev itself varied 0.76-0.81 s), so the headline
+  ratio fluctuates between 2.02x and 2.08x.
 
 ## Where the remaining time is
 
@@ -164,6 +171,14 @@ to A/B it against the separate kernels. Building both ways and hashing every
 gradient array bit-for-bit (squared/tanh/exp/negate over `w*d + other`, both
 addend orders, with and without the addend, several batch widths) produces
 identical hashes, so the fusion only removes memory traffic.
+
+## Thread scaling
+
+`sh bench/threads.sh` builds with `-fopenmp` and runs
+`test/test_benchmark_threads.f90` for `OMP_NUM_THREADS=1,2,4,8`. Sizes are
+chosen so one node is a few MiB (above `diffstruc__parallel_min_elems`);
+checksums are printed and must not change with the thread count. Measure on an
+idle machine: below ~1 MiB per node an OpenMP region costs more than it saves.
 
 ## Running it
 

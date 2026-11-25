@@ -152,6 +152,15 @@ call w%allocate(array_shape=[rows, cols, 1], source=matrix, &
 
 See `docs/source/porting.rst` for the full migration checklist.
 
+### Parallelism
+
+The library keeps no mutable module state; every registry, pool, counter and
+pass tag lives in a context, and `default_context` is `!$omp threadprivate`.
+That makes three patterns safe: single-threaded use (unchanged), OpenMP inside
+a graph (`-fopenmp`, size-thresholded, bit-identical results), and several
+independent graphs on several threads (one context per thread). See
+`docs/source/parallelism.rst`.
+
 ### Hyperbolic tangent: accuracy versus speed
 
 Two operations are provided:

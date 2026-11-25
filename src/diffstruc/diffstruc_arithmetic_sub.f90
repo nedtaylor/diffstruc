@@ -642,7 +642,6 @@ contains
     real(real32), dimension(:,:), intent(out) :: output
 
     integer :: i, s
-
     if(this%right_operand%is_scalar)then
        do s = 1, size(output, 2)
           !$omp simd
@@ -688,7 +687,6 @@ contains
     real(real32), dimension(:,:), intent(out) :: output
 
     integer :: i, s
-
     if(this%left_operand%is_scalar)then
        do s = 1, size(output, 2)
           !$omp simd

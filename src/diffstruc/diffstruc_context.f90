@@ -9,9 +9,6 @@
 submodule(diffstruc__types) diffstruc__context_impl
   implicit none
 
-  type(context_state), target :: context_states(max_contexts)
-  !! Private state of every context the process can address.
-
 contains
 
 
@@ -23,7 +20,7 @@ contains
     type(context_state), pointer :: state
     !! Its state
 
-    state => context_states(max(1, min(max_contexts, ctx%slot)))
+    state => ctx%state
   end function context_state_of
 !###############################################################################
 
@@ -93,7 +90,8 @@ contains
     state%last_id = state%last_id + 1_int64
     node%id = int(state%last_id)
     node%gen = state%gen
-    node%ctx = max(1, min(max_contexts, ctx%slot))
+    node%ctx%state => state
+    node%ctx%gen = state%gen
   end function allocate_node
 !###############################################################################
 
@@ -522,7 +520,8 @@ contains
 
     node%id = 0
     node%gen = 1
-    node%ctx = 1
+    nullify(node%ctx%state)
+    node%ctx%gen = 1
     node%rank = 0
     node%size = 0
     node%sample_dependent_flag = .true.
@@ -557,24 +556,131 @@ contains
 
 
 !###############################################################################
-  subroutine set_default_context(ctx)
-    !! Replaces the process-wide default context.
+  subroutine ensure_default_context()
+    !! Allocates this thread's default context state on first use.
     !!
-    !! The previous default context is reset, releasing every node it owned.
-    type(array_context_type), intent(in) :: ctx
-    !! The context to install as the default
+    !! `default_context` is thread-private, so every thread gets an independent
+    !! registry and pool. The state is never freed by the library (it stays
+    !! reachable until the process ends, which is what a default context is
+    !! for); `destroy_context` can free an explicit context.
 
-    call reset_context(default_context)
-    default_context%slot = max(1, min(max_contexts, ctx%slot))
-    default_context%gen = context_states(default_context%slot)%gen
+    if(associated(default_context%state)) return
+    allocate(default_context%state)
+    default_context%state%n_available = available_threads()
+    default_context%gen = default_context%state%gen
+  end subroutine ensure_default_context
+!###############################################################################
+
+
+!###############################################################################
+  module function default_context_of() result(ctx)
+    !! This thread's default context, allocated on first use.
+    type(array_context_type) :: ctx
+
+    call ensure_default_context()
+    ctx = default_context
+  end function default_context_of
+!###############################################################################
+
+
+!###############################################################################
+  module subroutine new_context(ctx, n_threads, max_recursion_depth)
+    !! Creates an independent context with its own registry and pools.
+    type(array_context_type), intent(out) :: ctx
+    integer, intent(in), optional :: n_threads
+    integer, intent(in), optional :: max_recursion_depth
+
+    if(associated(ctx%state)) then
+       call stop_program('diffstruc: context is already created')
+       return
+    end if
+    allocate(ctx%state)
+    ctx%state%n_available = available_threads()
+    if(present(n_threads)) ctx%state%n_threads = max(0, n_threads)
+    if(present(max_recursion_depth)) then
+       ctx%state%max_recursion_depth = max(1, max_recursion_depth)
+    end if
+    ctx%gen = ctx%state%gen
+  end subroutine new_context
+!###############################################################################
+
+
+!###############################################################################
+  module subroutine destroy_context(ctx)
+    !! Releases everything a context owns and frees its state.
+    !!
+    !! Handles that referred to the context become unbound/stale. Do not call
+    !! this on the thread's default context while it is still in use.
+    type(array_context_type), intent(inout) :: ctx
+
+    if(.not. associated(ctx%state)) return
+    call reset_context(ctx)
+    deallocate(ctx%state)
+    nullify(ctx%state)
+    ctx%gen = 1
+  end subroutine destroy_context
+!###############################################################################
+
+
+!###############################################################################
+  module subroutine set_num_threads(ctx, n_threads)
+    !! Sets the thread count used by this context's kernels.
+    type(array_context_type), intent(in) :: ctx
+    integer, intent(in) :: n_threads
+
+    if(associated(ctx%state)) ctx%state%n_threads = max(0, n_threads)
+  end subroutine set_num_threads
+!###############################################################################
+
+
+!###############################################################################
+  module function get_num_threads(ctx) result(n_threads)
+    !! The thread count this context's kernels request (0 = OpenMP default).
+    type(array_context_type), intent(in) :: ctx
+    integer :: n_threads
+
+    n_threads = 0
+    if(associated(ctx%state)) n_threads = ctx%state%n_threads
+  end function get_num_threads
+!###############################################################################
+
+
+!###############################################################################
+  module subroutine set_max_recursion_depth(ctx, max_depth)
+    !! Sets the graph traversal depth limit for this context.
+    type(array_context_type), intent(in) :: ctx
+    integer, intent(in) :: max_depth
+
+    if(associated(ctx%state)) ctx%state%max_recursion_depth = max(1, max_depth)
+  end subroutine set_max_recursion_depth
+!###############################################################################
+
+
+!###############################################################################
+  subroutine set_default_context(ctx)
+    !! Replaces this thread's default context.
+    !!
+    !! The previous default context is reset, releasing every node it owned;
+    !! its state is kept (not freed), so existing node pointers remain safe and
+    !! stale handles are rejected by the generation check.
+    type(array_context_type), intent(in) :: ctx
+
+    call ensure_default_context()
+    if(associated(default_context%state)) then
+       if(.not. associated(default_context%state, ctx%state)) then
+          call reset_context(default_context)
+       end if
+    end if
+    default_context = ctx
   end subroutine set_default_context
 !###############################################################################
 
 
 !###############################################################################
   subroutine reset_default_context()
-    !! Resets the process-wide default context, releasing all its memory.
+    !! Resets this thread's default context, releasing all its memory.
 
+    call ensure_default_context()
     call reset_context(default_context)
   end subroutine reset_default_context
 !###############################################################################

@@ -63,6 +63,7 @@ if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
   option(BUILD_TESTS "Build the unit tests" ON)
   option(BUILD_EXAMPLES "Build the examples" ON)
   option(USE_BLAS "Use BLAS for optimised matrix operations" OFF)
+  option(USE_OPENMP "Use OpenMP parallel regions in the numeric kernels" OFF)
 else()
   # When used as a dependency, disable tests by default
   set(BUILD_TESTS OFF)
@@ -159,6 +160,13 @@ if(USE_BLAS)
   target_compile_definitions(${PROJECT_NAME} PUBLIC USE_BLAS)
   target_link_libraries(${PROJECT_NAME} PUBLIC ${BLAS_LIBRARIES})
   message(STATUS "BLAS enabled: ${BLAS_LIBRARIES}")
+endif()
+
+# optionally enable OpenMP threading (the library is serial otherwise)
+if(USE_OPENMP)
+  find_package(OpenMP REQUIRED)
+  target_link_libraries(${PROJECT_NAME} PUBLIC OpenMP::OpenMP_Fortran)
+  message(STATUS "OpenMP enabled: ${OpenMP_Fortran_FLAGS}")
 endif()
 
 

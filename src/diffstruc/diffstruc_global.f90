@@ -1,22 +1,21 @@
 module diffstruc__global
-  !! This module contains global parameters and settings for the
-  !! diffstruc library.
+  !! Library-wide parameter constants.
+  !!
+  !! This module holds *parameters only*. All mutable state -- registries,
+  !! pools, counters, phase tags, recursion limits and thread settings --
+  !! lives in a context (see `array_context_type`), so a thread that owns a
+  !! context touches no shared variable.
   implicit none
-
-  integer :: diffstruc__max_recursion_depth = 1000
-  !! Recursion depth limit for operations that traverse the computation
-  !! graph
-
-  integer :: diffstruc__pool_limit = 0
-  !! Maximum number of pooled gradient buffers a context keeps for
-  !! reuse (0 means unlimited)
-
-  integer :: diffstruc__visit_counter = 0
-  !! Monotonic counter used to stamp graph traversals without a visited set
 
   integer, parameter :: diffstruc__init_map_cap = 64
   !! Initial capacity of pointer maps used when copying graphs
-  !! Maximum number of pooled gradient buffers a context keeps for
-  !! reuse (0 means unlimited)
+
+  integer, parameter :: diffstruc__default_max_recursion_depth = 1000
+  !! Default recursion depth limit for graph traversals; a context may lower
+  !! or raise its own copy
+
+  integer, parameter :: diffstruc__parallel_min_elems = 262144
+  !! Minimum number of elements (elements x samples) before a kernel asks for
+  !! an OpenMP team. Below this a parallel region costs more than it saves.
 
 end module diffstruc__global

@@ -26,12 +26,18 @@ SIMDFLAGS=""
 if [ "$CC" != "flang-new" ] && [ "$CC" != "flang" ]; then
   SIMDFLAGS="-fopenmp-simd -fversion-loops-for-strides -fvect-cost-model=unlimited"
 fi
+LINKFLAGS=""
+if [ -n "$OPENMP" ]; then
+  SIMDFLAGS="$SIMDFLAGS -fopenmp"
+  LINKFLAGS="-fopenmp"
+fi
 FLAGS="-cpp -std=f2018 -g $SIMDFLAGS -I $COREUTILS_MOD -I $LIBDIR $EXTRA"
 MOD="$MODFLAG $LIBDIR"
 
 # Rebuild the library objects into the test module dir so tests see the same
 # module files.
-for f in src/diffstruc/diffstruc_global.f90 src/diffstruc/diffstruc_types.f90 \
+for f in src/diffstruc/diffstruc_global.f90 src/diffstruc/diffstruc_parallel.f90 \
+         src/diffstruc/diffstruc_types.f90 \
          src/diffstruc/diffstruc_context.f90 src/diffstruc/diffstruc_plumbing.f90 \
          src/diffstruc/diffstruc_types_sub.f90 src/diffstruc/diffstruc_arithmetic_sub.f90 \
          src/diffstruc/diffstruc_operations_maths.f90 \
@@ -56,9 +62,10 @@ else
 fi
 
 for t in test_functions test_context test_memory test_tanh test_porting \
-         test_benchmark_matmul test_benchmark_reverse; do
+         test_threads test_benchmark_matmul test_benchmark_reverse \
+         test_benchmark_threads; do
   $CC $FLAGS $MOD -c -o "$BINDIR/$t.o" "test/$t.f90"
-  $CC -o "$BINDIR/$t" "$BINDIR/$t.o" $LIBS $COREUTILS_LIB
+  $CC $LINKFLAGS -o "$BINDIR/$t" "$BINDIR/$t.o" $LIBS $COREUTILS_LIB
   echo "built $t"
 done
 
@@ -70,6 +77,8 @@ echo "=== test_tanh ==="
 "$BINDIR/test_tanh"
 echo "=== test_porting ==="
 "$BINDIR/test_porting"
+echo "=== test_threads ==="
+"$BINDIR/test_threads"
 echo "=== test_context stale (expected to fail) ==="
 if "$BINDIR/test_context" stale; then
   echo "ERROR: stale handle was accepted"

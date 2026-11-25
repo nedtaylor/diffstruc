@@ -293,3 +293,30 @@ bytes, the example output is byte-identical to the golden file, and the reverse
 benchmark remains 2.11x faster than the development branch with identical
 checksums. `fpm build`, `fpm test` and `fpm install` were re-run from a clean
 copy in the `raffle_env` environment.
+
+
+## Thread safety
+
+Every mutable module variable has been moved into the context (registry,
+pools, traversal counter, pass tag, recursion limit) and `default_context` is
+`!$omp threadprivate`; `diffstruc_global` now contains only parameter
+constants. `new_context`/`destroy_context` and per-context
+`set_num_threads`/`set_max_recursion_depth` are public, and the OpenMP kernels
+(thresholded) plus the multi-context tests are in place.
+
+The full suite and the golden output are bit-identical at
+`OMP_NUM_THREADS=1/2/4/8`, and `test_threads` reproduces the serial checksum
+from every thread with both thread-private default contexts and explicit
+contexts. CTest 8/8, flang, `-fcheck=all` and `leaks` are clean.
+
+Cost: the first version of the refactor put the reverse benchmark at 1.80x
+because the fused `unary -> add -> multiply` kernel stopped vectorising once it
+became a contained procedure of the enlarged context-aware host (its loops were
+no longer reported by the vectoriser and the object had no NEON instructions).
+Moving the kernel to a module procedure with plain array arguments restored
+the 16-byte SIMD loops: chains A/B went from 0.161/0.318 ms back to
+0.124/0.285 ms and the benchmark is **2.08x** faster than the development
+branch (pre-refactor: 2.11x, within the run-to-run spread; dev itself varied
+0.76-0.81 s under machine load). All kernels compile to the same code as
+before the refactor, checksums are identical, and the thread-safety guarantees
+are unchanged.

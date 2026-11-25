@@ -13,19 +13,21 @@ module diffstruc__types
   !! deallocation anywhere in the library.
   use, intrinsic :: iso_fortran_env, only: error_unit, int64, real32
   use coreutils, only: stop_program, print_warning
+  use diffstruc__global, only: diffstruc__default_max_recursion_depth
+  use diffstruc__parallel, only: team_size, available_threads
   implicit none
 
   private
 
   public :: array_type, array_context_type, get_partial
   public :: default_context, set_default_context, reset_default_context
+  public :: new_context, destroy_context, set_num_threads, get_num_threads
+  public :: set_max_recursion_depth, team_size_for
   public :: canonical, constant_node, context_of, live
 
   public :: operator(+), operator(-), operator(*), operator(/), operator(**)
   public :: sum, mean, spread, unspread, exp, log
 
-  integer, parameter :: max_contexts = 8
-  !! Number of independent contexts the library can address.
   integer, parameter :: node_chunk_size = 128
   !! Number of node records allocated per registry chunk.
 
@@ -33,19 +35,6 @@ module diffstruc__types
 !-------------------------------------------------------------------------------
 ! Context ownership
 !-------------------------------------------------------------------------------
-  type :: array_context_type
-     !! A handle to a memory-owning context.
-     !!
-     !! The context's state (node registry, generation, scratch pool) is held
-     !! in module storage indexed by `slot`. A context value is therefore
-     !! trivially copyable: copying it names the same owner, it does not
-     !! duplicate or fork the storage.
-     integer :: slot = 1
-     !! The module-storage slot of the owning context
-     integer :: gen = 1
-     !! The allocation generation of the context when it was captured
-  end type array_context_type
-
   type :: pooled_buffer
      !! A pooled rank-2 real32 scratch buffer. Buffers hold only transient
      !! scratch data, never graph-node storage, and are reused across
@@ -102,12 +91,36 @@ module diffstruc__types
      integer :: mark_slot = 1
      integer :: mark_gen = 1
      integer :: visit_counter = 0
+     !! Traversal stamp counter (was a module global)
+     integer :: accumulate_phase = 0
+     !! Reverse-pass tag; the first contribution of a pass overwrites
+     logical :: scratch_nodes_created = .false.
+     !! Whether the current backward pass built transient graph nodes
+     integer :: max_recursion_depth = diffstruc__default_max_recursion_depth
+     !! Recursion limit for graph traversals in this context
+     integer :: n_threads = 0
+     !! Threads per kernel for this context (0 = runtime default, 1 = serial)
+     integer :: n_available = 1
+     !! Runtime default team size captured when the context was created
      type(pooled_buffer), dimension(:), pointer :: pool => null()
      integer :: pool_top = 0
      integer :: pool_cap = 0
      type(cached_value) :: value_cache(value_cache_size)
      integer :: value_cache_n = 0
   end type context_state
+
+  type :: array_context_type
+     !! A handle to a memory-owning context.
+     !!
+     !! The state is allocated on the heap, so two contexts never share a cache
+     !! line and a handle can be copied freely (the pointer is copied, not the
+     !! state). An unassociated `state` means "use this thread's default
+     !! context"; `context_of` resolves it.
+     type(context_state), pointer :: state => null()
+     !! The owned state, or null for a handle that follows the default
+     integer :: gen = 1
+     !! The generation the handle was created in (stale-handle detection)
+  end type array_context_type
 
 
 !-------------------------------------------------------------------------------
@@ -125,8 +138,8 @@ module diffstruc__types
      !! The id of the referenced node record (zero when unbound)
      integer :: gen = 1
      !! The context generation the handle was bound in
-     integer :: ctx = 1
-     !! The context slot that owns the referenced node
+     type(array_context_type) :: ctx = array_context_type()
+     !! The context that owns the referenced node (null state = default)
 
      integer :: rank = 0
      !! Rank of the array
@@ -807,6 +820,64 @@ module diffstruc__types
        real(real32), dimension(:, :), pointer :: buffer
      end subroutine release_scratch
 
+     module function default_context_of() result(ctx)
+       !! This thread's default context, allocated on first use.
+       type(array_context_type) :: ctx
+     end function default_context_of
+
+     module subroutine new_context(ctx, n_threads, max_recursion_depth)
+       !! Creates an independent, thread-safe context.
+       type(array_context_type), intent(out) :: ctx
+       integer, intent(in), optional :: n_threads
+       integer, intent(in), optional :: max_recursion_depth
+     end subroutine new_context
+
+     module subroutine destroy_context(ctx)
+       !! Releases everything a context owns and frees its state.
+       type(array_context_type), intent(inout) :: ctx
+     end subroutine destroy_context
+
+     module subroutine set_num_threads(ctx, n_threads)
+       !! Sets the thread count used by this context's kernels (0 = default).
+       type(array_context_type), intent(in) :: ctx
+       integer, intent(in) :: n_threads
+     end subroutine set_num_threads
+
+     module function get_num_threads(ctx) result(n_threads)
+       !! The thread count this context's kernels request.
+       type(array_context_type), intent(in) :: ctx
+       integer :: n_threads
+     end function get_num_threads
+
+     pure module function team_size_for(this, n_elem, n_samples) result(nth)
+       !! Threads a kernel on this array should request (1 = serial).
+       class(array_type), intent(in) :: this
+       integer, intent(in) :: n_elem
+       integer, intent(in) :: n_samples
+       integer :: nth
+     end function team_size_for
+
+     module subroutine unary_add_mult_kernel(op, n_elem, n_samples, &
+          uvalue, t, w, d, dd, dw, oa)
+       !! Fused unary/multiply partial kernel (internal).
+       integer, intent(in) :: op
+       integer, intent(in) :: n_elem
+       integer, intent(in) :: n_samples
+       real(real32), intent(in) :: uvalue
+       real(real32), dimension(:,:), intent(in) :: t
+       real(real32), dimension(:,:), intent(in) :: w
+       real(real32), dimension(:,:), intent(in) :: d
+       real(real32), dimension(:,:), intent(out) :: dd
+       real(real32), dimension(:), intent(inout) :: dw
+       real(real32), dimension(:), intent(inout) :: oa
+     end subroutine unary_add_mult_kernel
+
+     module subroutine set_max_recursion_depth(ctx, max_depth)
+       !! Sets the graph traversal depth limit for this context.
+       type(array_context_type), intent(in) :: ctx
+       integer, intent(in) :: max_depth
+     end subroutine set_max_recursion_depth
+
      module subroutine set_default_context(ctx)
        type(array_context_type), intent(in) :: ctx
      end subroutine set_default_context
@@ -847,7 +918,10 @@ module diffstruc__types
      end function constant_node
   end interface
 
-  type(array_context_type), target :: default_context = array_context_type()
+  type(array_context_type) :: default_context = array_context_type()
   !! The context every operation uses unless another one is bound to a handle.
+  !! It is thread-private: each thread gets its own default context, allocated
+  !! on first use, so threads never share registry or pool state.
+  !$omp threadprivate(default_context)
 
 end module diffstruc__types

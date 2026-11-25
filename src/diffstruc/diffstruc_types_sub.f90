@@ -6,18 +6,57 @@
 !! a node a handle may still view; instead it releases whole regions when a
 !! graph is detached (`nullify_graph`) or when the context is rolled back.
 submodule(diffstruc__types) diffstruc__types_submodule
-  use diffstruc__global, only: diffstruc__visit_counter, &
-       diffstruc__max_recursion_depth
   use, intrinsic :: iso_fortran_env, only: error_unit
   implicit none
 
-  integer, save :: accumulate_phase = 0
-  !! Counter identifying the current backward pass
-
-  logical, save :: scratch_nodes_created = .false.
-  !! Whether the current backward pass created transient graph nodes
-
 contains
+
+
+!###############################################################################
+  integer function next_visit(node) result(tag)
+    !! Issues the next traversal stamp of a node's context.
+    type(array_type), intent(in) :: node
+    !! Node whose context supplies the counter
+
+    type(context_state), pointer :: state
+
+    state => context_state_of(context_of_node(node))
+    state%visit_counter = state%visit_counter + 1
+    tag = state%visit_counter
+  end function next_visit
+!###############################################################################
+
+
+!###############################################################################
+  integer function recursion_limit(node) result(limit)
+    !! The graph traversal depth limit of a node's context.
+    type(array_type), intent(in) :: node
+    !! Node whose context supplies the limit
+
+    type(context_state), pointer :: state
+
+    state => context_state_of(context_of_node(node))
+    limit = state%max_recursion_depth
+  end function recursion_limit
+
+
+!###############################################################################
+  pure module function team_size_for(this, n_elem, n_samples) result(nth)
+    !! Threads a kernel on this array should request (1 = serial).
+    class(array_type), intent(in) :: this
+    integer, intent(in) :: n_elem, n_samples
+
+    integer :: requested, available, nth
+
+    requested = 0
+    available = 1
+    if(associated(this%ctx%state)) then
+       requested = this%ctx%state%n_threads
+       available = this%ctx%state%n_available
+    end if
+    nth = team_size(n_elem, n_samples, requested, available)
+  end function team_size_for
+!###############################################################################
 
 
 !###############################################################################
@@ -26,7 +65,8 @@ contains
     type(array_type) :: this
 
     this%id = 0
-    this%ctx = 1
+    nullify(this%ctx%state)
+    this%ctx%gen = 1
     this%gen = 1
   end function constructor
 !###############################################################################
@@ -127,7 +167,7 @@ contains
     !! The derivative
 
     ! Local variables
-    integer :: depth
+    integer :: depth, visit
     type(array_type), pointer :: node
 
     nullify(output)
@@ -144,9 +184,9 @@ contains
     if(associated(output)) then
        output%is_forward = .true.
        ! Release every node the traversal built and then discarded.
-       diffstruc__visit_counter = diffstruc__visit_counter + 1
-       call mark_graph(output, diffstruc__visit_counter)
-       call sweep_region(context_of_node(node), diffstruc__visit_counter)
+       visit = next_visit(output)
+       call mark_graph(output, visit)
+       call sweep_region(context_of_node(node), visit)
     end if
     if(associated(node)) then
        node%requires_grad = .true.
@@ -176,7 +216,7 @@ contains
     integer :: s, i, n_elem, n_samples
 
     depth = depth + 1
-    if(depth > diffstruc__max_recursion_depth) then
+    if(depth > recursion_limit(this)) then
        write(error_unit, '(A,I0)') 'MAX RECURSION DEPTH REACHED ', depth
        nullify(output)
        return
@@ -297,18 +337,22 @@ contains
     ! Local variables
     type(array_type), pointer :: node, grad
     type(array_context_type) :: ctx
+    type(context_state), pointer :: state
+    integer :: visit
 
     node => live(this)
     if(present(reset_graph)) then
        if(reset_graph) continue
     end if
+    ctx = context_of_node(node)
+    state => context_state_of(ctx)
     ! A fresh pass tag makes the first contribution to each accumulator
     ! overwrite it, so existing gradient contents are irrelevant: no zeroing
     ! sweep and no read-modify-write of the gradient arrays is needed.
-    accumulate_phase = accumulate_phase + 1
-    scratch_nodes_created = .false.
+    state%accumulate_phase = state%accumulate_phase + 1
+    state%scratch_nodes_created = .false.
 #ifdef DIFFSTRUC_SLOW_REVERSE
-    call zero_variable_grads(node, accumulate_phase)
+    call zero_variable_grads(node, state%accumulate_phase)
 #endif
 
     if(.not. associated(node%grad)) then
@@ -327,7 +371,6 @@ contains
        node%grad => grad
     end if
 
-    ctx = context_of_node(node)
     call checkpoint_context(ctx)
     if(size(node%grad%val) == 1) then
        call reverse_accumulate(node, node%grad%val, 0, .true., node%grad%val(1,1))
@@ -338,11 +381,11 @@ contains
     ! Value-level partials create no graph nodes, so the region only needs
     ! sweeping when the graph-building fallback was used (matmul, gather-style
     ! layouts). Skipping the walk keeps small backward passes overhead-free.
-    if(scratch_nodes_created) then
-       diffstruc__visit_counter = diffstruc__visit_counter + 1
-       call mark_graph(node, diffstruc__visit_counter)
-       if(associated(node%grad)) node%grad%visit_tag = diffstruc__visit_counter
-       call sweep_region(ctx, diffstruc__visit_counter)
+    if(state%scratch_nodes_created) then
+       visit = next_visit(node)
+       call mark_graph(node, visit)
+       if(associated(node%grad)) node%grad%visit_tag = visit
+       call sweep_region(ctx, visit)
     end if
   end subroutine grad_reverse
 !###############################################################################
@@ -362,7 +405,7 @@ contains
     real(real32), intent(in), optional :: uvalue
     !! That value, when `uniform` is present and true
 
-    if(depth > diffstruc__max_recursion_depth) then
+    if(depth > recursion_limit(node)) then
        write(error_unit, '(A,I0)') 'MAX RECURSION DEPTH IN REVERSE MODE ', depth
        return
     end if
@@ -416,6 +459,7 @@ contains
     ! Local variables
     type(array_type), pointer :: mult, other, ml, mr, d, w
     type(array_context_type) :: ctx
+    type(context_state), pointer :: state
     real(real32), dimension(:,:), pointer :: dd, dwp, oap, basis
     integer :: op, i
     logical :: mult_left
@@ -484,6 +528,7 @@ contains
     end if
 
     ctx = context_of_node(node)
+    state => context_state_of(ctx)
     dd => acquire_scratch(ctx, [n_elem, n_samples])
     dwp => acquire_scratch(ctx, [n_elem, 1])
     oap => acquire_scratch(ctx, [n_elem, 1])
@@ -511,7 +556,7 @@ contains
       if(.not. d%requires_grad) return
       if(is_variable(d)) then
          d%grad => ensure_gradient(ctx, d, n_samples)
-         call add_to_gradient(d%grad, dd)
+         call add_to_gradient(state%accumulate_phase, d%grad, dd)
       end if
       if(associated(d%left_operand) .or. associated(d%right_operand)) then
          call reverse_accumulate(d, dd, depth + 1)
@@ -522,7 +567,7 @@ contains
       if(.not. w%requires_grad) return
       if(is_variable(w)) then
          w%grad => ensure_gradient(ctx, w, 1)
-         call add_to_gradient(w%grad, dwp)
+         call add_to_gradient(state%accumulate_phase, w%grad, dwp)
       end if
       if(associated(w%left_operand) .or. associated(w%right_operand)) then
          call reverse_accumulate(w, dwp, depth + 1)
@@ -534,7 +579,7 @@ contains
       if(.not. other%requires_grad) return
       if(is_variable(other)) then
          other%grad => ensure_gradient(ctx, other, 1)
-         call add_to_gradient(other%grad, oap)
+         call add_to_gradient(state%accumulate_phase, other%grad, oap)
       end if
       if(associated(other%left_operand) .or. &
            associated(other%right_operand)) then
@@ -542,77 +587,83 @@ contains
       end if
     end subroutine fuse_push_other
 
-    subroutine unary_add_mult_kernel(op, n_elem, n_samples, uvalue, t, &
-         w, d, dd, dw, oa)
-      !! One pass: unary partial, multiply partial and both reductions.
-      integer, intent(in) :: op
-      integer, intent(in) :: n_elem
-      integer, intent(in) :: n_samples
-      real(real32), intent(in) :: uvalue
-      real(real32), dimension(:,:), intent(in) :: t
-      real(real32), dimension(:,:), intent(in) :: w
-      real(real32), dimension(:,:), intent(in) :: d
-      real(real32), dimension(:,:), intent(out) :: dd
-      real(real32), dimension(:), intent(inout) :: dw
-      real(real32), dimension(:), intent(inout) :: oa
-      real(real32) :: av
-      integer :: i, s
 
-      select case(op)
-      case(1)
-         do s = 1, n_samples
-            !$omp simd
-            do i = 1, n_elem
-               av = uvalue * (1.0_real32 - t(i,s) * t(i,s))
-               dd(i,s) = av * w(i,1)
-               dw(i) = dw(i) + av * d(i,1)
-               oa(i) = oa(i) + av
-            end do
-         end do
-      case(2)
-         do s = 1, n_samples
-            !$omp simd
-            do i = 1, n_elem
-               av = uvalue * t(i,s) * 2.0_real32
-               dd(i,s) = av * w(i,1)
-               dw(i) = dw(i) + av * d(i,1)
-               oa(i) = oa(i) + av
-            end do
-         end do
-      case(3)
-         do s = 1, n_samples
-            !$omp simd
-            do i = 1, n_elem
-               av = uvalue * t(i,s)
-               dd(i,s) = av * w(i,1)
-               dw(i) = dw(i) + av * d(i,1)
-               oa(i) = oa(i) + av
-            end do
-         end do
-      case default
-         do s = 1, n_samples
-            !$omp simd
-            do i = 1, n_elem
-               av = -uvalue
-               dd(i,s) = av * w(i,1)
-               dw(i) = dw(i) + av * d(i,1)
-               oa(i) = oa(i) + av
-            end do
-         end do
-      end select
-    end subroutine unary_add_mult_kernel
 
   end subroutine fuse_uniform_unary
 !###############################################################################
 
 
 !###############################################################################
-  subroutine add_to_gradient(grad, values)
+  subroutine unary_add_mult_kernel(op, n_elem, n_samples, uvalue, t, &
+       w, d, dd, dw, oa)
+    !! One pass: unary partial, multiply partial and both reductions.
+    integer, intent(in) :: op
+    integer, intent(in) :: n_elem
+    integer, intent(in) :: n_samples
+    real(real32), intent(in) :: uvalue
+    real(real32), dimension(:,:), intent(in) :: t
+    real(real32), dimension(:,:), intent(in) :: w
+    real(real32), dimension(:,:), intent(in) :: d
+    real(real32), dimension(:,:), intent(out) :: dd
+    real(real32), dimension(:), intent(inout) :: dw
+    real(real32), dimension(:), intent(inout) :: oa
+    real(real32) :: av
+    integer :: i, s
+
+    select case(op)
+    case(1)
+       do s = 1, n_samples
+          !$omp simd
+          do i = 1, n_elem
+             av = uvalue * (1.0_real32 - t(i,s) * t(i,s))
+             dd(i,s) = av * w(i,1)
+             dw(i) = dw(i) + av * d(i,1)
+             oa(i) = oa(i) + av
+          end do
+       end do
+    case(2)
+       do s = 1, n_samples
+          !$omp simd
+          do i = 1, n_elem
+             av = uvalue * t(i,s) * 2.0_real32
+             dd(i,s) = av * w(i,1)
+             dw(i) = dw(i) + av * d(i,1)
+             oa(i) = oa(i) + av
+          end do
+       end do
+    case(3)
+       do s = 1, n_samples
+          !$omp simd
+          do i = 1, n_elem
+             av = uvalue * t(i,s)
+             dd(i,s) = av * w(i,1)
+             dw(i) = dw(i) + av * d(i,1)
+             oa(i) = oa(i) + av
+          end do
+       end do
+    case default
+       do s = 1, n_samples
+          !$omp simd
+          do i = 1, n_elem
+             av = -uvalue
+             dd(i,s) = av * w(i,1)
+             dw(i) = dw(i) + av * d(i,1)
+             oa(i) = oa(i) + av
+          end do
+       end do
+    end select
+  end subroutine unary_add_mult_kernel
+
+
+  subroutine add_to_gradient(phase, grad, values)
     !! Adds values to a gradient accumulator, overwriting stale contents.
     !!
     !! The first contribution of a pass overwrites the accumulator, so a pass
     !! never has to zero (or read) the gradient array first. Later
-    !! contributions from other paths add to it.
+    !! contributions from other paths add to it. `phase` is the owning
+    !! context's pass tag.
+    integer, intent(in) :: phase
+    !! Tag of the current backward pass
     type(array_type), intent(inout) :: grad
     !! Gradient accumulator
     real(real32), dimension(:,:), intent(in) :: values
@@ -629,14 +680,14 @@ contains
        end do
     end do
 #else
-    if(grad%phase /= accumulate_phase) then
+    if(grad%phase /= phase) then
        do s = 1, n
           !$omp simd
           do i = 1, size(grad%store, 1)
              grad%store(i,s) = values(i,s)
           end do
        end do
-       grad%phase = accumulate_phase
+       grad%phase = phase
     else
        do s = 1, n
           !$omp simd
@@ -682,11 +733,12 @@ contains
     type(array_type) :: tmp
     type(array_type), pointer :: upnode, nleft
     type(array_context_type) :: ctx
+    type(context_state), pointer :: state
     real(real32), dimension(:, :), pointer :: pval
     real(real32), dimension(:, :), pointer :: reduced
     real(real32), dimension(:, :), allocatable :: partial
     real(real32), dimension(:), allocatable :: column
-    integer :: i, n_elem, ncols, n_samples, s
+    integer :: i, n_elem, ncols, n_samples, s, nth
     logical :: has_direction, value_ok, sum_ok, needs_recurse, done
 
     if(.not. associated(child)) return
@@ -698,6 +750,7 @@ contains
     needs_recurse = associated(child%left_operand) .or. &
          associated(child%right_operand)
     ctx = context_of_node(child)
+    state => context_state_of(ctx)
 
     if(side == 1) then
        value_ok = associated(node%get_partial_left_val)
@@ -730,9 +783,9 @@ contains
           case('sum_all_array')
              if(is_variable(child)) then
                 child%grad => ensure_gradient(ctx, child, 1)
-                if(child%grad%phase /= accumulate_phase) then
+                if(child%grad%phase /= state%accumulate_phase) then
                    child%grad%val(:, 1) = uvalue * real(n_samples, real32)
-                   child%grad%phase = accumulate_phase
+                   child%grad%phase = state%accumulate_phase
                 else
                    child%grad%val(:, 1) = child%grad%val(:, 1) + &
                         uvalue * real(n_samples, real32)
@@ -789,7 +842,7 @@ contains
              if(child%is_sample_dependent .and. n_samples > 1) then
                 if(is_variable(child)) then
                    child%grad => ensure_gradient(ctx, child, n_samples)
-                   call add_to_gradient(child%grad, pval)
+                   call add_to_gradient(state%accumulate_phase, child%grad, pval)
                 end if
                 if(needs_recurse) call reverse_accumulate(child, pval, depth + 1)
              else
@@ -797,7 +850,10 @@ contains
                 column = sum(pval, dim=2)
                 if(is_variable(child)) then
                    child%grad => ensure_gradient(ctx, child, 1)
-                   call add_to_gradient(child%grad, reshape(column, [n_elem, 1]))
+                   call add_to_gradient( &
+                        state%accumulate_phase, child%grad, &
+                        reshape(column, [n_elem, 1]) &
+                   )
                 end if
                 if(needs_recurse) call reverse_accumulate(child, &
                      reshape(column, [n_elem, 1]), depth + 1)
@@ -820,7 +876,7 @@ contains
        else
           if(is_variable(child)) then
              child%grad => ensure_gradient(ctx, child, max(1, n_samples))
-             if(child%grad%phase /= accumulate_phase) then
+             if(child%grad%phase /= state%accumulate_phase) then
                 ncols = min(n_samples, size(child%grad%store, 2))
                 do s = 1, ncols
                    !$omp simd
@@ -828,9 +884,9 @@ contains
                       child%grad%store(i,s) = upstream(i,s)
                    end do
                 end do
-                child%grad%phase = accumulate_phase
+                child%grad%phase = state%accumulate_phase
              else
-                call add_to_gradient(child%grad, upstream)
+                call add_to_gradient(state%accumulate_phase, child%grad, upstream)
              end if
           end if
           if(needs_recurse) call reverse_accumulate(child, upstream, depth + 1)
@@ -845,7 +901,7 @@ contains
 #ifndef DIFFSTRUC_SLOW_REVERSE
        if(is_variable(child)) then
           child%grad => ensure_gradient(ctx, child, 1)
-          if(child%grad%phase /= accumulate_phase) then
+          if(child%grad%phase /= state%accumulate_phase) then
              ! First contribution of the pass: write it straight into the
              ! accumulator instead of buffering and adding.
              if(side == 1) then
@@ -853,7 +909,7 @@ contains
              else
                 call node%get_partial_right_val_sum(upstream, child%grad%val(:, 1))
              end if
-             child%grad%phase = accumulate_phase
+             child%grad%phase = state%accumulate_phase
              if(needs_recurse) call reverse_accumulate(child, &
                   spread(child%grad%val(:, 1), 2, 1), depth + 1)
              return
@@ -866,7 +922,8 @@ contains
        else
           call node%get_partial_right_val_sum(upstream, reduced(:, 1))
        end if
-       if(is_variable(child)) call add_to_gradient(child%grad, reduced)
+       if(is_variable(child)) &
+            call add_to_gradient(state%accumulate_phase, child%grad, reduced)
        if(needs_recurse) call reverse_accumulate(child, reduced, depth + 1)
        call release_scratch(ctx, reduced)
        return
@@ -880,7 +937,7 @@ contains
 #ifndef DIFFSTRUC_SLOW_REVERSE
        if(is_variable(child)) then
           child%grad => ensure_gradient(ctx, child, max(1, n_samples))
-          if(child%grad%phase /= accumulate_phase .and. &
+          if(child%grad%phase /= state%accumulate_phase .and. &
                n_samples == size(child%grad%val, 2)) then
              if(side == 1) then
                 call node%get_partial_left_val(upstream, child%grad%val)
@@ -892,7 +949,7 @@ contains
                    child%grad%val(:, s) = child%grad%val(:, s) * child%direction
                 end do
              end if
-             child%grad%phase = accumulate_phase
+             child%grad%phase = state%accumulate_phase
              if(needs_recurse) call reverse_accumulate(child, &
                   child%grad%val, depth + 1)
              return
@@ -913,7 +970,7 @@ contains
        if(child%is_sample_dependent .and. n_samples > 1) then
           if(is_variable(child)) then
              child%grad => ensure_gradient(ctx, child, n_samples)
-             call add_to_gradient(child%grad, pval)
+             call add_to_gradient(state%accumulate_phase, child%grad, pval)
           end if
           if(needs_recurse) call reverse_accumulate(child, pval, depth + 1)
        else
@@ -921,7 +978,9 @@ contains
           column = sum(pval, dim=2)
           if(is_variable(child)) then
              child%grad => ensure_gradient(ctx, child, 1)
-             call add_to_gradient(child%grad, reshape(column, [n_elem, 1]))
+             call add_to_gradient( &
+                  state%accumulate_phase, child%grad, reshape(column, [n_elem, 1]) &
+             )
           end if
           if(needs_recurse) call reverse_accumulate(child, &
                reshape(column, [n_elem, 1]), depth + 1)
@@ -966,7 +1025,7 @@ contains
     if(child%is_sample_dependent .and. n_samples > 1) then
        if(is_variable(child)) then
           child%grad => ensure_gradient(ctx, child, n_samples)
-          call add_to_gradient(child%grad, partial)
+          call add_to_gradient(state%accumulate_phase, child%grad, partial)
        end if
        if(needs_recurse) call reverse_accumulate(child, partial, depth + 1)
     else
@@ -974,7 +1033,9 @@ contains
           child%grad => ensure_gradient(ctx, child, 1)
           allocate(column(n_elem))
           column = sum(partial, dim=2)
-          call add_to_gradient(child%grad, reshape(column, [n_elem, 1]))
+          call add_to_gradient( &
+               state%accumulate_phase, child%grad, reshape(column, [n_elem, 1]) &
+          )
           deallocate(column)
        end if
        if(needs_recurse) then
@@ -1058,8 +1119,12 @@ contains
     type(array_context_type) :: ctx
     !! Its context
 
-    ctx%slot = max(1, min(max_contexts, node%ctx))
-    ctx%gen = node%gen
+    if(associated(node%ctx%state)) then
+       ctx%state => node%ctx%state
+       ctx%gen = node%ctx%gen
+    else
+       ctx = default_context_of()
+    end if
   end function context_of_node
 !###############################################################################
 
@@ -1080,6 +1145,7 @@ contains
     type(array_type) :: tmp
     type(array_type), pointer :: handle
     type(array_context_type) :: ctx
+    type(context_state), pointer :: state
     logical :: has_val_partial
 
     if(side == 1) then
@@ -1099,8 +1165,9 @@ contains
 
 
     ! Fall back to the graph-building partial derivative.
-    scratch_nodes_created = .true.
     ctx = context_of_node(node)
+    state => context_state_of(ctx)
+    state%scratch_nodes_created = .true.
     handle => allocate_value_storage(ctx, 1, &
          [size(upstream, 1), size(upstream, 2)])
     handle%val = upstream
@@ -1146,8 +1213,7 @@ contains
 
     node => canonical(this)
     if(.not. associated(node)) return
-    diffstruc__visit_counter = diffstruc__visit_counter + 1
-    visit = diffstruc__visit_counter
+    visit = next_visit(node)
     call zero_grads_inner(node, visit)
   end subroutine zero_all_grads
 !###############################################################################
@@ -1200,8 +1266,10 @@ contains
 
     if(node%visit_tag == visit) return
     node%visit_tag = visit
-    if(associated(node%left_operand)) call zero_variable_grads(node%left_operand, visit)
-    if(associated(node%right_operand)) call zero_variable_grads(node%right_operand, visit)
+    if(associated(node%left_operand)) &
+         call zero_variable_grads(node%left_operand, visit)
+    if(associated(node%right_operand)) &
+         call zero_variable_grads(node%right_operand, visit)
     if(is_variable(node) .and. associated(node%grad)) node%grad%val = 0.0_real32
   end subroutine zero_variable_grads
 !###############################################################################
@@ -1234,8 +1302,7 @@ contains
 
     node => canonical(this)
     if(.not. associated(node)) return
-    diffstruc__visit_counter = diffstruc__visit_counter + 1
-    visit = diffstruc__visit_counter
+    visit = next_visit(node)
     call invalidate_inner(node, visit)
   end subroutine invalidate_gradients
 !###############################################################################
@@ -1270,8 +1337,7 @@ contains
 
     node => canonical(this)
     if(.not. associated(node)) return
-    diffstruc__visit_counter = diffstruc__visit_counter + 1
-    visit = diffstruc__visit_counter
+    visit = next_visit(node)
     call reset_grads_inner(node, visit)
   end subroutine reset_graph_of
 !###############################################################################
@@ -1332,8 +1398,7 @@ contains
     ! Decide this before the operands are released: nullifying them would make
     ! the root look like a root variable even when it is a temporary.
     release_root = node%is_temporary .and. .not. is_variable(node)
-    diffstruc__visit_counter = diffstruc__visit_counter + 1
-    visit = diffstruc__visit_counter
+    visit = next_visit(node)
     call release_operands(node, visit)
     if(release_root) then
        ! The root of the released graph is a temporary expression node: the
@@ -1518,8 +1583,7 @@ contains
        write(*, '(A)') 'empty graph'
        return
     end if
-    diffstruc__visit_counter = diffstruc__visit_counter + 1
-    call print_graph_inner(node, diffstruc__visit_counter, 0, show_location)
+    call print_graph_inner(node, next_visit(node), 0, show_location)
   end subroutine print_graph
 !###############################################################################
 
@@ -1642,7 +1706,8 @@ contains
 
     output = 0.0_real32
     do s = 1, size(upstream_grad, 2)
-       output(:) = output(:) + upstream_grad(:, s) * this%val(:, min(s, size(this%val, 2)))
+       output(:) = output(:) + upstream_grad(:, s) * &
+            this%val(:, min(s, size(this%val, 2)))
     end do
   end subroutine get_partial_exp_val_sum
 !###############################################################################

@@ -2,7 +2,7 @@ module diffstruc__operations_hyp
   !! This module contains hyperbolic operations for the diffstruc library.
   use coreutils, only: real32
   use diffstruc__types, only: canonical, constant_node, array_type, get_partial, &
-       operator(+), operator(-), operator(*), operator(**)
+       team_size_for, operator(+), operator(-), operator(*), operator(**)
   implicit none
 
 
@@ -33,12 +33,14 @@ contains
     class(array_type), intent(in), target :: a
     type(array_type), pointer :: c
     type(array_type), pointer :: na, nc
-    integer :: i, s
+    integer :: i, s, nth
     real(real32) :: av, x2, p, q
 
     na => canonical(a)
     c => a%create_result()
     nc => c
+    nth = team_size_for(a, size(na%store, 1), size(na%store, 2))
+    !$omp parallel do if(nth > 1) num_threads(nth) schedule(static)
     do s = 1, size(na%store, 2)
        !$omp simd
        do i = 1, size(na%store, 1)
@@ -72,12 +74,14 @@ contains
     class(array_type), intent(in), target :: a
     type(array_type), pointer :: c
     type(array_type), pointer :: na, nc
-    integer :: i, s
+    integer :: i, s, nth
     real(real32) :: av, x2, p, q
 
     na => canonical(a)
     c => a%create_result()
     nc => c
+    nth = team_size_for(a, size(na%store, 1), size(na%store, 2))
+    !$omp parallel do if(nth > 1) num_threads(nth) schedule(static)
     do s = 1, size(na%store, 2)
        !$omp simd
        do i = 1, size(na%store, 1)
@@ -132,7 +136,6 @@ contains
     real(real32), dimension(:,:), intent(out) :: output
 
     integer :: i, s
-
     do s = 1, size(output, 2)
        !$omp simd
        do i = 1, size(output, 1)

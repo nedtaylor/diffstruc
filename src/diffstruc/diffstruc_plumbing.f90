@@ -16,8 +16,12 @@ contains
     type(array_context_type) :: ctx
     !! Its context
 
-    ctx%slot = max(1, min(max_contexts, this%ctx))
-    ctx%gen = this%gen
+    if(associated(this%ctx%state)) then
+       ctx%state => this%ctx%state
+       ctx%gen = this%ctx%gen
+    else
+       ctx = default_context_of()
+    end if
   end function context_of
 !###############################################################################
 
@@ -125,14 +129,13 @@ contains
     !! Record to copy
 
     ! Local variables
-    type(array_context_type) :: ctx
-    integer :: keep_id, keep_gen, keep_ctx
+    type(array_context_type) :: ctx, keep_ctx
+    integer :: keep_id, keep_gen
 
     keep_id = dst%id
     keep_gen = dst%gen
     keep_ctx = dst%ctx
-    ctx%slot = max(1, min(max_contexts, dst%ctx))
-    ctx%gen = dst%gen
+    ctx = context_of(dst)
     call release_node(ctx, dst)
     dst%id = keep_id
     dst%gen = keep_gen

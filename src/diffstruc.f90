@@ -1,10 +1,13 @@
 module diffstruc
   !! This is the top-level module for the diffstruc Fortran library.
   use coreutils, only: real32
-  use diffstruc__global, only: diffstruc__max_recursion_depth, diffstruc__init_map_cap
+  use diffstruc__global, only: diffstruc__init_map_cap, &
+       diffstruc__default_max_recursion_depth, diffstruc__parallel_min_elems
   use diffstruc__types, only: &
        array_type, array_context_type, default_context, &
        set_default_context, reset_default_context, get_partial, &
+       new_context, destroy_context, set_num_threads, get_num_threads, &
+       set_max_recursion_depth, team_size_for, context_of, canonical, live, &
        operator(+), operator(-), operator(*), operator(/), operator(**), &
        sum, mean, spread, unspread, exp, log
   use diffstruc__operations_trig, only: sin, cos, tan
@@ -28,10 +31,14 @@ module diffstruc
   private
 
   public :: real32
-  public :: diffstruc__max_recursion_depth, diffstruc__init_map_cap
+  public :: diffstruc__init_map_cap, diffstruc__default_max_recursion_depth
+  public :: diffstruc__parallel_min_elems
   public :: array_type, get_partial
   public :: array_context_type, default_context
   public :: set_default_context, reset_default_context
+  public :: new_context, destroy_context, set_num_threads, get_num_threads
+  public :: set_max_recursion_depth, team_size_for
+  public :: context_of, canonical, live
 
   public :: operator(+), operator(-), operator(*), operator(/), operator(**)
   public :: sum, mean, spread, unspread, exp, log

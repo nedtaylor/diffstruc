@@ -21,6 +21,9 @@ if [ "$CC" != "flang-new" ] && [ "$CC" != "flang" ]; then
   # Version loops on their runtime stride so unit-stride copies vectorise.
   FLAGS="$FLAGS -fversion-loops-for-strides -fvect-cost-model=unlimited"
 fi
+if [ -n "$OPENMP" ]; then
+  FLAGS="$FLAGS -fopenmp"
+fi
 if [ -n "$USE_BLAS" ]; then
   FLAGS="$FLAGS -DUSE_BLAS"
 fi
@@ -34,6 +37,7 @@ build() {
   $CC $FLAGS -c -o "$M/$2.o" $MOD -I "$M" "$1"
 }
 build $SRC/diffstruc_global.f90 global
+build $SRC/diffstruc_parallel.f90 parallel
 build $SRC/diffstruc_types.f90 types
 build $SRC/diffstruc_context.f90 context
 build $SRC/diffstruc_plumbing.f90 plumbing

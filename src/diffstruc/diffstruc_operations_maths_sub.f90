@@ -1,7 +1,7 @@
 submodule(diffstruc__operations_maths) diffstruc__operations_maths_sub
   !! Submodule containing implementations of maths operations.
   use coreutils, only: pi
-  use diffstruc__types, only: canonical, constant_node, &
+  use diffstruc__types, only: canonical, constant_node, team_size_for, &
        operator(+), operator(-), operator(*), operator(/), operator(**), exp
 
   real(real32), parameter :: inv_log10 = 1.0_real32 / log(10._real32)
@@ -333,7 +333,6 @@ contains
     real(real32), dimension(:,:), intent(out) :: output
 
     integer :: i, s
-
     do s = 1, size(output, 2)
        !$omp simd
        do i = 1, size(output, 1)
