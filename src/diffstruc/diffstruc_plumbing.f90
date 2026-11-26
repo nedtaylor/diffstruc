@@ -131,15 +131,17 @@ contains
 
     ! Local variables
     type(array_context_type) :: ctx, keep_ctx
-    integer :: keep_id, keep_gen
+    integer :: keep_id, keep_gen, keep_slot
 
     keep_id = dst%id
     keep_gen = dst%gen
+    keep_slot = dst%slot
     keep_ctx = dst%ctx
     ctx = context_of(dst)
     call release_node(ctx, dst)
     dst%id = keep_id
     dst%gen = keep_gen
+    dst%slot = keep_slot
     dst%ctx = keep_ctx
 
     dst%rank = src%rank
@@ -352,7 +354,7 @@ contains
 
 
 !###############################################################################
-  module subroutine deallocate_array(this, keep_shape)
+  module subroutine deallocate_array(this, keep_shape, recycle)
     !! Returns this handle's node storage to its context and unbinds the
     !! handle.
     !!
@@ -365,6 +367,8 @@ contains
     !! Handle to release
     logical, intent(in), optional :: keep_shape
     !! Retained for source compatibility; the context owns the shape
+    logical, intent(in), optional :: recycle
+    !! Whether the slot may be reused immediately
 
     ! Local variables
     type(array_type), pointer :: node
@@ -373,7 +377,7 @@ contains
     node => canonical(this)
     if(associated(node)) then
        ctx = context_of(this)
-       call release_node(ctx, node)
+       call release_node(ctx, node, recycle=recycle)
     end if
 
     this%id = 0
@@ -516,7 +520,7 @@ contains
          .not. associated(src%right_operand)) return
     if(.not. src%is_temporary) return
     ctx = context_of(source)
-    call release_node(ctx, src)
+    call release_node(ctx, src, recycle=.true.)
     source%id = 0
     source%allocated = .false.
     source%val => null()
@@ -568,6 +572,24 @@ contains
     node%operation = 'none'
     result_ptr => node
   end function create_result_array
+!###############################################################################
+
+
+!###############################################################################
+  module subroutine assign_replacing_history(this, source)
+    !! Copies a source array into this handle and releases the temporary
+    !! expression tree this handle currently retains.
+    !!
+    !! Use this instead of `assign_and_deallocate_source` when the record is a
+    !! scratch or output buffer that is being overwritten: its previous
+    !! expression has been consumed and its slots can be recycled. The caller
+    !! must not keep another live graph that still relies on that expression.
+    class(array_type), intent(inout) :: this
+    type(array_type), intent(inout), pointer :: source
+
+    call discard_sources(this)
+    call assign_and_deallocate_source(this, source)
+  end subroutine assign_replacing_history
 !###############################################################################
 
 
@@ -713,6 +735,4 @@ contains
     end if
   end subroutine detach
 !###############################################################################
-
-
 end submodule diffstruc__plumbing_impl

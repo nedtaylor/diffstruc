@@ -41,54 +41,66 @@ contains
     type(ad_registry), pointer :: chunk, fresh
     type(chunk_slot), dimension(:), allocatable :: grown
     logical :: fresh_needed
-    integer :: i, n
+    integer :: i, n, k, slot
 
     state => context_state_of(ctx)
-    ! Chunks are appended in order, so the last one is the only candidate for
-    ! free slots. Walking the list here made every allocation cost grow with
-    ! the number of chunks ever created.
-    chunk => state%tail
 
-    fresh_needed = .not. associated(chunk)
-    if(.not. fresh_needed) fresh_needed = state%free_slot > size(chunk%nodes)
-    if(fresh_needed) then
-       allocate(fresh)
-       allocate(fresh%nodes(node_chunk_size))
-       n = node_chunk_size
-       do i = 1, n
-          call clear_record(fresh%nodes(i))
-       end do
-       fresh%base = state%last_id
-       nullify(fresh%next)
-       if(associated(chunk)) then
-          chunk%next => fresh
-       else
-          state%head => fresh
-       end if
-       chunk => fresh
-       state%tail => fresh
-       state%free_slot = 1
-       ! Record the chunk so `find_node` can address a record arithmetically.
-       if(.not. allocated(state%chunks)) then
-          allocate(state%chunks(16))
-       else if(state%n_chunks == size(state%chunks)) then
-          allocate(grown(2*state%n_chunks))
-          do i = 1, state%n_chunks
-             grown(i)%chunk => state%chunks(i)%chunk
+    if(state%free_n > 0) then
+       ! Reuse a released record slot. Ids stay monotonic, so a stale handle
+       ! pointing at this slot still fails the id check in `find_node`.
+       slot = state%free_slots(state%free_n)
+       state%free_n = state%free_n - 1
+       k = int((slot - 1) / node_chunk_size) + 1
+       chunk => state%chunks(k)%chunk
+       i = slot - (k - 1) * node_chunk_size
+    else
+       ! Chunks are appended in order, so the last one is the only candidate
+       ! for fresh slots.
+       chunk => state%tail
+
+       fresh_needed = .not. associated(chunk)
+       if(.not. fresh_needed) fresh_needed = state%free_slot > size(chunk%nodes)
+       if(fresh_needed) then
+          allocate(fresh)
+          allocate(fresh%nodes(node_chunk_size))
+          n = node_chunk_size
+          do i = 1, n
+             call clear_record(fresh%nodes(i))
           end do
-          call move_alloc(grown, state%chunks)
+          nullify(fresh%next)
+          if(associated(chunk)) then
+             chunk%next => fresh
+          else
+             state%head => fresh
+          end if
+          chunk => fresh
+          state%tail => fresh
+          state%free_slot = 1
+          ! Record the chunk so a slot can be resolved from its global index.
+          if(.not. allocated(state%chunks)) then
+             allocate(state%chunks(16))
+          else if(state%n_chunks == size(state%chunks)) then
+             allocate(grown(2*state%n_chunks))
+             do i = 1, state%n_chunks
+                grown(i)%chunk => state%chunks(i)%chunk
+             end do
+             call move_alloc(grown, state%chunks)
+          end if
+          state%n_chunks = state%n_chunks + 1
+          state%chunks(state%n_chunks)%chunk => fresh
        end if
-       state%n_chunks = state%n_chunks + 1
-       state%chunks(state%n_chunks)%chunk => fresh
+
+       i = state%free_slot
+       state%free_slot = i + 1
+       slot = (state%n_chunks - 1) * node_chunk_size + i
     end if
 
-    i = state%free_slot
-    state%free_slot = i + 1
     node => chunk%nodes(i)
     call clear_record(node)
 
     state%last_id = state%last_id + 1_int64
     node%id = int(state%last_id)
+    node%slot = slot
     node%gen = state%gen
     node%ctx%state => state
     node%ctx%gen = state%gen
@@ -134,8 +146,11 @@ contains
   module function find_node(ctx, id) result(node)
     !! Finds the live node record with the given id.
     !!
-    !! Ids are issued in order and every chunk holds a consecutive id range,
-    !! so a record is addressed directly from its id.
+    !! Ids are issued monotonically and never reused, but slots are recycled,
+    !! so the record is located by scanning the registry. This is only a
+    !! fallback path (a bound handle already knows its record), which keeps
+    !! registry memory proportional to the live graph rather than to the
+    !! number of records ever issued.
     type(array_context_type), intent(in) :: ctx
     !! The owning context
     integer, intent(in) :: id
@@ -146,23 +161,24 @@ contains
     ! Local variables
     type(context_state), pointer :: state
     type(ad_registry), pointer :: chunk
-    integer :: i, k
+    integer :: i
 
     nullify(node)
     if(id <= 0) return
     state => context_state_of(ctx)
     if(id > state%last_id) return
-    ! Every chunk but the last holds exactly node_chunk_size records carrying
-    ! consecutive ids, so the owning chunk follows from the id.
-    k = int((id - 1) / node_chunk_size) + 1
-    if(k < 1 .or. k > state%n_chunks) return
-    chunk => state%chunks(k)%chunk
-    if(.not. associated(chunk)) return
-    i = int(int(id, int64) - chunk%base)
-    if(i < 1 .or. i > size(chunk%nodes)) return
-    if(chunk%nodes(i)%id == id .and. chunk%nodes(i)%gen == state%gen) then
-       node => chunk%nodes(i)
-    end if
+    chunk => state%head
+    do while(associated(chunk))
+       if(associated(chunk%nodes)) then
+          do i = 1, size(chunk%nodes)
+             if(chunk%nodes(i)%id == id .and. chunk%nodes(i)%gen == state%gen) then
+                node => chunk%nodes(i)
+                return
+             end if
+          end do
+       end if
+       chunk => chunk%next
+    end do
   end function find_node
 !###############################################################################
 
@@ -238,16 +254,26 @@ contains
 
 
 !###############################################################################
-  module subroutine release_node(ctx, node)
+  module subroutine release_node(ctx, node, recycle)
     !! Releases every buffer a node record owns and empties the record.
-    !!
-    !! This is the only place storage is returned to the runtime. It is called
-    !! by the context when a region is discarded; callers must not keep any
-    !! handle to the node afterwards.
     type(array_context_type), intent(in) :: ctx
     !! The owning context
     type(array_type), intent(inout) :: node
     !! The record to empty
+    logical, intent(in), optional :: recycle
+    !! Whether the slot may be reused immediately
+
+    ! Local variables
+    type(context_state), pointer :: state
+    logical :: recycle_
+
+    if(node%id <= 0) return
+    recycle_ = .false.
+    if(present(recycle)) recycle_ = recycle
+    if(recycle_ .and. node%slot > 0) then
+       state => context_state_of(ctx)
+       call push_free_slot(state, node%slot)
+    end if
 
     call give_value(ctx, node%store)
     node%val => null()
@@ -256,10 +282,10 @@ contains
     if(allocated(node%adj_ja)) deallocate(node%adj_ja)
     if(allocated(node%mask)) deallocate(node%mask)
     if(allocated(node%direction)) deallocate(node%direction)
-    ! Records are never reused (slots are retired, not recycled), so only the
-    ! identity and the links need clearing: `find_node` treats id=0 as dead and
-    ! no live handle may point at this record any more.
+    ! The slot may be on the free list now; only the identity and links need
+    ! clearing. `find_node` treats id=0 as dead and ids are never reused.
     node%id = 0
+    node%slot = 0
     node%grad => null()
     node%left_operand => null()
     node%right_operand => null()
@@ -290,6 +316,8 @@ contains
        next => chunk%next
        if(associated(chunk%nodes)) then
           do i = 1, size(chunk%nodes)
+             ! The chunks themselves are dropped below, so the slots do not
+             ! need to go on the free list.
              call release_node(ctx, chunk%nodes(i))
           end do
           deallocate(chunk%nodes)
@@ -299,8 +327,9 @@ contains
     end do
     nullify(state%head)
     nullify(state%tail)
-    nullify(state%mark_chunk)
     if(allocated(state%chunks)) deallocate(state%chunks)
+    if(allocated(state%free_slots)) deallocate(state%free_slots)
+    state%free_n = 0
     state%n_chunks = 0
     if(associated(state%pool)) then
        do i = 1, state%pool_top
@@ -322,7 +351,6 @@ contains
     state%free_slot = 1
     state%gen = state%gen + 1
     state%mark_id = 0_int64
-    state%mark_slot = 1
     state%mark_gen = state%gen
   end subroutine reset_context
 !###############################################################################
@@ -339,9 +367,7 @@ contains
 
     state => context_state_of(ctx)
     state%mark_id = state%last_id
-    state%mark_slot = state%free_slot
     state%mark_gen = state%gen
-    state%mark_chunk => state%tail
   end subroutine checkpoint_context
 !###############################################################################
 
@@ -363,27 +389,21 @@ contains
 
     state => context_state_of(ctx)
     if(state%gen /= state%mark_gen) return
-    chunk => state%mark_chunk
-    if(.not. associated(chunk)) return
-    i = state%mark_slot
+    ! Slots are recycled, so a record created after the checkpoint may live in
+    ! any chunk/slot. Select records by id instead of by registry position.
+    chunk => state%head
     do while(associated(chunk))
        if(associated(chunk%nodes)) then
-          do while(i <= size(chunk%nodes))
+          do i = 1, size(chunk%nodes)
              if(chunk%nodes(i)%id > 0) then
                 if(int(chunk%nodes(i)%id, int64) > state%mark_id) then
-                   call release_node(ctx, chunk%nodes(i))
+                   call release_node(ctx, chunk%nodes(i), recycle=.true.)
                 end if
              end if
-             i = i + 1
           end do
        end if
        chunk => chunk%next
-       i = 1
     end do
-    ! Slots are deliberately not reused: ids must stay monotonic so that a
-    ! stale handle is detected, and a record is never overwritten while some
-    ! pointer into the registry may still refer to it.
-    state%mark_slot = state%free_slot
     if(associated(state%pool)) then
        do i = 1, state%pool_top
           state%pool(i)%in_use = .false.
@@ -413,24 +433,21 @@ contains
     integer :: i
 
     state => context_state_of(ctx)
-    chunk => state%mark_chunk
-    if(.not. associated(chunk)) return
-    ! Only the records issued after the checkpoint can be transient: the first
-    ! scan starts at the checkpoint's slot, every later chunk is scanned whole.
-    i = state%mark_slot
+    ! Slots are recycled, so scan every chunk and select by id.
+    chunk => state%head
     do while(associated(chunk))
        if(associated(chunk%nodes)) then
-          do while(i <= size(chunk%nodes))
+          do i = 1, size(chunk%nodes)
              if(chunk%nodes(i)%id > 0) then
-                if(chunk%nodes(i)%visit_tag /= keep_tag) then
-                   call release_node(ctx, chunk%nodes(i))
+                if(int(chunk%nodes(i)%id, int64) > state%mark_id) then
+                   if(chunk%nodes(i)%visit_tag /= keep_tag) then
+                      call release_node(ctx, chunk%nodes(i), recycle=.true.)
+                   end if
                 end if
              end if
-             i = i + 1
           end do
        end if
        chunk => chunk%next
-       i = 1
     end do
   end subroutine sweep_region
 !###############################################################################
@@ -522,6 +539,29 @@ contains
 !###############################################################################
 
 
+
+
+!###############################################################################
+  subroutine push_free_slot(state, slot)
+    !! Records a released slot for reuse.
+    type(context_state), intent(inout) :: state
+    integer, intent(in) :: slot
+    integer, allocatable :: grown(:)
+
+    if(.not. allocated(state%free_slots)) then
+       allocate(state%free_slots(1024))
+       state%free_n = 0
+    else if(state%free_n == size(state%free_slots)) then
+       allocate(grown(2*size(state%free_slots)))
+       grown(1:state%free_n) = state%free_slots(1:state%free_n)
+       call move_alloc(grown, state%free_slots)
+    end if
+    state%free_n = state%free_n + 1
+    state%free_slots(state%free_n) = slot
+  end subroutine push_free_slot
+!###############################################################################
+
+
 !###############################################################################
   subroutine clear_record(node)
     !! Empties every component of a node record without freeing storage.
@@ -529,6 +569,7 @@ contains
     !! The record to empty
 
     node%id = 0
+    node%slot = 0
     node%gen = 1
     nullify(node%ctx%state)
     node%ctx%gen = 1

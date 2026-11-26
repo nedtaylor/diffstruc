@@ -32,6 +32,8 @@ endforeach()
 # These cases must reject invalid handles rather than dereference stale nodes.
 add_test(NAME test_context_stale COMMAND test_context stale)
 set_tests_properties(test_context_stale PROPERTIES WILL_FAIL TRUE)
+add_test(NAME test_context_recycled COMMAND test_context recycled)
+set_tests_properties(test_context_recycled PROPERTIES WILL_FAIL TRUE)
 add_test(NAME test_context_guard COMMAND test_context guard)
 set_tests_properties(test_context_guard PROPERTIES WILL_FAIL TRUE)
 

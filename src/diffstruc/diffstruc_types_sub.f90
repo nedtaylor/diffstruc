@@ -230,6 +230,7 @@ contains
 
     if(same_node(this, variable)) then
        output => clone_handle(node)
+       output%is_temporary = .true.
        n_elem = size(output%val, 1)
        n_samples = size(output%val, 2)
        if(allocated(node%direction)) then
@@ -280,6 +281,7 @@ contains
        else
           ! This subtree does not depend on the variable: its derivative is zero.
           output => clone_handle(node)
+          output%is_temporary = .true.
           output%val = 0.0_real32
           output%requires_grad = .false.
           output%grad => null()
@@ -287,6 +289,8 @@ contains
 
     else
        output => clone_handle(node)
+       output%is_temporary = .true.
+       output%requires_grad = .false.
        output%val = 0.0_real32
     end if
 
@@ -1381,6 +1385,55 @@ contains
 
 
 !###############################################################################
+  module subroutine discard_sources(this, leaves)
+    !! Releases the temporary expression tree retained by a bound record.
+    !!
+    !! By default only temporary operation nodes are released: temporary leaves
+    !! are kept because another part of the same step may still read their
+    !! values. Pass `leaves=.true.` when the whole expression is dead, which
+    !! also releases temporary input copies.
+    class(array_type), intent(inout), target :: this
+    logical, intent(in), optional :: leaves
+    type(array_type), pointer :: node
+    logical :: release_leaves
+    integer :: visit
+
+    release_leaves = .false.
+    if(present(leaves)) release_leaves = leaves
+    node => canonical(this)
+    if(.not. associated(node)) return
+    visit = next_visit(node)
+    call discard_children(node, visit, release_leaves)
+  end subroutine discard_sources
+!-------------------------------------------------------------------------------
+  recursive subroutine discard_children(node, visit, release_leaves)
+    type(array_type), intent(inout) :: node
+    integer, intent(in) :: visit
+    logical, intent(in) :: release_leaves
+
+    if(node%visit_tag == visit) return
+    node%visit_tag = visit
+    call discard_child(node%left_operand, visit, release_leaves)
+    call discard_child(node%right_operand, visit, release_leaves)
+  end subroutine discard_children
+!-------------------------------------------------------------------------------
+  recursive subroutine discard_child(child, visit, release_leaves)
+    type(array_type), pointer, intent(inout) :: child
+    integer, intent(in) :: visit
+    logical, intent(in) :: release_leaves
+
+    if(.not. associated(child)) return
+    if(child%is_temporary .and. (release_leaves .or. &
+         associated(child%left_operand) .or. associated(child%right_operand))) then
+       call discard_children(child, visit, release_leaves)
+       call release_node(context_of_node(child), child, recycle=.true.)
+    end if
+    child => null()
+  end subroutine discard_child
+!###############################################################################
+
+
+!###############################################################################
   module subroutine nullify_graph(this, ignore_ownership)
     !! Releases the graph structure rooted at this array.
     !!
@@ -1420,6 +1473,30 @@ contains
        call bind_handle(this, node)
     end if
   end subroutine nullify_graph
+!###############################################################################
+
+
+!###############################################################################
+  module subroutine release_expression(this)
+    !! Releases an expression that has been fully consumed.
+    !!
+    !! Unlike `nullify_graph`, which keeps a root that looks like an owned
+    !! output, this frees the whole expression and recycles every record. Use
+    !! it for a loss or residual that will not be read again.
+    class(array_type), intent(inout), target :: this
+    type(array_type), pointer :: node
+
+    node => canonical(this)
+    if(.not. associated(node)) then
+       this%id = 0
+       this%allocated = .false.
+       this%val => null()
+       return
+    end if
+    call discard_sources(this, leaves=.true.)
+    call nullify_graph(this)
+    call deallocate_array(this, recycle=.true.)
+  end subroutine release_expression
 !###############################################################################
 
 
@@ -1545,6 +1622,10 @@ contains
       end if
       copy => allocate_node(ctx)
       call clone_record(copy, source)
+      ! A duplicated graph is transient: it exists only for as long as the
+      ! caller keeps it, so its records must not look like owned outputs when
+      ! the graph is released.
+      copy%is_temporary = .true.
       if(source%id > 0 .and. source%id <= size(map)) map(source%id) = copy%id
       if(associated(source%left_operand)) &
            copy%left_operand => copy_node(source%left_operand, ctx, map)

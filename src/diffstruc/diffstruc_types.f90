@@ -23,7 +23,7 @@ module diffstruc__types
   public :: default_context, set_default_context, reset_default_context
   public :: new_context, destroy_context, set_num_threads, get_num_threads
   public :: set_max_recursion_depth, team_size_for
-  public :: canonical, constant_node, context_of, live
+  public :: canonical, constant_node, context_of, live, discard_sources
 
   public :: operator(+), operator(-), operator(*), operator(/), operator(**)
   public :: sum, mean, spread, unspread, exp, log
@@ -83,16 +83,16 @@ module diffstruc__types
      !! The private state of one context: its node registry and scratch pool.
      type(ad_registry), pointer :: head => null()
      type(ad_registry), pointer :: tail => null()
-     type(ad_registry), pointer :: mark_chunk => null()
      type(chunk_slot), dimension(:), allocatable :: chunks
-     !! Direct index into the registry chunks, addressed by id
+     !! Direct index into the registry chunks, addressed by slot
      integer :: n_chunks = 0
      !! Number of entries used in `chunks`
      integer(int64) :: last_id = 0_int64
+     integer, allocatable :: free_slots(:)
+     integer :: free_n = 0
      integer :: free_slot = 1
      integer :: gen = 1
      integer(int64) :: mark_id = 0_int64
-     integer :: mark_slot = 1
      integer :: mark_gen = 1
      integer :: visit_counter = 0
      !! Traversal stamp counter (was a module global)
@@ -134,13 +134,15 @@ module diffstruc__types
   type :: array_type
      !! A lightweight, non-owning handle to an autodiff array.
      !!
-     !! The first three components identify the context-owned node record.
+     !! The first four components identify the context-owned node record.
      !! Every remaining component is a view: a pointer into storage owned by
      !! that node's context, or a pointer to another context-owned node. A
      !! handle never owns what it points at, so no destructor, finaliser or
      !! reference count is needed.
      integer :: id = 0
      !! The id of the referenced node record (zero when unbound)
+     integer :: slot = 0
+     !! Registry slot of the node record (zero when unbound)
      integer :: gen = 1
      !! The context generation the handle was bound in
      type(array_context_type) :: ctx = array_context_type()
@@ -226,6 +228,8 @@ module diffstruc__types
      !! Binds this handle to another handle's node
      procedure, pass(this) :: assign_and_deallocate_source
      !! Copies a source array into this handle
+     procedure, pass(this) :: assign_replacing_history
+     !! Copies a source into this handle, discarding its old expression tree
      procedure, pass(this) :: set => set_array
      !! Assigns array values
      procedure, pass(this) :: extract => extract_array
@@ -250,6 +254,8 @@ module diffstruc__types
      !! Deep-copies this array's computation graph
      procedure, pass(this) :: nullify_graph
      !! Releases the graph structure rooted at this array
+     procedure, pass(this) :: release_expression
+     !! Releases a consumed expression and recycles its records
      procedure, pass(this) :: get_ptr_from_id
      !! Finds the node of this array's graph with the given id
      procedure, pass(this) :: detach
@@ -318,10 +324,11 @@ module diffstruc__types
        logical, intent(in), optional :: temporary
      end subroutine allocate_array
 
-     module subroutine deallocate_array(this, keep_shape)
+     module subroutine deallocate_array(this, keep_shape, recycle)
        !! Releases this handle's binding; the context keeps the storage.
        class(array_type), intent(inout) :: this
        logical, intent(in), optional :: keep_shape
+       logical, intent(in), optional :: recycle
      end subroutine deallocate_array
 
      pure module function flatten_array(this) result(output)
@@ -338,6 +345,11 @@ module diffstruc__types
        class(array_type), intent(inout) :: this
        type(array_type), intent(inout), pointer :: source
      end subroutine assign_and_deallocate_source
+
+     module subroutine assign_replacing_history(this, source)
+       class(array_type), intent(inout) :: this
+       type(array_type), intent(inout), pointer :: source
+     end subroutine assign_replacing_history
 
      recursive module subroutine assign_array(this, input)
        class(array_type), intent(inout), target :: this
@@ -394,11 +406,21 @@ module diffstruc__types
        class(array_type), intent(inout) :: this
      end subroutine reset_graph
 
+     module subroutine discard_sources(this, leaves)
+       !! Releases temporary operand nodes retained by a bound record.
+       class(array_type), intent(inout), target :: this
+       logical, intent(in), optional :: leaves
+     end subroutine discard_sources
+
      module subroutine nullify_graph(this, ignore_ownership)
        !! Releases the graph structure rooted at this array
        class(array_type), intent(inout), target :: this
        logical, intent(in), optional :: ignore_ownership
      end subroutine nullify_graph
+
+     module subroutine release_expression(this)
+       class(array_type), intent(inout), target :: this
+     end subroutine release_expression
 
      module subroutine zero_grad(this)
        !! Zeroes this array's gradient
@@ -794,9 +816,10 @@ module diffstruc__types
        type(array_type), pointer :: node
      end function find_node
 
-     module subroutine release_node(ctx, node)
+     module subroutine release_node(ctx, node, recycle)
        type(array_context_type), intent(in) :: ctx
        type(array_type), intent(inout) :: node
+       logical, intent(in), optional :: recycle
      end subroutine release_node
 
      module subroutine reset_context(ctx)

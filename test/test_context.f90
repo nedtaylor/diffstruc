@@ -6,13 +6,14 @@ program test_context
   !! frees context storage, and releasing a graph leaves root variables
   !! usable. With an argument it exercises a failure mode that must abort:
   !!
-  !!   stale  -- use a handle to a node the context has released
-  !!   guard  -- use a handle that was never bound to a node
+  !!   stale    -- use a handle to a node the context has released
+  !!   recycled -- use a released handle after its slot was reused
+  !!   guard    -- use a handle that was never bound to a node
   use coreutils, only: real32
   use diffstruc
   implicit none
 
-  type(array_type) :: x, y
+  type(array_type) :: x, y, saved, fresh
   type(array_type), pointer :: f, g, released
   character(len=32) :: mode
 
@@ -29,6 +30,18 @@ program test_context
      ! This must abort: the handle refers to a released record.
      call released%set_shape([2, 1])
      write(*, *) 'handle to a released record was accepted'
+  case('recycled')
+     ! A released record's slot is recycled by the next allocation. A handle
+     ! that still points at the old record must be rejected, not resolve to
+     ! the new occupant of the slot.
+     call x%allocate(array_shape=[2, 1])
+     x%val = 1.0_real32
+     saved = x
+     call x%deallocate(recycle=.true.)
+     call fresh%allocate(array_shape=[4, 1])
+     ! This must abort: the handle refers to the record that used the slot.
+     call saved%set_shape([2, 1])
+     write(*, *) 'handle to a recycled record was accepted'
   case('guard')
      ! This must abort: the handle was never bound to a node.
      call x%set_shape([2, 1])
