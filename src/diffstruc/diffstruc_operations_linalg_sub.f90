@@ -858,4 +858,55 @@ contains
 ! !   end function get_partial_transpose_right
 !###############################################################################
 
+
+!###############################################################################
+  module subroutine gemm(transa, transb, m, n, k, &
+       a, lda, b, ldb, beta, c, ldc)
+    !! Dense matrix product for real buffers: C = A*B + beta*C.
+    !!
+    !! `transa`/`transb` follow the BLAS convention. All buffers are passed as
+    !! contiguous sequences with explicit leading dimensions, so callers can
+    !! use a column of a rank-2 record without creating pointer views.
+    character(len=1), intent(in) :: transa, transb
+    integer, intent(in) :: m, n, k, lda, ldb, ldc
+    real(real32), dimension(:), intent(in), contiguous :: a, b
+    real(real32), intent(in) :: beta
+    real(real32), dimension(:), intent(inout), contiguous :: c
+
+    logical :: ta, tb
+    integer :: i, j, l, ai, bi
+    real(real32) :: acc
+
+    ta = transa == 'T' .or. transa == 't'
+    tb = transb == 'T' .or. transb == 't'
+#ifdef USE_BLAS
+    call sgemm(transa, transb, m, n, k, 1.0_real32, a, lda, &
+         b, ldb, beta, c, ldc)
+#else
+    do j = 1, n
+       do i = 1, m
+          acc = 0.0_real32
+          do l = 1, k
+             if(ta) then
+                ai = l + (i-1) * lda
+             else
+                ai = i + (l-1) * lda
+             end if
+             if(tb) then
+                bi = j + (l-1) * ldb
+             else
+                bi = l + (j-1) * ldb
+             end if
+             acc = acc + a(ai) * b(bi)
+          end do
+          if(beta == 0.0_real32) then
+             c(i + (j-1)*ldc) = acc
+          else
+             c(i + (j-1)*ldc) = beta * c(i + (j-1)*ldc) + acc
+          end if
+       end do
+    end do
+#endif
+  end subroutine gemm
+!###############################################################################
 end submodule diffstruc__operations_linalg_sub

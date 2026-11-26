@@ -127,16 +127,11 @@ contains
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
-    integer :: i, j
-
-    output = 0._real32
-    do i = 1,size(upstream_grad, 1)
-       do j = 1,size(upstream_grad, 2)
-          if( abs( this%val(i,j) - this%left_operand%val(i,j) ) .lt. 1.E-6_real32 ) then
-             output(i,j) = upstream_grad(i,j)
-          end if
-       end do
-    end do
+    where( abs( this%val - this%left_operand%val ) .lt. 1.E-6_real32 )
+       output = upstream_grad
+    elsewhere
+       output = 0._real32
+    end where
 
   end subroutine get_partial_max_left_val
 !-------------------------------------------------------------------------------
@@ -146,16 +141,11 @@ contains
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
-    integer :: i, j
-
-    output = 0._real32
-    do i = 1,size(upstream_grad, 1)
-       do j = 1,size(upstream_grad, 2)
-          if( abs( this%val(i,j) - this%right_operand%val(i,j) ) .lt. 1.E-6_real32 ) then
-             output(i,j) = upstream_grad(i,j)
-          end if
-       end do
-    end do
+    where( abs( this%val - this%right_operand%val ) .lt. 1.E-6_real32 )
+       output = upstream_grad
+    elsewhere
+       output = 0._real32
+    end where
 
   end subroutine get_partial_max_right_val
 !###############################################################################

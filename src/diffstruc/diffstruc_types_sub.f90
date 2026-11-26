@@ -874,7 +874,8 @@ contains
     ! Addition passes the upstream gradient through unchanged, so the operand
     ! can consume it directly: no partial buffer is needed at all.
 #ifndef DIFFSTRUC_SLOW_REVERSE
-    if(trim(node%operation) == 'add') then
+    if(trim(node%operation) == 'add' .or. &
+         (side == 1 .and. trim(node%operation) == 'add_bias')) then
        if(has_direction .or. (.not. child%is_sample_dependent .and. &
             n_samples > 1)) then
           ! fall through to the buffered value path, which scales the values

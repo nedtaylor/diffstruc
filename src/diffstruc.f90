@@ -16,7 +16,7 @@ module diffstruc
        matmul, operator(.mmul.), &
        outer_product, operator(.outer.), &
        dot_product, operator(.dot.), &
-       transpose
+       transpose, gemm
   use diffstruc__operations_broadcast, only: &
        concat, slice_left, slice_right, ltrim, rtrim, &
        operator(.index.), reverse_index, &
@@ -47,7 +47,7 @@ module diffstruc
   public :: matmul, operator(.mmul.), &
        outer_product, operator(.outer.), &
        dot_product, operator(.dot.), &
-       transpose
+       transpose, gemm
   public :: concat, slice_left, slice_right, ltrim, rtrim, &
        operator(.index.), reverse_index, &
        pack, unpack, reshape

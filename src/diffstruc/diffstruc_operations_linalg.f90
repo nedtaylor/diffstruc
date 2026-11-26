@@ -10,6 +10,7 @@ module diffstruc__operations_linalg
   public :: outer_product, operator(.outer.)
   public :: dot_product, operator(.dot.)
   public :: transpose
+  public :: gemm
 
   ! Operation interfaces
   !-----------------------------------------------------------------------------
@@ -62,6 +63,17 @@ module diffstruc__operations_linalg
        class(array_type), intent(in), target :: a
        type(array_type), pointer :: c
      end function transpose_array
+  end interface
+
+  interface
+     module subroutine gemm(transa, transb, m, n, k, &
+          a, lda, b, ldb, beta, c, ldc)
+       character(len=1), intent(in) :: transa, transb
+       integer, intent(in) :: m, n, k, lda, ldb, ldc
+       real(real32), dimension(:), intent(in), contiguous :: a, b
+       real(real32), intent(in) :: beta
+       real(real32), dimension(:), intent(inout), contiguous :: c
+     end subroutine gemm
   end interface
 
 end module diffstruc__operations_linalg
