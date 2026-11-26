@@ -117,22 +117,31 @@ contains
 
 
 !###############################################################################
-  module subroutine clone_record(dst, src)
+  module subroutine clone_record(dst, src, steal)
     !! Copies the content of one record into another.
     !!
     !! Value, shape and auxiliary buffers are copied into fresh storage owned
     !! by the destination's context; graph links are shared, exactly as a
     !! handle copy is expected to share them. The destination keeps its own
     !! identity.
+    !!
+    !! With `steal`, the source's value storage is moved instead of copied. The
+    !! caller must own the source record and release it afterwards; this is the
+    !! case when a temporary expression is assigned into a persistent record.
     type(array_type), intent(inout), target :: dst
     !! Record to overwrite
-    type(array_type), intent(in), target :: src
+    type(array_type), intent(inout), target :: src
     !! Record to copy
+    logical, intent(in), optional :: steal
+    !! Move the source's value storage instead of copying it
 
     ! Local variables
     type(array_context_type) :: ctx, keep_ctx
     integer :: keep_id, keep_gen, keep_slot
+    logical :: steal_
 
+    steal_ = .false.
+    if(present(steal)) steal_ = steal
     keep_id = dst%id
     keep_gen = dst%gen
     keep_slot = dst%slot
@@ -158,8 +167,12 @@ contains
 
     if(allocated(src%shape)) dst%shape = src%shape
     if(allocated(src%store)) then
-       call take_value(ctx, dst%store, shape(src%store))
-       dst%store = src%store
+       if(steal_) then
+          call move_alloc(src%store, dst%store)
+       else
+          call take_value(ctx, dst%store, shape(src%store))
+          dst%store = src%store
+       end if
        dst%val => dst%store
     end if
     if(allocated(src%indices)) dst%indices = src%indices
@@ -514,7 +527,7 @@ contains
        ctx = context_of(this)
        dst => allocate_node(ctx)
     end if
-    call clone_record(dst, src)
+    call clone_record(dst, src, steal=src%is_temporary)
     call bind_handle(this, dst)
     if(src%requires_grad .and. .not. associated(src%left_operand) .and. &
          .not. associated(src%right_operand)) return

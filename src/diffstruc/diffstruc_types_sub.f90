@@ -1605,7 +1605,7 @@ contains
   contains
 
     recursive function copy_node(source, ctx, map) result(copy)
-      type(array_type), intent(in), target :: source
+      type(array_type), intent(inout), target :: source
       type(array_context_type), intent(in) :: ctx
       integer, intent(inout) :: map(:)
       type(array_type), pointer :: copy

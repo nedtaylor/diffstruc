@@ -926,9 +926,10 @@ module diffstruc__types
        type(array_type), intent(in), target :: node
      end subroutine bind_handle
 
-     module subroutine clone_record(dst, src)
+     module subroutine clone_record(dst, src, steal)
        type(array_type), intent(inout), target :: dst
-       type(array_type), intent(in), target :: src
+       type(array_type), intent(inout), target :: src
+       logical, intent(in), optional :: steal
      end subroutine clone_record
 
      module function clone_handle(source) result(copy)
