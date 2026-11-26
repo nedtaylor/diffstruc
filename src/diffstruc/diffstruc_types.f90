@@ -75,6 +75,10 @@ module diffstruc__types
   integer, parameter :: value_cache_size = 256
   !! Number of released value buffers a context keeps for reuse.
 
+  integer(int64), parameter :: value_cache_max_bytes = 134217728_int64
+  !! Upper bound on the bytes a context keeps in its value cache. Large
+  !! buffers are returned to the runtime instead of pinning memory.
+
   type :: context_state
      !! The private state of one context: its node registry and scratch pool.
      type(ad_registry), pointer :: head => null()
@@ -107,6 +111,7 @@ module diffstruc__types
      integer :: pool_cap = 0
      type(cached_value) :: value_cache(value_cache_size)
      integer :: value_cache_n = 0
+     integer(int64) :: value_cache_bytes = 0_int64
   end type context_state
 
   type :: array_context_type
@@ -169,6 +174,8 @@ module diffstruc__types
      !! Mask data for an operation
      logical :: requires_grad = .false.
      !! Whether this node is an independent variable of the graph
+     logical :: value_partial_ok = .false.
+     !! Whether the value-level partials of this custom operation are valid
      type(array_type), pointer :: grad => null()
      !! Gradient accumulator node
      type(array_type), pointer :: left_operand => null()

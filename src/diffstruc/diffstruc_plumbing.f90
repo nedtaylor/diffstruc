@@ -93,6 +93,7 @@ contains
     this%is_scalar = node%is_scalar
     this%allocated = node%allocated
     this%requires_grad = node%requires_grad
+    this%value_partial_ok = node%value_partial_ok
     this%operation = node%operation
     this%is_temporary => node%is_temporary
     this%visit_tag = node%visit_tag
@@ -148,6 +149,7 @@ contains
     dst%is_scalar = src%is_scalar
     dst%allocated = src%allocated
     dst%requires_grad = src%requires_grad
+    dst%value_partial_ok = src%value_partial_ok
     dst%operation = src%operation
     dst%is_temporary = src%is_temporary
     dst%visit_tag = 0

@@ -89,6 +89,9 @@ contains
     end if
 
     c%is_sample_dependent = .true.
+    ! The value-level partials cover the common matrix-times-vector layout;
+    ! use them instead of building a transpose/matmul graph each pass.
+    if(size(a%shape) == 2) c%value_partial_ok = .true.
     c%get_partial_left => get_partial_matmul_left
     c%get_partial_right => get_partial_matmul_right
     c%get_partial_left_val => get_partial_matmul_left_val

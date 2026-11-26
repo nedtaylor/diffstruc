@@ -185,6 +185,8 @@ contains
     do i = state%value_cache_n, 1, -1
        if(allocated(state%value_cache(i)%data)) then
           if(all(state%value_cache(i)%array_shape == array_shape)) then
+             state%value_cache_bytes = state%value_cache_bytes - &
+                  int(size(state%value_cache(i)%data), int64) * 4_int64
              call move_alloc(state%value_cache(i)%data, store)
              ! Move the last entry into the hole so nothing is lost.
              if(i /= state%value_cache_n) then
@@ -221,7 +223,14 @@ contains
        deallocate(store)
        return
     end if
+    if(state%value_cache_bytes + int(size(store), int64) * 4_int64 > &
+         value_cache_max_bytes) then
+       deallocate(store)
+       return
+    end if
     state%value_cache(i)%array_shape = shape(store)
+    state%value_cache_bytes = state%value_cache_bytes + &
+         int(size(store), int64) * 4_int64
     call move_alloc(store, state%value_cache(i)%data)
     state%value_cache_n = i
   end subroutine give_value
@@ -306,6 +315,7 @@ contains
        state%value_cache(i)%array_shape = 0
     end do
     state%value_cache_n = 0
+    state%value_cache_bytes = 0_int64
     state%pool_top = 0
     state%pool_cap = 0
     state%last_id = 0_int64
@@ -530,6 +540,7 @@ contains
     node%is_forward = .false.
     node%allocated = .false.
     node%requires_grad = .false.
+    node%value_partial_ok = .false.
     node%operation = 'none'
     node%temporary_flag = .true.
     node%is_temporary => node%temporary_flag

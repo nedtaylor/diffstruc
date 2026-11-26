@@ -378,15 +378,15 @@ contains
        call reverse_accumulate(node, node%grad%val, 0)
     end if
 
-    ! Value-level partials create no graph nodes, so the region only needs
-    ! sweeping when the graph-building fallback was used (matmul, gather-style
-    ! layouts). Skipping the walk keeps small backward passes overhead-free.
-    if(state%scratch_nodes_created) then
-       visit = next_visit(node)
-       call mark_graph(node, visit)
-       if(associated(node%grad)) node%grad%visit_tag = visit
-       call sweep_region(ctx, visit)
-    end if
+    ! Release every record the backward pass created that is not part of the
+    ! value graph. Only the records issued since the checkpoint are scanned, so
+    ! this is cheap (a few dozen records) and keeps repeated passes in bounded
+    ! memory. Do not guard it with the scratch-node flag: graph-building
+    ! partials can allocate nodes without that flag being observable here.
+    visit = next_visit(node)
+    call mark_graph(node, visit)
+    if(associated(node%grad)) node%grad%visit_tag = visit
+    call sweep_region(ctx, visit)
   end subroutine grad_reverse
 !###############################################################################
 
@@ -759,12 +759,13 @@ contains
        value_ok = associated(node%get_partial_right_val)
        sum_ok = associated(node%get_partial_right_val_sum)
     end if
-    value_ok = value_ok .and. has_value_partial(node%operation)
+    value_ok = value_ok .and. (has_value_partial(node%operation) .or. &
+         node%value_partial_ok)
     ! The sum-reduced partials of matmul write a vector of the operand's
     ! element count, which is exactly the layout a non-sample-dependent operand
     ! needs; they are usable even though the full value partial is not.
     sum_ok = sum_ok .and. (has_value_partial(node%operation) .or. &
-         has_sum_partial(node%operation))
+         node%value_partial_ok .or. has_sum_partial(node%operation))
 #ifdef DIFFSTRUC_SLOW_REVERSE
     ! Benchmark reference path: the pre-optimisation engine, which built a
     ! derivative node for every partial instead of evaluating values directly.
@@ -1075,7 +1076,7 @@ contains
          'gaussian', 'sum_array', 'sum_all_array', 'mean_array', &
          'mean_all_array', 'multiply_scalar', 'multiply_real2d', &
          'multiply_logical', 'divide_scalar', 'divide_real1d', &
-         'scalar_divide', 'subtract_scalar')
+         'scalar_divide', 'subtract_scalar', 'max', 'max_scalar')
        has_value_partial = .true.
     case default
        has_value_partial = .false.
