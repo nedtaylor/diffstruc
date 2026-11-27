@@ -8,7 +8,7 @@ module diffstruc
        set_default_context, reset_default_context, get_partial, &
        new_context, destroy_context, set_num_threads, get_num_threads, &
        set_max_recursion_depth, team_size_for, kernel_team, context_of, &
-       canonical, live, &
+       canonical, live, context_stats, &
        discard_sources, operator(+), operator(-), operator(*), operator(/), operator(**), &
        sum, mean, spread, unspread, exp, log
   use diffstruc__operations_trig, only: sin, cos, tan
@@ -40,6 +40,7 @@ module diffstruc
   public :: new_context, destroy_context, set_num_threads, get_num_threads
   public :: set_max_recursion_depth, team_size_for
   public :: context_of, canonical, live, kernel_team, discard_sources
+  public :: context_stats
 
   public :: operator(+), operator(-), operator(*), operator(/), operator(**)
   public :: sum, mean, spread, unspread, exp, log

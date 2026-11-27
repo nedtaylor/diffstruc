@@ -24,6 +24,7 @@ module diffstruc__types
   public :: new_context, destroy_context, set_num_threads, get_num_threads
   public :: set_max_recursion_depth, team_size_for, kernel_team
   public :: canonical, constant_node, context_of, live, discard_sources
+  public :: context_stats
 
   public :: operator(+), operator(-), operator(*), operator(/), operator(**)
   public :: sum, mean, spread, unspread, exp, log
@@ -921,6 +922,11 @@ module diffstruc__types
        class(array_type), intent(in) :: this
        type(array_context_type) :: ctx
      end function context_of
+
+     module subroutine context_stats(ctx, n_chunks, live_n, free_n)
+       type(array_context_type), intent(in) :: ctx
+       integer, intent(out) :: n_chunks, live_n, free_n
+     end subroutine context_stats
 
      module subroutine bind_handle(this, node)
        class(array_type), intent(inout) :: this

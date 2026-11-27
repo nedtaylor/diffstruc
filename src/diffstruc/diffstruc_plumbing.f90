@@ -27,6 +27,44 @@ contains
 
 
 !###############################################################################
+  module subroutine context_stats(ctx, n_chunks, live_n, free_n)
+    !! Reports the occupancy of a context's node registry.
+    !!
+    !! `n_chunks` is the number of allocated registry chunks, `live_n` the
+    !! number of records with a non-zero id, and `free_n` the length of the
+    !! free list. A steady loop should keep all three flat.
+    type(array_context_type), intent(in) :: ctx
+    !! Context to inspect
+    integer, intent(out) :: n_chunks, live_n, free_n
+    !! Chunk count, live record count, free-list length
+
+    ! Local variables
+    type(array_context_type) :: resolved
+    type(ad_registry), pointer :: chunk
+    integer :: i
+
+    n_chunks = 0
+    live_n = 0
+    free_n = 0
+    resolved = ctx
+    if(.not. associated(resolved%state)) resolved = default_context_of()
+    if(.not. associated(resolved%state)) return
+    n_chunks = resolved%state%n_chunks
+    free_n = resolved%state%free_n
+    chunk => resolved%state%head
+    do while(associated(chunk))
+       if(associated(chunk%nodes)) then
+          do i = 1, size(chunk%nodes)
+             if(chunk%nodes(i)%id > 0) live_n = live_n + 1
+          end do
+       end if
+       chunk => chunk%next
+    end do
+  end subroutine context_stats
+!###############################################################################
+
+
+!###############################################################################
   module function canonical(this) result(node)
     !! The context-owned node record a handle refers to (null when unbound
     !! or stale).

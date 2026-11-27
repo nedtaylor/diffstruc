@@ -37,6 +37,9 @@ set_tests_properties(test_context_recycled PROPERTIES WILL_FAIL TRUE)
 add_test(NAME test_context_guard COMMAND test_context guard)
 set_tests_properties(test_context_guard PROPERTIES WILL_FAIL TRUE)
 
+# A consumed loss must not retain its root gradient record across iterations.
+add_test(NAME test_context_release COMMAND test_context release)
+
 # Build benchmark programs (not registered as ctest targets)
 foreach(bench_file ${BENCH_SOURCES})
   get_filename_component(bench_name ${bench_file} NAME_WE)

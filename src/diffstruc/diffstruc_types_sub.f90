@@ -1587,9 +1587,12 @@ contains
     !!
     !! Unlike `nullify_graph`, which keeps a root that looks like an owned
     !! output, this frees the whole expression and recycles every record. Use
-    !! it for a loss or residual that will not be read again.
+    !! it for a loss or residual that will not be read again. The root must be
+    !! a consumed expression, not a variable or handle whose storage must
+    !! survive.
     class(array_type), intent(inout), target :: this
-    type(array_type), pointer :: node
+    type(array_type), pointer :: node, grad
+    logical :: was_variable
 
     node => canonical(this)
     if(.not. associated(node)) then
@@ -1597,6 +1600,18 @@ contains
        this%allocated = .false.
        this%val => null()
        return
+    end if
+    ! Decide this before `discard_sources` nullifies the root operands. After
+    ! that call the root looks like a variable (requires_grad, no operands),
+    ! so `nullify_graph` would zero rather than release its gradient and the
+    ! root gradient record would leak on every pass.
+    was_variable = is_variable(node)
+    if(.not. was_variable .and. associated(node%grad)) then
+       ! The reverse-mode root gradient is an accumulator leaf: it owns no
+       ! operand graph, so detaching and recycling it here is enough.
+       grad => node%grad
+       node%grad => null()
+       call release_node(context_of_node(node), grad, recycle=.true.)
     end if
     call discard_sources(this, leaves=.true.)
     call nullify_graph(this)

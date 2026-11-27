@@ -46,6 +46,8 @@ program test_context
      ! This must abort: the handle was never bound to a node.
      call x%set_shape([2, 1])
      write(*, *) 'unbound handle was accepted'
+  case('release')
+     call check_release_retention()
   case default
      call check_ownership()
   end select
@@ -68,6 +70,68 @@ contains
     handle => f%left_operand
     call f%nullify_graph()
   end subroutine make_released
+
+  subroutine check_release_retention()
+    !! Releasing a consumed loss must not retain its root gradient record.
+    integer, parameter :: warmup = 3
+    integer, parameter :: iterations = 5000
+    integer :: c0, l0, f0, c1, l1, f1
+
+    call x%allocate(array_shape=[2, 1], temporary=.false.)
+    call y%allocate(array_shape=[2, 1], temporary=.false.)
+    x%val = 1.0_real32
+    y%val = 2.0_real32
+    call x%set_requires_grad(.true.)
+    call y%set_requires_grad(.true.)
+
+    ! Temporary expression root, as used by a manual training loop.
+    call run_release_loop(.false., warmup)
+    call context_stats(context_of(x), c0, l0, f0)
+    call run_release_loop(.false., iterations)
+    call context_stats(context_of(x), c1, l1, f1)
+    write(*, '(A,3I8,A,3I8)') &
+         'temporary root: before chunks/live/free ', c0, l0, f0, &
+         ', after ', c1, l1, f1
+    ! The free list is diagnostic only; its length may vary with allocation
+    ! order. Chunks and live records must be exactly flat in steady state.
+    if(c1 /= c0 .or. l1 /= l0) then
+       write(*, *) 'temporary root retained context records'
+       stop 1
+    end if
+
+    ! Non-temporary root, as used by network%train.
+    call run_release_loop(.true., warmup)
+    call context_stats(context_of(x), c0, l0, f0)
+    call run_release_loop(.true., iterations)
+    call context_stats(context_of(x), c1, l1, f1)
+    write(*, '(A,3I8,A,3I8)') &
+         'train-style root: before chunks/live/free ', c0, l0, f0, &
+         ', after ', c1, l1, f1
+    if(c1 /= c0 .or. l1 /= l0) then
+       write(*, *) 'train-style root retained context records'
+       stop 1
+    end if
+
+    write(*, '(A)') 'release retention checks passed'
+  end subroutine check_release_retention
+
+  subroutine run_release_loop(train_root, count)
+    !! Runs a consumed-loss loop, optionally marking the root non-temporary.
+    logical, intent(in) :: train_root
+    integer, intent(in) :: count
+    type(array_type), pointer :: loss
+    integer :: i
+
+    do i = 1, count
+       loss => sum(squared(x * y + x))
+       if(train_root) then
+          if(associated(loss%is_temporary)) loss%is_temporary = .false.
+       end if
+       call loss%grad_reverse()
+       call loss%release_expression()
+       nullify(loss)
+    end do
+  end subroutine run_release_loop
 
   subroutine check_ownership()
     !! Verifies the non-owning handle semantics on a real computation.
