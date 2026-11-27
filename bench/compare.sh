@@ -50,7 +50,7 @@ build_tree() {
   if [ -f "$src/diffstruc_context.f90" ]; then STD=f2018; else STD=gnu; fi
   # The migrated tree carries !$omp simd directives in its numeric kernels.
   if [ -f "$src/diffstruc_context.f90" ]; then SIMDFLAG="-fopenmp-simd -fversion-loops-for-strides -fvect-cost-model=unlimited"; else SIMDFLAG=""; fi
-  order="diffstruc_global diffstruc_parallel diffstruc_types diffstruc_types_sub"
+  order="diffstruc_global diffstruc_parallel diffstruc_kernels diffstruc_types diffstruc_types_sub"
   if [ -f "$src/diffstruc_context.f90" ]; then
     order="$order diffstruc_context diffstruc_plumbing diffstruc_types_sub \
 diffstruc_arithmetic_sub"

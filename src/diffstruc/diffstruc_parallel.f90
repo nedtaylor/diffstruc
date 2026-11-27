@@ -11,7 +11,8 @@ module diffstruc__parallel
   !! lets the reverse-mode partial kernels (whose interfaces are `pure`) use
   !! it.
   use, intrinsic :: iso_fortran_env, only: int64
-  use diffstruc__global, only: diffstruc__parallel_min_elems
+  use diffstruc__global, only: diffstruc__parallel_min_elems, &
+       diffstruc__parallel_elems_per_thread
 #ifdef _OPENMP
   use omp_lib, only: omp_get_max_threads, omp_in_parallel
 #endif
@@ -46,9 +47,11 @@ contains
     work = int(max(1, n_elem), int64) * int(max(1, n_samples), int64)
     if(work < int(diffstruc__parallel_min_elems, int64)) then
        nth = 1
-    else
-       nth = n
+       return
     end if
+    nth = int(max(1_int64, work / &
+         int(diffstruc__parallel_elems_per_thread, int64)))
+    nth = min(n, nth)
   end function team_size
 
   integer function available_threads()

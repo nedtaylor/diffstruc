@@ -64,6 +64,7 @@ if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
   option(BUILD_EXAMPLES "Build the examples" ON)
   option(USE_BLAS "Use BLAS for optimised matrix operations" OFF)
   option(USE_OPENMP "Use OpenMP parallel regions in the numeric kernels" OFF)
+  option(USE_FAST_REDUCTION "Use the opt-in reassociated reductions (needs OpenMP for speed-up)" OFF)
 else()
   # When used as a dependency, disable tests by default
   set(BUILD_TESTS OFF)
@@ -167,6 +168,15 @@ if(USE_OPENMP)
   find_package(OpenMP REQUIRED)
   target_link_libraries(${PROJECT_NAME} PUBLIC OpenMP::OpenMP_Fortran)
   message(STATUS "OpenMP enabled: ${OpenMP_Fortran_FLAGS}")
+endif()
+
+# optionally enable the reassociated reductions (opt-in; benefits from OpenMP)
+if(USE_FAST_REDUCTION)
+  target_compile_definitions(${PROJECT_NAME} PUBLIC DIFFSTRUC_FAST_REDUCTION)
+  if(NOT USE_OPENMP)
+    message(WARNING "USE_FAST_REDUCTION is most effective with USE_OPENMP=ON; reductions will run serially")
+  endif()
+  message(STATUS "Fast reductions enabled")
 endif()
 
 

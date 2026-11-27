@@ -30,7 +30,7 @@ fi
 
 cd "$ROOT"
 SRC=src/diffstruc
-ORDER="diffstruc_global diffstruc_parallel diffstruc_types diffstruc_context diffstruc_plumbing \
+ORDER="diffstruc_global diffstruc_parallel diffstruc_kernels diffstruc_types diffstruc_context diffstruc_plumbing \
 diffstruc_types_sub diffstruc_arithmetic_sub \
 diffstruc_operations_maths diffstruc_operations_maths_sub \
 diffstruc_operations_trig diffstruc_operations_hyp \

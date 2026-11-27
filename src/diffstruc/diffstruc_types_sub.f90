@@ -7,6 +7,7 @@
 !! graph is detached (`nullify_graph`) or when the context is rolled back.
 submodule(diffstruc__types) diffstruc__types_submodule
   use, intrinsic :: iso_fortran_env, only: error_unit
+  use diffstruc__kernels, only: copy2, axpy2, sum_columns
   implicit none
 
 contains
@@ -38,6 +39,22 @@ contains
     state => context_state_of(context_of_node(node))
     limit = state%max_recursion_depth
   end function recursion_limit
+
+
+!###############################################################################
+  module function kernel_team(this, n_elem, n_samples) result(nth)
+    !! Threads a kernel should use, or 1 inside an existing team.
+    class(array_type), intent(in) :: this
+    integer, intent(in) :: n_elem, n_samples
+
+    integer :: nth
+
+    nth = team_size_for(this, n_elem, n_samples)
+    if(nth > 1) then
+       if(in_parallel()) nth = 1
+    end if
+  end function kernel_team
+!###############################################################################
 
 
 !###############################################################################
@@ -540,7 +557,8 @@ contains
     oap = 0.0_real32
 
     call unary_add_mult_kernel(op, n_elem, n_samples, uvalue, basis, &
-         w%val, d%val, dd, dwp(:, 1), oap(:, 1))
+         w%val, d%val, dd, dwp(:, 1), oap(:, 1), &
+         kernel_team(node, n_elem, n_samples))
 
     ! Contributions in the same order as the unfused traversal: the add visits
     ! its left operand first and the multiply visits its left operand first.
@@ -599,8 +617,13 @@ contains
 
 !###############################################################################
   subroutine unary_add_mult_kernel(op, n_elem, n_samples, uvalue, t, &
-       w, d, dd, dw, oa)
-    !! One pass: unary partial, multiply partial and both reductions.
+       w, d, dd, dw, oa, nth)
+    !! Unary partial, multiply partial and both reductions.
+    !!
+    !! Two passes keep both loops vectorisable and the summation order intact:
+    !! the first writes the full partial `dd` (parallel over samples), the
+    !! second accumulates the reduced gradients `dw` and `oa` (parallel over
+    !! elements, samples in ascending order per element).
     integer, intent(in) :: op
     integer, intent(in) :: n_elem
     integer, intent(in) :: n_samples
@@ -611,50 +634,139 @@ contains
     real(real32), dimension(:,:), intent(out) :: dd
     real(real32), dimension(:), intent(inout) :: dw
     real(real32), dimension(:), intent(inout) :: oa
+    integer, intent(in) :: nth
     real(real32) :: av
-    integer :: i, s
+    integer :: i, s, ib, iend
 
     select case(op)
     case(1)
+       !$omp parallel do if(nth > 1) num_threads(nth) schedule(static)
        do s = 1, n_samples
           !$omp simd
           do i = 1, n_elem
              av = uvalue * (1.0_real32 - t(i,s) * t(i,s))
              dd(i,s) = av * w(i,1)
-             dw(i) = dw(i) + av * d(i,1)
-             oa(i) = oa(i) + av
           end do
        end do
+       if(nth > 1) then
+          !$omp parallel do if(nth > 1) num_threads(nth) schedule(static)
+          do ib = 1, n_elem, 128
+             iend = min(n_elem, ib + 127)
+             do s = 1, n_samples
+                !$omp simd
+                do i = ib, iend
+                   av = uvalue * (1.0_real32 - t(i,s) * t(i,s))
+                   dw(i) = dw(i) + av * d(i,1)
+                   oa(i) = oa(i) + av
+                end do
+             end do
+          end do
+       else
+          do s = 1, n_samples
+             !$omp simd
+             do i = 1, n_elem
+                av = uvalue * (1.0_real32 - t(i,s) * t(i,s))
+                dw(i) = dw(i) + av * d(i,1)
+                oa(i) = oa(i) + av
+             end do
+          end do
+       end if
     case(2)
+       !$omp parallel do if(nth > 1) num_threads(nth) schedule(static)
        do s = 1, n_samples
           !$omp simd
           do i = 1, n_elem
              av = uvalue * t(i,s) * 2.0_real32
              dd(i,s) = av * w(i,1)
-             dw(i) = dw(i) + av * d(i,1)
-             oa(i) = oa(i) + av
           end do
        end do
+       if(nth > 1) then
+          !$omp parallel do if(nth > 1) num_threads(nth) schedule(static)
+          do ib = 1, n_elem, 128
+             iend = min(n_elem, ib + 127)
+             do s = 1, n_samples
+                !$omp simd
+                do i = ib, iend
+                   av = uvalue * t(i,s) * 2.0_real32
+                   dw(i) = dw(i) + av * d(i,1)
+                   oa(i) = oa(i) + av
+                end do
+             end do
+          end do
+       else
+          do s = 1, n_samples
+             !$omp simd
+             do i = 1, n_elem
+                av = uvalue * t(i,s) * 2.0_real32
+                dw(i) = dw(i) + av * d(i,1)
+                oa(i) = oa(i) + av
+             end do
+          end do
+       end if
     case(3)
+       !$omp parallel do if(nth > 1) num_threads(nth) schedule(static)
        do s = 1, n_samples
           !$omp simd
           do i = 1, n_elem
              av = uvalue * t(i,s)
              dd(i,s) = av * w(i,1)
-             dw(i) = dw(i) + av * d(i,1)
-             oa(i) = oa(i) + av
           end do
        end do
+       if(nth > 1) then
+          !$omp parallel do if(nth > 1) num_threads(nth) schedule(static)
+          do ib = 1, n_elem, 128
+             iend = min(n_elem, ib + 127)
+             do s = 1, n_samples
+                !$omp simd
+                do i = ib, iend
+                   av = uvalue * t(i,s)
+                   dw(i) = dw(i) + av * d(i,1)
+                   oa(i) = oa(i) + av
+                end do
+             end do
+          end do
+       else
+          do s = 1, n_samples
+             !$omp simd
+             do i = 1, n_elem
+                av = uvalue * t(i,s)
+                dw(i) = dw(i) + av * d(i,1)
+                oa(i) = oa(i) + av
+             end do
+          end do
+       end if
     case default
+       !$omp parallel do if(nth > 1) num_threads(nth) schedule(static)
        do s = 1, n_samples
           !$omp simd
           do i = 1, n_elem
              av = -uvalue
              dd(i,s) = av * w(i,1)
-             dw(i) = dw(i) + av * d(i,1)
-             oa(i) = oa(i) + av
           end do
        end do
+       if(nth > 1) then
+          !$omp parallel do if(nth > 1) num_threads(nth) schedule(static)
+          do ib = 1, n_elem, 128
+             iend = min(n_elem, ib + 127)
+             do s = 1, n_samples
+                !$omp simd
+                do i = ib, iend
+                   av = -uvalue
+                   dw(i) = dw(i) + av * d(i,1)
+                   oa(i) = oa(i) + av
+                end do
+             end do
+          end do
+       else
+          do s = 1, n_samples
+             !$omp simd
+             do i = 1, n_elem
+                av = -uvalue
+                dw(i) = dw(i) + av * d(i,1)
+                oa(i) = oa(i) + av
+             end do
+          end do
+       end if
     end select
   end subroutine unary_add_mult_kernel
 
@@ -673,9 +785,11 @@ contains
     real(real32), dimension(:,:), intent(in) :: values
     !! Contribution
 
-    integer :: i, n, s
+    integer :: i, n, s, ns, nth
 
     n = min(size(grad%store, 2), size(values, 2))
+    ns = n
+    nth = kernel_team(grad, size(grad%store, 1), ns)
 #ifdef DIFFSTRUC_SLOW_REVERSE
     do s = 1, n
        !$omp simd
@@ -685,20 +799,10 @@ contains
     end do
 #else
     if(grad%phase /= phase) then
-       do s = 1, n
-          !$omp simd
-          do i = 1, size(grad%store, 1)
-             grad%store(i,s) = values(i,s)
-          end do
-       end do
+       call copy2(grad%store, values, size(grad%store, 1), ns, nth)
        grad%phase = phase
     else
-       do s = 1, n
-          !$omp simd
-          do i = 1, size(grad%store, 1)
-             grad%store(i,s) = grad%store(i,s) + values(i,s)
-          end do
-       end do
+       call axpy2(grad%store, values, size(grad%store, 1), ns, nth)
     end if
 #endif
   end subroutine add_to_gradient
@@ -1993,7 +2097,21 @@ contains
 
     na => canonical(a)
     c => a%create_result(array_shape=[1, 1])
+#ifdef DIFFSTRUC_FAST_REDUCTION
+    block
+      integer :: n, ns, nth
+      real(real32), allocatable :: colsum(:)
+      n = size(na%store, 1)
+      ns = size(na%store, 2)
+      nth = kernel_team(a, n, ns)
+      allocate(colsum(ns))
+      call sum_columns(colsum, na%store, n, ns, nth)
+      c%store(1, 1) = sum(colsum)
+      deallocate(colsum)
+    end block
+#else
     c%store(1, 1) = sum(na%store)
+#endif
     allocate(c%indices(2))
     c%indices = [1, 1]
 
@@ -2219,7 +2337,21 @@ contains
 
     c => a%create_result(array_shape=[1, 1])
     inv_count = 1.0_real32 / real(size(a%val), real32)
+#ifdef DIFFSTRUC_FAST_REDUCTION
+    block
+      integer :: n, ns, nth
+      real(real32), allocatable :: colsum(:)
+      n = size(a%val, 1)
+      ns = size(a%val, 2)
+      nth = kernel_team(a, n, ns)
+      allocate(colsum(ns))
+      call sum_columns(colsum, a%val, n, ns, nth)
+      c%val(1, 1) = sum(colsum) * inv_count
+      deallocate(colsum)
+    end block
+#else
     c%val(1, 1) = sum(a%val) * inv_count
+#endif
     allocate(c%indices(2))
     c%indices = [1, 1]
 

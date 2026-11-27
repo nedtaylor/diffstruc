@@ -37,7 +37,7 @@ MOD="$MODFLAG $LIBDIR"
 # Rebuild the library objects into the test module dir so tests see the same
 # module files.
 for f in src/diffstruc/diffstruc_global.f90 src/diffstruc/diffstruc_parallel.f90 \
-         src/diffstruc/diffstruc_types.f90 \
+         src/diffstruc/diffstruc_kernels.f90 src/diffstruc/diffstruc_types.f90 \
          src/diffstruc/diffstruc_context.f90 src/diffstruc/diffstruc_plumbing.f90 \
          src/diffstruc/diffstruc_types_sub.f90 src/diffstruc/diffstruc_arithmetic_sub.f90 \
          src/diffstruc/diffstruc_operations_maths.f90 \

@@ -38,6 +38,7 @@ build() {
 }
 build $SRC/diffstruc_global.f90 global
 build $SRC/diffstruc_parallel.f90 parallel
+build $SRC/diffstruc_kernels.f90 kernels
 build $SRC/diffstruc_types.f90 types
 build $SRC/diffstruc_context.f90 context
 build $SRC/diffstruc_plumbing.f90 plumbing

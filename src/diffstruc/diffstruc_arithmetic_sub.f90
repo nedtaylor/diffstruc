@@ -2,6 +2,9 @@
 !! `diffstruc__types`. The results and operands are all context-owned
 !! records; the procedures here only create result nodes and views.
 submodule(diffstruc__types) diffstruc__arithmetic_impl
+  use diffstruc__kernels, only: add_two, add_col, sub_two, sub_col, &
+       mul_two, mul_col, mul_row, scale2, mul_right_col, &
+       reduce_mul_left, reduce_mul_full, reduce_samples
   implicit none
 
 contains
@@ -12,26 +15,19 @@ contains
     class(array_type), intent(in), target :: a, b
     type(array_type), pointer :: c
 
-    integer :: i, s
+    integer :: n, ns, nth
     type(array_type), pointer :: na, nb, nc
     na => canonical(a)
     nb => canonical(b)
     c => a%create_result()
     nc => c
+    n = size(na%store, 1)
+    ns = size(na%store, 2)
+    nth = kernel_team(a, n, ns)
     if(b%is_sample_dependent)then
-       do s = 1, size(na%store, 2)
-          !$omp simd
-          do i = 1, size(na%store, 1)
-             nc%store(i,s) = na%store(i,s) + nb%store(i,s)
-          end do
-       end do
+       call add_two(nc%store, na%store, nb%store, n, ns, nth)
     else
-       do s = 1, size(na%store, 2)
-          !$omp simd
-          do i = 1, size(na%store, 1)
-             nc%store(i,s) = na%store(i,s) + nb%store(i,1)
-          end do
-       end do
+       call add_col(nc%store, na%store, nb%store, n, ns, nth)
     end if
     c%get_partial_left => get_partial_add
     c%get_partial_right => get_partial_add
@@ -181,25 +177,24 @@ contains
     end if
   end subroutine get_partial_add_val
 !-------------------------------------------------------------------------------
-  pure subroutine get_partial_add_val_sum(this, upstream_grad, output)
+  subroutine get_partial_add_val_sum(this, upstream_grad, output)
     !! Fused partial+sum for add: output(:,1) = sum_over_samples(upstream_grad)
     implicit none
     class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:), intent(out) :: output
 
-    integer :: s, n_samples
+    integer :: n, ns, nth
 
-    n_samples = size(upstream_grad, 2)
-    if(size(output,1).eq.1 .and. size(upstream_grad,1).gt.1)then
+    n = size(output)
+    ns = size(upstream_grad, 2)
+    if(n .eq. 1 .and. size(upstream_grad,1) .gt. 1)then
        output(1) = sum(upstream_grad)
-    else if(n_samples .eq. 1)then
+    else if(ns .eq. 1)then
        output(:) = upstream_grad(:,1)
     else
-       output(:) = upstream_grad(:,1)
-       do s = 2, n_samples
-          output(:) = output(:) + upstream_grad(:,s)
-       end do
+       nth = kernel_team(this, n, ns)
+       call reduce_samples(output, upstream_grad, n, ns, nth)
     end if
   end subroutine get_partial_add_val_sum
 !###############################################################################
@@ -212,23 +207,16 @@ contains
     class(array_type), intent(in), target :: a, b
     type(array_type), pointer :: c
 
-    integer :: i, s
+    integer :: n, ns, nth
 
     c => a%create_result()
+    n = size(a%val, 1)
+    ns = size(a%val, 2)
+    nth = kernel_team(a, n, ns)
     if(.not.b%is_sample_dependent)then
-       do s = 1,size(a%val, 2)
-          !$omp simd
-          do i = 1,size(a%val, 1)
-             c%val(i,s) = a%val(i,s) - b%val(i,1)
-          end do
-       end do
+       call sub_col(c%val, a%val, b%val, n, ns, nth)
     else
-       do s = 1,size(a%val, 2)
-          !$omp simd
-          do i = 1,size(a%val, 1)
-             c%val(i,s) = a%val(i,s) - b%val(i,s)
-          end do
-       end do
+       call sub_two(c%val, a%val, b%val, n, ns, nth)
     end if
     c%get_partial_left => get_partial_add
     c%get_partial_right => get_partial_negate
@@ -414,58 +402,46 @@ contains
     class(array_type), intent(in), target :: a, b
     type(array_type), pointer :: c
 
-    integer :: i, s
+    integer :: n, ns, nth
 
     if(b%is_scalar)then
        c => a%create_result()
-       do s = 1, size(a%val, 2)
-          !$omp simd
-          do i = 1, size(a%val, 1)
-             c%val(i,s) = a%val(i,s) * b%val(1,1)
-          end do
-       end do
+       n = size(a%val, 1)
+       ns = size(a%val, 2)
+       nth = kernel_team(a, n, ns)
+       call scale2(c%val, a%val, b%val(1,1), n, ns, nth)
     elseif(.not.b%is_sample_dependent)then
        c => a%create_result()
-       do s = 1,size(a%val, 2)
-          !$omp simd
-          do i = 1,size(a%val, 1)
-             c%val(i,s) = a%val(i,s) * b%val(i,1)
-          end do
-       end do
+       n = size(a%val, 1)
+       ns = size(a%val, 2)
+       nth = kernel_team(a, n, ns)
+       call mul_col(c%val, a%val, b%val, n, ns, nth)
     elseif(.not.a%is_sample_dependent)then
        c => b%create_result()
-       do s = 1,size(b%val, 2)
-          !$omp simd
-          do i = 1,size(b%val, 1)
-             c%val(i,s) = a%val(1,1) * b%val(i,s)
-          end do
-       end do
+       n = size(b%val, 1)
+       ns = size(b%val, 2)
+       nth = kernel_team(b, n, ns)
+       call scale2(c%val, b%val, a%val(1,1), n, ns, nth)
     elseif(size(a%val,1).ne.size(b%val,1).and.size(a%val,2).eq.size(b%val,2))then
        if(size(a%val,1) .eq. 1)then
           c => b%create_result()
-          do s = 1,size(a%val, 2)
-             !$omp simd
-             do i = 1,size(b%val, 1)
-                c%val(i,s) = a%val(1,s) * b%val(i,s)
-             end do
-          end do
+          n = size(b%val, 1)
+          ns = size(b%val, 2)
+          nth = kernel_team(b, n, ns)
+          call mul_row(c%val, b%val, a%val, n, ns, nth)
        elseif(size(b%val,1) .eq. 1)then
           c => a%create_result()
-          do s = 1,size(a%val, 2)
-             !$omp simd
-             do i = 1,size(a%val, 1)
-                c%val(i,s) = a%val(i,s) * b%val(1,s)
-             end do
-          end do
+          n = size(a%val, 1)
+          ns = size(a%val, 2)
+          nth = kernel_team(a, n, ns)
+          call mul_row(c%val, a%val, b%val, n, ns, nth)
        end if
     else
        c => a%create_result()
-       do s = 1, size(a%val, 2)
-          !$omp simd
-          do i = 1, size(a%val, 1)
-             c%val(i,s) = a%val(i,s) * b%val(i,s)
-          end do
-       end do
+       n = size(a%val, 1)
+       ns = size(a%val, 2)
+       nth = kernel_team(a, n, ns)
+       call mul_two(c%val, a%val, b%val, n, ns, nth)
     end if
 
     c%get_partial_left => get_partial_multiply_left
@@ -680,78 +656,52 @@ contains
     end if
   end subroutine get_partial_multiply_left_val
 !-------------------------------------------------------------------------------
-  pure subroutine get_partial_multiply_right_val(this, upstream_grad, output)
+  subroutine get_partial_multiply_right_val(this, upstream_grad, output)
     implicit none
     class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:,:), intent(out) :: output
 
-    integer :: i, s
+    integer :: n, ns, nth
+
+    n = size(output, 1)
+    ns = size(output, 2)
+    nth = kernel_team(this, n, ns)
     if(this%left_operand%is_scalar)then
-       do s = 1, size(output, 2)
-          !$omp simd
-          do i = 1, size(output, 1)
-             output(i,s) = upstream_grad(i,s) * this%left_operand%store(1,1)
-          end do
-       end do
+       call scale2(output, upstream_grad, this%left_operand%store(1,1), n, ns, nth)
     elseif(.not.this%left_operand%is_sample_dependent)then
-       do s = 1 , size(output, 2)
-          !$omp simd
-          do i = 1 , size(output, 1)
-             output(i,s) = upstream_grad(i,s) * this%left_operand%store(i,1)
-          end do
-       end do
+       call mul_right_col(output, upstream_grad, this%left_operand%store, n, ns, nth)
     elseif(.not.this%right_operand%is_sample_dependent)then
-       do s = 1 , size(output, 2)
-          !$omp simd
-          do i = 1 , size(output, 1)
-             output(i,s) = upstream_grad(i,s) * this%left_operand%store(i,1)
-          end do
-       end do
+       call mul_right_col(output, upstream_grad, this%left_operand%store, n, ns, nth)
     elseif(size(upstream_grad,2).ne.size(output,2))then
-       do s = 1 , size(output, 2)
-          !$omp simd
-          do i = 1 , size(output, 1)
-             output(i,s) = upstream_grad(i,s) * this%left_operand%store(i,1)
-          end do
-       end do
+       call mul_right_col(output, upstream_grad, this%left_operand%store, n, ns, nth)
     else
-       do s = 1, size(output, 2)
-          !$omp simd
-          do i = 1, size(output, 1)
-             output(i,s) = upstream_grad(i,s) * this%left_operand%val(i,s)
-          end do
-       end do
+       call mul_two(output, upstream_grad, this%left_operand%val, n, ns, nth)
     end if
   end subroutine get_partial_multiply_right_val
 !-------------------------------------------------------------------------------
-  pure subroutine get_partial_multiply_left_val_sum(this, upstream_grad, output)
+  subroutine get_partial_multiply_left_val_sum(this, upstream_grad, output)
     !! Fused partial+sum for multiply left: output(:,1) = sum_s(upstream*right_op)
     implicit none
     class(array_type), intent(in) :: this
     real(real32), dimension(:,:), intent(in) :: upstream_grad
     real(real32), dimension(:), intent(out) :: output
 
-    integer :: s, n_samples
+    integer :: n, ns, nth
 
-    n_samples = size(upstream_grad, 2)
+    n = size(output)
+    ns = size(upstream_grad, 2)
+    nth = kernel_team(this, n, ns)
     if(this%right_operand%is_scalar)then
-       output(:) = upstream_grad(:,1)
-       do s = 2, n_samples
-          output(:) = output(:) + upstream_grad(:,s)
-       end do
-       output(:) = output(:) * this%right_operand%val(1,1)
+       call reduce_samples(output, upstream_grad, n, ns, nth)
+       output = output * this%right_operand%val(1,1)
     elseif(.not.this%left_operand%is_sample_dependent .or. &
          .not.this%right_operand%is_sample_dependent)then
-       output(:) = upstream_grad(:,1) * this%right_operand%val(:,1)
-       do s = 2, n_samples
-          output(:) = output(:) + upstream_grad(:,s) * this%right_operand%val(:,1)
-       end do
+       call reduce_mul_left(output, upstream_grad, this%right_operand%val, &
+            n, ns, nth)
     else
-       output(:) = upstream_grad(:,1) * this%right_operand%val(:,1)
-       do s = 2, n_samples
-          output(:) = output(:) + upstream_grad(:,s) * this%right_operand%val(:,s)
-       end do
+       call reduce_mul_full(output, upstream_grad, this%right_operand%val, &
+            n, ns, nth)
     end if
   end subroutine get_partial_multiply_left_val_sum
 !-------------------------------------------------------------------------------

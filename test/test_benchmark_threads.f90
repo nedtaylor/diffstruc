@@ -47,11 +47,18 @@ program test_benchmark_threads
 
 contains
 
+  function wall_clock() result(t)
+    real(8) :: t
+    integer(8) :: c0, rate
+    call system_clock(c0, rate)
+    t = real(c0, 8) / real(rate, 8)
+  end function wall_clock
+
   subroutine bench_a(d, batch, threads)
     integer, intent(in) :: d, batch, threads
     type(array_type) :: w, x, b
     type(array_type), pointer :: y, loss
-    real :: t0, t1
+    real(8) :: t0, t1
     real(real32) :: chk
     integer :: r
 
@@ -69,16 +76,16 @@ contains
     call random_number(b%val); b%val = b%val * 0.01_real32
 
     chk = 0.0_real32
-    call cpu_time(t0)
+    t0 = wall_clock()
     do r = 1, N_REV
        y => squared(w * x + b)
        loss => sum(y)
        loss%is_temporary = .false.
        call loss%grad_reverse(reset_graph=.true.)
-       chk = chk + sum(x%grad%val)
+       chk = chk + x%grad%val(1,1)
        call loss%nullify_graph()
     end do
-    call cpu_time(t1)
+    t1 = wall_clock()
     call report(d, batch, "A", (t1 - t0) / real(N_REV) * 1000.0, chk, threads)
 
     call w%deallocate(); call x%deallocate(); call b%deallocate()
@@ -88,7 +95,7 @@ contains
     integer, intent(in) :: d, batch, threads
     type(array_type) :: w1, w2, x, b1, b2
     type(array_type), pointer :: y, loss, h
-    real :: t0, t1
+    real(8) :: t0, t1
     real(real32) :: chk
     integer :: r
 
@@ -114,17 +121,17 @@ contains
     call random_number(b2%val); b2%val = b2%val * 0.01_real32
 
     chk = 0.0_real32
-    call cpu_time(t0)
+    t0 = wall_clock()
     do r = 1, N_REV
        h => w1 * x + b1
        y => tanh(w2 * h + b2)
        loss => sum(y)
        loss%is_temporary = .false.
        call loss%grad_reverse(reset_graph=.true.)
-       chk = chk + sum(x%grad%val)
+       chk = chk + x%grad%val(1,1)
        call loss%nullify_graph()
     end do
-    call cpu_time(t1)
+    t1 = wall_clock()
     call report(d, batch, "B", (t1 - t0) / real(N_REV) * 1000.0, chk, threads)
 
     call w1%deallocate(); call w2%deallocate(); call x%deallocate()
@@ -134,7 +141,7 @@ contains
   subroutine report(d, batch, chain, ms, chk, threads)
     integer, intent(in) :: d, batch, threads
     character(len=*), intent(in) :: chain
-    real, intent(in) :: ms
+    real(8), intent(in) :: ms
     real(real32), intent(in) :: chk
 
     write(*, '(I6,I8,I8,A6,2X,F12.3,2X,ES14.6)') d, batch, d*batch, chain, ms, chk

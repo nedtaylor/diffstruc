@@ -38,11 +38,21 @@ Per-context control:
    x%ctx = ctx                             ! bind a handle to that context
    call x%allocate(array_shape=[d, batch], sample_dependent=.true.)
 
-A kernel only asks for a team when its work (elements x samples) exceeds
-`diffstruc__parallel_min_elems` (262 144 elements by default), because an
-OpenMP region costs about 20 microseconds on Apple silicon. Small graphs
-therefore stay serial; large batches scale. `set_num_threads(ctx, 1)` forces a
-context to be serial even in an OpenMP build.
+A kernel only asks for a team when its work (elements x samples) clears the
+serial floor, and the team is sized by the work rather than by the machine:
+`nth = clamp(work / diffstruc__parallel_elems_per_thread, 1, available)`
+(262 144 elements per thread). A 1 MiB node therefore stays serial, 4 MiB uses
+four threads and 8 MiB uses eight. `set_num_threads(ctx, 1)` forces a context
+to be serial even in an OpenMP build, and a kernel entered from inside an
+existing team runs serial (`in_parallel`).
+
+The elementwise work is done by `diffstruc__kernels`: module procedures with
+plain array arguments and explicit `intent`. This is deliberate -- the pointer
+components of `array_type` prevent the compiler from proving that the output
+does not alias the inputs, so loops written directly against them lose SIMD
+once they are outlined for OpenMP. Kernels take `%store` views, keep their
+per-element expressions identical to the serial code, and are wrapped as
+`!$omp parallel do if(nth > 1)` over samples with `!$omp simd` inside.
 
 **3. Several independent graphs on several threads.** Every thread must use its
 own context. Two ways:
@@ -113,16 +123,42 @@ Per-kernel ceilings measured with the same loop shapes:
 | elementwise `a+a`, 64 MiB | 2.8 ms | 0.86 ms (3.3x, memory-limited) |
 | elementwise `a+a`, 256 KiB | 6 us | 46 us (region overhead dominates) |
 
-`bench/threads.sh` measures chain A and chain B at sizes above the threshold
-for `OMP_NUM_THREADS=1,2,4,8` and prints the checksums, which must not change:
+`bench/threads.sh` measures chain A and chain B with `system_clock` (wall
+clock; `cpu_time` returns process CPU time, the sum over threads) for
+`OMP_NUM_THREADS=1,2,4,8`, prints the checksums, and reports the speed-up
+against the first thread count:
 
 .. code-block:: bash
 
    sh bench/threads.sh
    THREADS="1 4 8" sh bench/threads.sh
 
-Run it on an idle machine: with the CPU loaded, both serial and parallel timings
-are dominated by scheduling noise.
+Measured at 2048x2048 (4.2 M) and 2048x4096 (8.4 M), best of three, GNU
+Fortran 15.2, M2 Pro (8P+4E):
+
+| elements | chain | 1 thread | 4 threads | 8 threads |
+|---|---|---|---|---|
+| 4.2 M | A | 8.25 ms | 7.36 (1.12x) | 7.04 (1.17x) |
+| 4.2 M | B | 16.44 ms | 9.92 (1.66x) | 8.44 (1.95x) |
+| 8.4 M | A | 15.49 ms | 13.32 (1.16x) | 13.14 (1.18x) |
+| 8.4 M | B | 32.86 ms | 18.90 (1.74x) | 17.20 (1.91x) |
+
+The whole run is 1.47x at four threads and 1.59x at eight. Chain A is capped
+by the ordered `sum`: it stays serial to keep the results bit-identical and is
+about 45% of that chain at these sizes. Elementwise kernels are bandwidth-bound
+at 8 MiB and scale about 2x; `tanh` scales up to 4.8x. Run the sweep on an idle
+machine -- under load the parallel and serial runs both degrade.
+
+Opt-in reassociated reduction
+-----------------------------
+
+Compiling with `-DDIFFSTRUC_FAST_REDUCTION` replaces the ordered `sum`/`mean`
+reduction with a deterministic two-level one: each sample column is summed in
+parallel by a vectorised kernel, then the column sums are added serially. This
+removes the serial bottleneck at the cost of a last-bit change in the result
+(the gradients for `sum` are unchanged because the upstream value is one).
+Measured with the flag at 8 threads: 2.24x on chain A (4.2 M), 1.95x (8.4 M),
+and 3.1x on chain B (4.2 M). It is opt-in so the default stays bit-identical.
 
 Future work
 -----------

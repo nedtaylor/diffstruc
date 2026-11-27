@@ -175,10 +175,18 @@ identical hashes, so the fusion only removes memory traffic.
 ## Thread scaling
 
 `sh bench/threads.sh` builds with `-fopenmp` and runs
-`test/test_benchmark_threads.f90` for `OMP_NUM_THREADS=1,2,4,8`. Sizes are
-chosen so one node is a few MiB (above `diffstruc__parallel_min_elems`);
-checksums are printed and must not change with the thread count. Measure on an
-idle machine: below ~1 MiB per node an OpenMP region costs more than it saves.
+`test/test_benchmark_threads.f90` for `OMP_NUM_THREADS=1,2,4,8`, then prints
+the speed-up against the first thread count. Timings use `system_clock` (wall
+clock); the benchmark's full gradient checksum is taken once after the timed
+loop, and the random seed is fixed for reproducibility. Sizes put one node at
+4-8 MiB, above the per-thread work target; checksums are identical across
+thread counts. Measure on an idle machine: below ~1 MiB per node a region costs
+more than it saves, and under load both serial and parallel runs degrade.
+
+Latest GNU Fortran 15.2 run (best of three): whole suite 1.47x at 4 threads,
+1.59x at 8; chain B 1.66-1.74x at 4 and 1.91-1.95x at 8; chain A 1.12-1.16x at
+4 (the ordered `sum` is ~45% of it). `EXTRA=-DDIFFSTRUC_FAST_REDUCTION`
+enables the opt-in reassociated reduction (last-bit change; 2.57x whole at 8).
 
 ## Running it
 

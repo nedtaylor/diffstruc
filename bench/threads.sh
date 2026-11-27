@@ -16,10 +16,12 @@ rm -rf "$OUT"
 mkdir -p "$OUT"
 COREUTILS_MOD=/Users/nedtaylor/DCoding/DGit/coreutils/build/mod
 COREUTILS_LIB=/Users/nedtaylor/DCoding/DGit/coreutils/build/libcoreutils.a
-FLAGS="-cpp -std=f2018 -O2 -fopenmp -fopenmp-simd -fversion-loops-for-strides -fvect-cost-model=unlimited"
+EXTRA=${EXTRA:-}
+FLAGS="-cpp -std=f2018 -O2 -fopenmp -fopenmp-simd -fversion-loops-for-strides -fvect-cost-model=unlimited $EXTRA"
 
 SRC=src/diffstruc
-for name in diffstruc_global diffstruc_parallel diffstruc_types \
+for name in diffstruc_global diffstruc_parallel diffstruc_kernels \
+            diffstruc_types \
             diffstruc_context diffstruc_plumbing diffstruc_types_sub \
             diffstruc_arithmetic_sub diffstruc_operations_maths \
             diffstruc_operations_maths_sub diffstruc_operations_trig \
@@ -37,5 +39,19 @@ echo "compiler: $($CC --version | head -1)"
 for t in $THREADS; do
   echo
   echo "=== OMP_NUM_THREADS=$t ==="
-  OMP_NUM_THREADS=$t "$OUT/bench"
+  OMP_NUM_THREADS=$t "$OUT/bench" | tee "$OUT/run_$t.txt"
+done
+
+first=$(echo $THREADS | cut -d' ' -f1)
+echo
+echo "=== speed-up relative to OMP_NUM_THREADS=$first ==="
+printf "%-8s %-6s %-6s %10s %8s\n" dim chain threads "ms" "speedup"
+for t in $THREADS; do
+  awk -v t="$t" '
+    FNR == NR { if ($4 == "A" || $4 == "B") base[$1 " " $2 " " $4] = $5; next }
+    ($4 == "A" || $4 == "B") {
+       key = $1 " " $2 " " $4
+       printf "%-8s %-6s %-6s %10.3f %7.2fx\n", $1, $4, t, $5, base[key] / $5
+    }
+  ' "$OUT/run_$first.txt" "$OUT/run_$t.txt"
 done

@@ -18,4 +18,9 @@ module diffstruc__global
   !! Minimum number of elements (elements x samples) before a kernel asks for
   !! an OpenMP team. Below this a parallel region costs more than it saves.
 
+  integer, parameter :: diffstruc__parallel_elems_per_thread = 262144
+  !! Work (elements x samples) each thread should carry. The team size is
+  !! `work / this` clamped to the available threads, so a small node stays
+  !! serial and a large one scales with its size.
+
 end module diffstruc__global

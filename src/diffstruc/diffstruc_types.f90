@@ -14,7 +14,7 @@ module diffstruc__types
   use, intrinsic :: iso_fortran_env, only: error_unit, int64, real32
   use coreutils, only: stop_program, print_warning
   use diffstruc__global, only: diffstruc__default_max_recursion_depth
-  use diffstruc__parallel, only: team_size, available_threads
+  use diffstruc__parallel, only: team_size, available_threads, in_parallel
   implicit none
 
   private
@@ -22,7 +22,7 @@ module diffstruc__types
   public :: array_type, array_context_type, get_partial
   public :: default_context, set_default_context, reset_default_context
   public :: new_context, destroy_context, set_num_threads, get_num_threads
-  public :: set_max_recursion_depth, team_size_for
+  public :: set_max_recursion_depth, team_size_for, kernel_team
   public :: canonical, constant_node, context_of, live, discard_sources
 
   public :: operator(+), operator(-), operator(*), operator(/), operator(**)
@@ -479,21 +479,13 @@ module diffstruc__types
        type(array_type) :: output
      end function get_partial
 
-#ifdef USE_BLAS
      module subroutine get_partial_val(this, upstream_grad, output)
-#else
-     pure module subroutine get_partial_val(this, upstream_grad, output)
-#endif
        class(array_type), intent(in) :: this
        real(real32), dimension(:,:), intent(in) :: upstream_grad
        real(real32), dimension(:,:), intent(out) :: output
      end subroutine get_partial_val
 
-#ifdef USE_BLAS
      module subroutine get_partial_val_sum(this, upstream_grad, output)
-#else
-     pure module subroutine get_partial_val_sum(this, upstream_grad, output)
-#endif
        !! Sum-reduced partial derivative: output = sum(partial, dim=2)
        class(array_type), intent(in) :: this
        real(real32), dimension(:,:), intent(in) :: upstream_grad
@@ -879,6 +871,14 @@ module diffstruc__types
        integer :: n_threads
      end function get_num_threads
 
+     module function kernel_team(this, n_elem, n_samples) result(nth)
+       !! Threads a kernel should use, or 1 inside an existing team.
+       class(array_type), intent(in) :: this
+       integer, intent(in) :: n_elem
+       integer, intent(in) :: n_samples
+       integer :: nth
+     end function kernel_team
+
      pure module function team_size_for(this, n_elem, n_samples) result(nth)
        !! Threads a kernel on this array should request (1 = serial).
        class(array_type), intent(in) :: this
@@ -888,7 +888,7 @@ module diffstruc__types
      end function team_size_for
 
      module subroutine unary_add_mult_kernel(op, n_elem, n_samples, &
-          uvalue, t, w, d, dd, dw, oa)
+          uvalue, t, w, d, dd, dw, oa, nth)
        !! Fused unary/multiply partial kernel (internal).
        integer, intent(in) :: op
        integer, intent(in) :: n_elem
@@ -900,6 +900,7 @@ module diffstruc__types
        real(real32), dimension(:,:), intent(out) :: dd
        real(real32), dimension(:), intent(inout) :: dw
        real(real32), dimension(:), intent(inout) :: oa
+       integer, intent(in) :: nth
      end subroutine unary_add_mult_kernel
 
      module subroutine set_max_recursion_depth(ctx, max_depth)
